@@ -1,0 +1,14 @@
+[
+  {
+    "user_id": 1,
+    "display_name": "演示用户",
+    "preferences": ["清淡"],
+    "cuisines": ["中式"],
+    "dislikes": ["香菜"],
+    "allergens": ["花生"],
+    "health_goals": ["均衡饮食"],
+    "dietary_tags": [],
+    "daily_calorie_target": 2000,
+    "location": "上海"
+  }
+]

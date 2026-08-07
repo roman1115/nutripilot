@@ -1,0 +1,134 @@
+name: nutripilot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: nutripilot
+      POSTGRES_USER: nutripilot
+      POSTGRES_PASSWORD: nutripilot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nutripilot -d nutripilot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.14.1
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  migrate:
+    build:
+      context: .
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://nutripilot:nutripilot@postgres:5432/nutripilot
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  nutrition-mcp:
+    build:
+      context: .
+    entrypoint: ["python"]
+    command: ["-m", "apps.nutrition_mcp"]
+    environment:
+      APP_MODE: docker
+      DATABASE_URL: postgresql+asyncpg://nutripilot:nutripilot@postgres:5432/nutripilot
+      QDRANT_URL: http://qdrant:6333
+      MCP_INTERNAL_TOKEN: ${MCP_INTERNAL_TOKEN:-change-me}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_started
+    ports:
+      - "8010:8010"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; s=socket.create_connection(('127.0.0.1',8010),2); s.close()",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+    command: ["uvicorn", "nutripilot.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_MODE: docker
+      DATABASE_URL: postgresql+asyncpg://nutripilot:nutripilot@postgres:5432/nutripilot
+      REDIS_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+      MCP_ENABLED: "true"
+      MCP_SERVER_URL: http://nutrition-mcp:8010/mcp
+      MCP_INTERNAL_TOKEN: ${MCP_INTERNAL_TOKEN:-change-me}
+      WEB_ORIGIN: http://localhost:5173
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      nutrition-mcp:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready',timeout=2)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  web:
+    build:
+      context: ./web
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "5173:80"
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:

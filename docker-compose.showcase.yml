@@ -1,0 +1,33 @@
+services:
+  nutrition-mcp:
+    build:
+      args:
+        INSTALL_ML: "true"
+    env_file:
+      - .env
+    environment:
+      APP_MODE: docker
+      EMBEDDING_PROVIDER: bge
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      EMBEDDING_DEVICE: ${EMBEDDING_DEVICE:-cpu}
+      RERANK_PROVIDER: bge
+      RERANK_MODEL: ${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      RERANK_DEVICE: ${RERANK_DEVICE:-cpu}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-meal_search_bge_m3}
+      HF_HOME: /home/nutripilot/.cache/huggingface
+    volumes:
+      - huggingface_cache:/home/nutripilot/.cache/huggingface
+      - ${BGE_MODEL_ROOT:-./.models}:/models:ro
+
+  api:
+    environment:
+      MODEL_PROVIDER: openai
+      MODEL_NAME: ${MODEL_NAME:-qwen-plus}
+      MODEL_FALLBACK_NAME: ${MODEL_FALLBACK_NAME:-qwen-turbo}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      MODEL_API_KEY: ${MODEL_API_KEY:?MODEL_API_KEY is required for the showcase stack}
+      EMBEDDING_PROVIDER: bge
+      RERANK_PROVIDER: bge
+
+volumes:
+  huggingface_cache:
