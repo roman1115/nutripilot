@@ -38,7 +38,7 @@ flowchart LR
 ## 获取项目
 
 ```powershell
-git clone https://github.com/你的用户名/nutripilot.git
+git clone https://github.com/roman1115/nutripilot.git
 cd nutripilot
 ```
 
