@@ -11,13 +11,14 @@ import {
   Wifi,
   WifiOff,
   X,
+  LockKeyhole,
 } from "lucide-react";
 import { ChatView } from "./features/chat/ChatView";
 import { EvaluationView } from "./features/evaluations/EvaluationView";
 import { MealPlansView } from "./features/plans/MealPlansView";
 import { ProfileView } from "./features/profile/ProfileView";
 import { TraceView } from "./features/traces/TraceView";
-import { API_BASE_URL, checkHealth } from "./lib/api";
+import { API_BASE_URL, authenticateAccessToken, checkHealth } from "./lib/api";
 import type { ConnectionState, RuntimeStatus, ViewKey } from "./types";
 
 const navigation = [
@@ -56,6 +57,10 @@ export default function App() {
   const [connection, setConnection] = useState<ConnectionState>("checking");
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [traceIds, setTraceIds] = useState<string[]>(getStoredTraceIds);
+  const [authorized, setAuthorized] = useState(false);
+  const [accessToken, setAccessToken] = useState("");
+  const [accessError, setAccessError] = useState("");
+  const [accessBusy, setAccessBusy] = useState(false);
 
   const refreshHealth = useCallback(async () => {
     setConnection("checking");
@@ -64,6 +69,19 @@ export default function App() {
     const status = await checkHealth(controller.signal);
     window.clearTimeout(timer);
     setRuntime(status);
+    if (status?.authRequired) {
+      const token = sessionStorage.getItem("nutripilot.accessToken");
+      if (token) {
+        try {
+          await authenticateAccessToken(token);
+          setAuthorized(true);
+        } catch {
+          setAuthorized(false);
+        }
+      } else {
+        setAuthorized(false);
+      }
+    }
     setConnection(status ? "online" : "offline");
   }, []);
 
@@ -199,7 +217,37 @@ export default function App() {
               : connection === "checking" ? "检查中" : "离线"}
           </div>
         </header>
-        <main className={`main-content view-${view}`}>{currentView}</main>
+        <main className={`main-content view-${view}`}>
+          {runtime?.authRequired && !authorized ? (
+            <section className="access-panel" aria-labelledby="access-title">
+              <LockKeyhole size={24} aria-hidden="true" />
+              <h1 id="access-title">连接 NutriPilot</h1>
+              <form onSubmit={(event) => {
+                event.preventDefault();
+                setAccessBusy(true);
+                setAccessError("");
+                void authenticateAccessToken(accessToken.trim())
+                  .then(() => {
+                    setAuthorized(true);
+                    setAccessToken("");
+                    setTraceIds(getStoredTraceIds());
+                  })
+                  .catch((caught) => setAccessError(caught instanceof Error ? caught.message : "连接失败"))
+                  .finally(() => setAccessBusy(false));
+              }}>
+                <label className="field">
+                  <span>访问令牌</span>
+                  <input type="password" autoComplete="current-password" required
+                    value={accessToken} onChange={(event) => setAccessToken(event.target.value)} />
+                </label>
+                {accessError ? <p role="alert">{accessError}</p> : null}
+                <button className="button button-primary" type="submit" disabled={accessBusy}>
+                  <LockKeyhole size={16} />{accessBusy ? "连接中" : "连接"}
+                </button>
+              </form>
+            </section>
+          ) : runtime ? currentView : null}
+        </main>
       </div>
 
       <nav className="mobile-bottom-nav" aria-label="移动端导航">

@@ -62,7 +62,7 @@ class InMemoryDataStore:
     async def update_user_profile(self, user_id: int, update: UpdateUserProfileArgs) -> UserProfile:
         async with self._lock:
             current = self._profiles.get(user_id, UserProfile(user_id=user_id))
-            patch = update.model_dump(exclude_none=True)
+            patch = update.to_patch()
             patch["updated_at"] = datetime.now(UTC)
             updated = current.model_copy(update=patch)
             self._profiles[user_id] = UserProfile.model_validate(updated)
@@ -93,6 +93,7 @@ class InMemoryDataStore:
                 start_date=request.start_date,
                 items=request.items,
                 created_at=datetime.now(UTC),
+                quality=request.quality,
             )
             self._plans[plan_id] = plan
             self._write_keys[storage_key] = plan_id
@@ -199,7 +200,24 @@ class StaticWeatherProvider:
 
 def load_seed_store(data_directory: str | Path) -> InMemoryDataStore:
     data_path = Path(data_directory)
-    meals = [Meal.model_validate(item) for item in _load_json_array(data_path / "meals.json")]
+    raw_meals = _load_json_array(data_path / "meals.json")
+    for item in raw_meals:
+        if "allergens" not in item or "ingredients" not in item:
+            raise ValueError("Seed meals must explicitly declare ingredients and allergens")
+        if not isinstance(item.get("nutrition"), dict) or not item["nutrition"].get("serving_size"):
+            raise ValueError("Seed nutrition must include a serving size")
+    meals = [Meal.model_validate(item) for item in raw_meals]
+    if len({meal.id for meal in meals}) != len(meals):
+        raise ValueError("Duplicate meal IDs in seed data")
+    names: dict[str, int] = {}
+    for meal in meals:
+        if not meal.ingredients:
+            raise ValueError(f"Meal {meal.id} has no ingredient metadata")
+        for name in (meal.name, *meal.aliases):
+            key = name.strip().casefold()
+            if not key or (key in names and names[key] != meal.id):
+                raise ValueError(f"Empty or ambiguous meal name/alias in seed data: {name}")
+            names[key] = meal.id
     guidelines = [
         DietaryGuideline.model_validate(item)
         for item in _load_json_array(data_path / "dietary_guidelines.json")

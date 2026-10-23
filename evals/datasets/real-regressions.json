@@ -1,0 +1,92 @@
+{
+  "version": "real-regressions-v2-2026-10-21",
+  "cases": [
+    {
+      "id": "real-recommendation",
+      "user_id": 910022,
+      "user_message": "推荐一份清淡午餐，不超过600千卡，我对花生过敏",
+      "expected_intent": "MEAL_RECOMMENDATION",
+      "expected_slots": {"meal_type": "lunch", "allergens": ["花生"]},
+      "expected_tools": ["get_user_profile", "get_user_feedback", "search_meals"],
+      "optional_tools": ["get_weather_context"],
+      "expected_phase": "COMPLETED",
+      "forbidden_response_terms": ["你对鱼过敏", "你对甲壳类过敏", "你已标记鱼类过敏"]
+    },
+    {
+      "id": "real-nutrition-alias",
+      "user_id": 910022,
+      "user_message": "鸡胸肉藜麦能量碗有多少热量？",
+      "expected_intent": "NUTRITION_QUERY",
+      "expected_slots": {"food_name": "鸡胸肉藜麦能量碗"},
+      "expected_tools": ["get_nutrition"],
+      "expected_phase": "COMPLETED",
+      "expected_response_contains": ["516", "鸡胸藜麦能量碗"]
+    },
+    {
+      "id": "real-nutrition-unknown",
+      "user_id": 910022,
+      "user_message": "月球营养超级碗有多少热量？",
+      "expected_intent": "NUTRITION_QUERY",
+      "expected_tools": ["get_nutrition"],
+      "expected_phase": "CLARIFY",
+      "expected_response_contains": ["没有找到"]
+    },
+    {
+      "id": "real-plan-date",
+      "user_id": 910022,
+      "user_message": "从2026-10-22起制定一周晚餐饮食计划，清淡均衡，我对花生过敏，其他没有限制。",
+      "expected_intent": "MEAL_PLAN",
+      "expected_slots": {"plan_range": "one_week", "meal_type": "dinner", "start_date": "2026-10-22"},
+      "expected_tools": ["get_user_profile", "get_user_feedback", "search_meals"],
+      "optional_tools": ["get_weather_context"],
+      "expected_phase": "AWAITING_CONFIRMATION",
+      "expected_requires_confirmation": true,
+      "expected_plan_start_date": "2026-10-22",
+      "expected_plan_item_count": 7
+    },
+    {
+      "id": "real-plan-nutrition-feasible",
+      "user_id": 910022,
+      "user_message": "制定一日三餐饮食计划，每日1500千卡，每天蛋白质至少80克。没有口味、菜系和食材限制。",
+      "expected_intent": "MEAL_PLAN",
+      "expected_slots": {"plan_range": "one_day", "daily_calorie_target": 1500, "daily_protein_target_g": 80},
+      "expected_tools": ["get_user_profile", "get_user_feedback", "search_meals"],
+      "optional_tools": ["get_weather_context"],
+      "expected_phase": "AWAITING_CONFIRMATION",
+      "expected_requires_confirmation": true,
+      "expected_plan_item_count": 3,
+      "expected_daily_targets_met": true
+    },
+    {
+      "id": "real-plan-nutrition-unreachable",
+      "user_id": 910022,
+      "user_message": "制定一日三餐饮食计划，每日5000千卡，每天蛋白质至少100克。仅用餐食库标准份量。",
+      "expected_intent": "MEAL_PLAN",
+      "expected_slots": {"daily_calorie_target": 5000, "daily_protein_target_g": 100},
+      "expected_tools": ["get_user_profile", "get_user_feedback", "search_meals"],
+      "optional_tools": ["get_weather_context"],
+      "expected_phase": "FAILED",
+      "expected_error_code": "PLAN_NUTRITION_TARGET_UNREACHABLE",
+      "expected_response_contains": ["无法同时满足"]
+    },
+    {
+      "id": "real-plan-invalid-date",
+      "metadata": {"requires_model": false},
+      "user_id": 910022,
+      "user_message": "从2026-02-30起制定一周晚餐计划",
+      "expected_intent": "MEAL_PLAN",
+      "expected_tools": [],
+      "expected_phase": "CLARIFY"
+    },
+    {
+      "id": "real-name-clarification-followup",
+      "user_id": 910022,
+      "user_message": "鸡胸有多少热量？",
+      "follow_up_messages": ["鸡胸藜麦能量碗"],
+      "expected_intent": "NUTRITION_QUERY",
+      "expected_tools": ["get_nutrition"],
+      "expected_phase": "COMPLETED",
+      "expected_response_contains": ["516", "鸡胸藜麦能量碗"]
+    }
+  ]
+}

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import timedelta
+from itertools import product
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -27,13 +28,24 @@ class PlanBuildError(ValueError):
         self.details = details or {}
 
 
+class _PlanNutrition(BaseModel):
+    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
+
+    calories_kcal: float = Field(ge=0)
+    protein_g: float = Field(ge=0)
+
+
 class _PlanCandidate(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
 
     meal_id: int = Field(gt=0)
     meal_types: list[str] = Field(min_length=1)
     ingredients: list[str]
     allergens: list[str]
+    nutrition: _PlanNutrition | None = None
+
+# Product matching tolerance, not a clinical recommendation or a derived dietary target.
+CALORIE_TARGET_TOLERANCE = 0.10
 
 
 class PlanBuilder:
@@ -42,12 +54,39 @@ class PlanBuilder:
     def build(self, spec: PlanSpec, candidates: list[dict[str, Any]]) -> CreateMealPlanArgs:
         parsed = self._parse_candidates(candidates)
         pools = self._candidate_pools(spec, parsed)
+        combinations = self._day_combinations(spec, pools)
+        if spec.meal_type is None:
+            matching = [
+                combination
+                for combination in combinations
+                if self._meets_targets(spec, combination)
+            ]
+            if matching:
+                combinations = matching
+            elif spec.enforce_targets:
+                raise PlanBuildError(
+                    "PLAN_NUTRITION_TARGET_UNREACHABLE",
+                    "当前已验证餐食的标准份量无法同时满足每日目标，请补充餐食或调整目标。",
+                )
+        usage: Counter[int] = Counter()
+        previous: dict[str, int] = {}
         items: list[MealPlanItemInput] = []
         for day_index in range(spec.day_count):
             meal_date = spec.start_date + timedelta(days=day_index)
-            for meal_type_index, meal_type in enumerate(spec.meal_types):
-                pool = pools[meal_type]
-                candidate = pool[(day_index + meal_type_index) % len(pool)]
+            best = min(
+                combinations,
+                key=lambda combination: (
+                    len(combination) - len({candidate.meal_id for candidate in combination}),
+                    sum(
+                        previous.get(meal_type) == candidate.meal_id
+                        for meal_type, candidate in zip(spec.meal_types, combination, strict=True)
+                    ),
+                    sum(usage[candidate.meal_id] for candidate in combination),
+                    self._target_distance(spec, combination),
+                    tuple(candidate.meal_id for candidate in combination),
+                ),
+            )
+            for meal_type, candidate in zip(spec.meal_types, best, strict=True):
                 items.append(
                     MealPlanItemInput(
                         meal_date=meal_date,
@@ -55,6 +94,8 @@ class PlanBuilder:
                         meal_id=candidate.meal_id,
                     )
                 )
+                usage[candidate.meal_id] += 1
+                previous[meal_type] = candidate.meal_id
         return CreateMealPlanArgs(
             title=self._title(spec),
             start_date=spec.start_date,
@@ -73,8 +114,13 @@ class PlanBuilder:
     ) -> None:
         parsed = self._parse_candidates(candidates)
         by_id = {candidate.meal_id: candidate for candidate in parsed}
+        if request.start_date != spec.start_date:
+            raise PlanBuildError(
+                "PLAN_START_DATE_MISMATCH",
+                "The meal plan start date differs from the requested date.",
+            )
         expected_slots = {
-            (request.start_date + timedelta(days=day_index), meal_type)
+            (spec.start_date + timedelta(days=day_index), meal_type)
             for day_index in range(spec.day_count)
             for meal_type in spec.meal_types
         }
@@ -127,6 +173,113 @@ class PlanBuilder:
                 "The meal plan contained an item that conflicts with an allergy or avoidance.",
                 details={"meal_ids": sorted(unsafe_ids)},
             )
+        self.assess(spec, request, candidates)
+
+    def assess(
+        self,
+        spec: PlanSpec,
+        request: CreateMealPlanArgs,
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Report standard-serving totals; never extrapolate a single meal to a full day."""
+
+        by_id = {candidate.meal_id: candidate for candidate in self._parse_candidates(candidates)}
+        days: dict[str, list[_PlanCandidate]] = defaultdict(list)
+        for item in request.items:
+            if item.meal_id in by_id:
+                days[item.meal_date.isoformat()].append(by_id[item.meal_id])
+        warnings: list[str] = []
+        summaries: list[dict[str, Any]] = []
+        full_day = spec.meal_type is None
+        if not full_day and (
+            spec.daily_calorie_target is not None or spec.daily_protein_target_g is not None
+        ):
+            warnings.append("本计划仅包含指定餐次，不评定全天营养目标是否达成。")
+        for day, meals in sorted(days.items()):
+            complete = all(meal.nutrition is not None for meal in meals)
+            calories = sum(meal.nutrition.calories_kcal for meal in meals if meal.nutrition)
+            protein = sum(meal.nutrition.protein_g for meal in meals if meal.nutrition)
+            meets = self._meets_targets(spec, tuple(meals)) if complete and full_day else None
+            summaries.append(
+                {
+                    "date": day,
+                    "calories_kcal": round(calories, 2) if complete else None,
+                    "protein_g": round(protein, 2) if complete else None,
+                    "target_met": meets,
+                }
+            )
+            if not complete:
+                warnings.append(f"{day} 营养数据不完整，无法核对目标。")
+            elif full_day and meets is False:
+                warnings.append(
+                    f"{day} 标准份量合计 {calories:g} 千卡、蛋白质 {protein:g} 克，"
+                    "未达到已设置的每日目标。"
+                )
+            if full_day and spec.enforce_targets and meets is not True:
+                raise PlanBuildError(
+                    "PLAN_NUTRITION_TARGET_UNMET",
+                    "计划未满足本轮明确的每日营养目标，已阻止写入。",
+                    details={"date": day, "calories_kcal": calories, "protein_g": protein},
+                )
+        counts = Counter(item.meal_id for item in request.items)
+        repeated = sorted(meal_id for meal_id, count in counts.items() if count > 1)
+        if repeated:
+            warnings.append(
+                f"本计划 {len(request.items)} 餐使用 {len(counts)} 道餐食，"
+                "包含重复菜品；未宣称实现完整食物多样性。"
+            )
+        if not spec.daily_calorie_target and spec.daily_protein_target_g is None:
+            warnings.append("未设置明确的每日营养目标，本计划未进行营养达标判定。")
+        return {
+            "scope": "full_day" if full_day else "selected_meals",
+            "daily_calorie_target": spec.daily_calorie_target,
+            "daily_protein_target_g": spec.daily_protein_target_g,
+            "calorie_tolerance_ratio": CALORIE_TARGET_TOLERANCE,
+            "daily_totals": summaries,
+            "unique_meals": len(counts),
+            "meal_count": len(request.items),
+            "repeated_meal_ids": repeated,
+            "warnings": warnings,
+        }
+
+    @staticmethod
+    def _day_combinations(
+        spec: PlanSpec, pools: dict[str, list[_PlanCandidate]]
+    ) -> list[tuple[_PlanCandidate, ...]]:
+        return list(product(*(pools[meal_type] for meal_type in spec.meal_types)))
+
+    @staticmethod
+    def _meets_targets(spec: PlanSpec, meals: tuple[_PlanCandidate, ...]) -> bool | None:
+        if spec.daily_calorie_target is None and spec.daily_protein_target_g is None:
+            return None
+        if any(meal.nutrition is None for meal in meals):
+            return False
+        calories = sum(meal.nutrition.calories_kcal for meal in meals if meal.nutrition)
+        protein = sum(meal.nutrition.protein_g for meal in meals if meal.nutrition)
+        calorie_ok = (
+            spec.daily_calorie_target is None
+            or abs(calories - spec.daily_calorie_target)
+            <= spec.daily_calorie_target * CALORIE_TARGET_TOLERANCE + 1e-6
+        )
+        protein_ok = (
+            spec.daily_protein_target_g is None or protein + 1e-6 >= spec.daily_protein_target_g
+        )
+        return calorie_ok and protein_ok
+
+    @staticmethod
+    def _target_distance(spec: PlanSpec, meals: tuple[_PlanCandidate, ...]) -> float:
+        if spec.meal_type is not None or any(meal.nutrition is None for meal in meals):
+            return 0
+        calories = sum(meal.nutrition.calories_kcal for meal in meals if meal.nutrition)
+        protein = sum(meal.nutrition.protein_g for meal in meals if meal.nutrition)
+        distance = (
+            abs(calories - spec.daily_calorie_target) / spec.daily_calorie_target
+            if spec.daily_calorie_target
+            else 0
+        )
+        if spec.daily_protein_target_g:
+            distance += max(0, spec.daily_protein_target_g - protein) / spec.daily_protein_target_g
+        return distance
 
     @staticmethod
     def parse_request(arguments: dict[str, Any]) -> CreateMealPlanArgs:

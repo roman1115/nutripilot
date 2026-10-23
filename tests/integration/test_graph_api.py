@@ -70,6 +70,7 @@ def test_readiness_reports_the_actual_demo_runtime_components() -> None:
 
     assert body == {
         "status": "ready",
+        "auth_required": False,
         "app_mode": "demo",
         "model_provider": "fake",
         "model_name": "fake-nutripilot-v1",

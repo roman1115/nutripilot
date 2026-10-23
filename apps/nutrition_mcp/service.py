@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import unicodedata
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -11,7 +14,7 @@ from nutripilot.infrastructure import PostgresDataStore, QdrantMealIndex
 from nutripilot.infrastructure.memory import load_seed_store
 from nutripilot.paths import project_root
 from nutripilot.retrieval.embedding import BGEEmbedder, HashingEmbedder
-from nutripilot.retrieval.models import MealSearchFilters, MealSearchRequest
+from nutripilot.retrieval.models import Meal, MealSearchFilters, MealSearchRequest
 from nutripilot.retrieval.ports import GuidelineRepository, MealRepository
 from nutripilot.retrieval.rerank import BGEReranker, LexicalReranker
 from nutripilot.retrieval.service import GuidelineSearchService, RetrievalService
@@ -127,6 +130,9 @@ class NutritionMCPService:
                     allergens=hit.meal.allergens,
                     prep_minutes=hit.meal.prep_minutes,
                     price_cny=hit.meal.price_cny,
+                    tastes=hit.meal.tastes,
+                    cuisines=hit.meal.cuisines,
+                    dietary_tags=hit.meal.dietary_tags,
                     reasons=hit.reasons,
                     citation=hit.citation,
                 )
@@ -140,18 +146,10 @@ class NutritionMCPService:
         meal = None
         if request.meal_id is not None:
             meal = await self.store.get_meal(request.meal_id)
+        if request.meal_id is not None and meal is None:
+            raise ToolRuntimeError("MEAL_NOT_FOUND", "没有找到该餐食编号的营养记录。")
         if meal is None and request.name:
-            requested_name = request.name.casefold().strip()
-            meals = await self.store.list_meals()
-            meal = next(
-                (
-                    candidate
-                    for candidate in meals
-                    if requested_name == candidate.name.casefold()
-                    or requested_name in candidate.name.casefold()
-                ),
-                None,
-            )
+            meal = _resolve_meal_name(request.name, await self.store.list_meals())
         if meal is None:
             raise ToolRuntimeError(
                 "MEAL_NOT_FOUND", "No authoritative nutrition record matched the request."
@@ -194,6 +192,41 @@ class NutritionMCPService:
             ],
             disclaimer=disclaimer,
         )
+
+
+def _normalise_meal_name(value: str) -> str:
+    return re.sub(r"[\s\W_]+", "", unicodedata.normalize("NFKC", value).casefold())
+
+
+def _resolve_meal_name(name: str, meals: list[Meal]) -> Meal:
+    requested = _normalise_meal_name(name)
+    exact = [
+        meal
+        for meal in meals
+        if requested
+        and requested in {_normalise_meal_name(value) for value in (meal.name, *meal.aliases)}
+    ]
+    if len(exact) == 1:
+        return exact[0]
+    candidates = exact or [
+        meal
+        for meal in meals
+        if requested
+        and any(
+            requested in _normalise_meal_name(value)
+            or SequenceMatcher(None, requested, _normalise_meal_name(value)).ratio() >= 0.72
+            for value in (meal.name, *meal.aliases)
+        )
+    ]
+    if candidates:
+        raise ToolRuntimeError(
+            "MEAL_NAME_AMBIGUOUS",
+            "请确认你要查询的餐食名称。",
+            details={
+                "candidates": [{"meal_id": meal.id, "name": meal.name} for meal in candidates[:5]]
+            },
+        )
+    raise ToolRuntimeError("MEAL_NOT_FOUND", "没有找到该菜名的可靠营养记录，请提供完整菜名。")
 
 
 class ExternalNutritionMCPService:

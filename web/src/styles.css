@@ -644,6 +644,113 @@ p {
   scrollbar-color: #c8d1c9 transparent;
 }
 
+.chat-toolbar-actions {
+  align-items: center;
+}
+
+.conversation-history {
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-muted);
+}
+
+.history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.history-heading h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.conversation-history .field {
+  margin: 12px 0;
+}
+
+.conversation-item {
+  display: flex;
+  width: 100%;
+  min-height: 56px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.conversation-item:hover,
+.conversation-item[aria-current="true"] {
+  color: var(--green);
+}
+
+.conversation-item strong {
+  font-size: 13px;
+}
+
+.conversation-item span,
+.history-loading {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.history-loading {
+  padding: 12px 22px;
+}
+
+.plan-quality-warnings {
+  padding: 12px 16px;
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-bottom: 1px solid var(--border);
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.plan-quality-warnings p {
+  margin: 0 0 6px;
+}
+
+.confirmation-meals {
+  max-height: 230px;
+  overflow-y: auto;
+  margin: 10px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.confirmation-meals p {
+  margin: 0 0 6px;
+}
+
+.plan-preview summary {
+  min-height: 36px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.plan-preview ol {
+  padding: 0 0 0 18px;
+}
+
+.plan-preview li {
+  margin-bottom: 10px;
+}
+
+.plan-preview li span,
+.plan-preview li strong {
+  display: block;
+}
+
 .messages > .empty-state {
   min-height: 100%;
 }
@@ -1563,6 +1670,26 @@ p {
   place-items: center;
   background: rgba(22, 28, 24, 0.52);
   backdrop-filter: blur(3px);
+}
+
+.access-panel {
+  width: min(400px, 100%);
+  margin: 48px auto;
+  padding: 24px;
+}
+
+.access-panel h1 {
+  font-size: 22px;
+}
+
+.access-panel form {
+  display: grid;
+  gap: 18px;
+}
+
+.access-panel input {
+  width: 100%;
+  min-width: 0;
 }
 
 .modal {

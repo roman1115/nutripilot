@@ -32,6 +32,8 @@ def route_after_planner(
     *,
     max_tool_steps: int = DEFAULT_MAX_TOOL_STEPS,
 ) -> str:
+    if state.get("error"):
+        return "tool_failure"
     if state.get("step_count", 0) >= max_tool_steps and state.get("pending_tool_calls"):
         return "budget"
     return "tool" if state.get("pending_tool_calls") else "recommendation"
@@ -44,6 +46,11 @@ def route_after_tool(
 ) -> str:
     if state.get("requires_confirmation"):
         return "confirmation"
+    results = state.get("tool_results", [])
+    if results:
+        error = results[-1].get("error")
+        if isinstance(error, dict) and not error.get("retryable", False):
+            return "tool_failure"
     if state.get("step_count", 0) >= max_tool_steps:
         return "budget"
     return "planner"

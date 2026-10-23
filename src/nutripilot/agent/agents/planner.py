@@ -6,10 +6,12 @@ import time
 from typing import Any
 
 from nutripilot.agent.agents.base import fallback_update, record_worker_event
-from nutripilot.agent.contracts import PlannerOutput
+from nutripilot.agent.contracts import PlannerOutput, PlanSpec
+from nutripilot.agent.planning import PlanBuilder, PlanBuildError, candidate_meals_from_results
 from nutripilot.agent.state import AgentState
 from nutripilot.domain.enums import Intent, Phase
-from nutripilot.model_gateway import ModelGateway
+from nutripilot.model_gateway import ModelGateway, ModelUsage
+from nutripilot.model_gateway.budget import ExecutionLimitExceeded
 from nutripilot.safety import merge_dietary_terms
 from nutripilot.tools import ToolCall, ToolRegistry
 from nutripilot.tracing import TraceRecorder
@@ -41,11 +43,13 @@ _TOOLS_BY_INTENT: dict[str, set[str]] = {
 
 class PlannerAgent:
     name = "PlannerAgent"
-    prompt_version = "planner-v1"
+    prompt_version = "planner-v2"
     system_prompt = (
         "你是工具规划 Worker。根据结构化状态选择白名单工具；一次只生成必要调用，"
         "不得虚构工具，不得决定图路由或绕过写操作确认。对于推荐、调整或计划，"
-        "必须先读取用户画像和历史反馈，再检索餐食。"
+        "必须先读取用户画像和历史反馈，再检索餐食。计划检索 limit=20，"
+        "三餐计划不得把检索 meal_type 限定为某一餐。"
+        "若提供 verified_plan，创建计划必须原样采用它，禁止编造份量与营养数值。"
     )
     reads = frozenset({"intent", "slots", "tool_results", "candidate_ids"})
     writes = frozenset({"execution_plan", "pending_tool_calls"})
@@ -67,12 +71,31 @@ class PlannerAgent:
         payload = {
             "intent": intent,
             "slots": state.get("slots", {}),
-            "tool_results": state.get("tool_results", []),
+            "tool_results": compact_tool_results(state.get("tool_results", [])),
             "candidate_ids": state.get("candidate_ids", []),
             "turn_id": state["turn_id"],
             "user_message": state["user_message"],
             "available_tools": self.registry.planner_schemas(allowed_tools),
         }
+        if (
+            intent == Intent.MEAL_PLAN.value
+            and candidate_meals_from_results(state.get("tool_results", []))
+            and not any(
+                result.get("tool_name") == "create_meal_plan"
+                for result in state.get("tool_results", [])
+            )
+        ):
+            try:
+                plan = PlanBuilder().build(
+                    _plan_spec(state), candidate_meals_from_results(state.get("tool_results", []))
+                )
+            except PlanBuildError as exc:
+                return {
+                    "phase": Phase.PLANNING.value,
+                    "pending_tool_calls": [],
+                    "error": {"code": exc.code, "message": exc.safe_message, "retryable": False},
+                }
+            payload["verified_plan"] = plan.model_dump(mode="json")
         try:
             result = await self.gateway.generate_structured(
                 worker="planner",
@@ -101,8 +124,11 @@ class PlannerAgent:
                 output_tokens=result.usage.output_tokens,
             )
             return self._update(state, output)
+        except ExecutionLimitExceeded:
+            raise
         except Exception as exc:
             output = _fallback_plan(state)
+            usage = getattr(exc, "usage", ModelUsage())
             record_worker_event(
                 self.recorder,
                 state,
@@ -110,9 +136,12 @@ class PlannerAgent:
                 event_type="model.fallback",
                 payload={
                     "error_type": type(exc).__name__,
+                    "error_code": getattr(exc, "code", "MODEL_OR_SCHEMA_ERROR"),
                     "tools": [c.name for c in output.tool_calls],
                 },
                 duration_ms=(time.monotonic() - started) * 1000,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
             )
             update = self._update(state, output)
             update["fallback_events"] = fallback_update(state, self.name, "MODEL_OR_SCHEMA_ERROR")
@@ -132,6 +161,30 @@ class PlannerAgent:
             definition.arguments_model.model_validate(call.arguments)
 
     def _update(self, state: AgentState, output: PlannerOutput) -> dict[str, Any]:
+        if (
+            state.get("intent") == Intent.MEAL_PLAN.value
+            and not output.tool_calls
+            and candidate_meals_from_results(state.get("tool_results", []))
+            and not any(
+                result.get("tool_name") == "create_meal_plan"
+                for result in state.get("tool_results", [])
+            )
+        ):
+            plan = PlanBuilder().build(
+                _plan_spec(state), candidate_meals_from_results(state.get("tool_results", []))
+            )
+            output = output.model_copy(
+                update={
+                    "complete": False,
+                    "tool_calls": [
+                        ToolCall(
+                            call_id=f"{state['turn_id']}:verified-plan",
+                            name="create_meal_plan",
+                            arguments=plan.model_dump(mode="json"),
+                        )
+                    ],
+                }
+            )
         calls = [call.model_dump(mode="json") for call in output.tool_calls]
         return {
             "phase": Phase.PLANNING.value,
@@ -154,14 +207,11 @@ def _fallback_plan(state: AgentState) -> PlannerOutput:
     called = {str(result.get("tool_name")) for result in state.get("tool_results", [])}
     intent = state.get("intent")
     call: ToolCall | None = None
-    if (
-        intent
-        in {
-            Intent.MEAL_RECOMMENDATION.value,
-            Intent.MEAL_ADJUSTMENT.value,
-            Intent.MEAL_PLAN.value,
-        }
-    ):
+    if intent in {
+        Intent.MEAL_RECOMMENDATION.value,
+        Intent.MEAL_ADJUSTMENT.value,
+        Intent.MEAL_PLAN.value,
+    }:
         if "get_user_profile" not in called:
             call = ToolCall(
                 call_id=f"{state['turn_id']}:fallback:get_user_profile",
@@ -187,10 +237,8 @@ def _fallback_plan(state: AgentState) -> PlannerOutput:
                         state.get("slots", {}).get("dislikes"),
                         state.get("slots", {}).get("allergens"),
                     ),
-                    "excluded_meal_ids": _feedback_excluded_ids(
-                        state.get("tool_results", [])
-                    ),
-                    "limit": 10 if intent == Intent.MEAL_PLAN.value else 3,
+                    "excluded_meal_ids": _feedback_excluded_ids(state.get("tool_results", [])),
+                    "limit": 20 if intent == Intent.MEAL_PLAN.value else 3,
                 },
             )
     elif intent == Intent.NUTRITION_QUERY.value and "get_nutrition" not in called:
@@ -216,3 +264,52 @@ def _feedback_excluded_ids(results: list[dict[str, Any]]) -> list[int]:
                 {meal_id for meal_id in data["excluded_meal_ids"] if isinstance(meal_id, int)}
             )
     return []
+
+
+def _plan_spec(state: AgentState) -> PlanSpec:
+    profile: dict[str, Any] = next(
+        (
+            result["data"]
+            for result in reversed(state.get("tool_results", []))
+            if result.get("tool_name") == "get_user_profile"
+            and result.get("status") == "success"
+            and isinstance(result.get("data"), dict)
+        ),
+        {},
+    )
+    return PlanSpec.from_slots(state.get("slots", {}), profile=profile)
+
+
+def compact_tool_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Preserve planning facts without repeatedly sending full retrieval documents."""
+
+    compact = []
+    for result in results:
+        item = {key: result[key] for key in ("tool_name", "status", "error") if key in result}
+        data = result.get("data")
+        if isinstance(data, dict) and result.get("tool_name") == "search_meals":
+            item["data"] = {
+                "hits": [
+                    {
+                        key: meal[key]
+                        for key in (
+                            "id",
+                            "meal_id",
+                            "name",
+                            "meal_types",
+                            "ingredients",
+                            "allergens",
+                            "nutrition",
+                        )
+                        if key in meal
+                    }
+                    for hit in data.get("hits", [])
+                    if isinstance(hit, dict) and isinstance(meal := hit.get("meal", hit), dict)
+                ]
+            }
+        elif isinstance(data, dict) and result.get("tool_name") == "get_user_feedback":
+            item["data"] = {"excluded_meal_ids": data.get("excluded_meal_ids", [])}
+        else:
+            item["data"] = data
+        compact.append(item)
+    return compact

@@ -21,10 +21,13 @@ from nutripilot.model_gateway.base import (
     ModelOutputT,
     ModelUsage,
 )
+from nutripilot.model_gateway.budget import ExecutionLimitExceeded, current_budget
 
 
 class OpenAICompatibleModelGateway:
     """Uses the official SDK while keeping routing and validation explicit."""
+
+    accounts_usage = True
 
     def __init__(
         self,
@@ -62,10 +65,23 @@ class OpenAICompatibleModelGateway:
 
         total_attempts = 0
         last_error: ModelGatewayError | None = None
+        total_input_tokens = 0
+        total_output_tokens = 0
+        schema_feedback: list[dict[str, Any]] = []
         for model_index, model in enumerate(models):
             for attempt in range(self.max_retries + 1):
                 total_attempts += 1
                 try:
+                    budget = current_budget()
+                    completion_options: dict[str, Any] = {}
+                    if budget:
+                        completion_options["max_tokens"] = budget.completion_limit(
+                            {
+                                "prompt": system_prompt,
+                                "payload": payload,
+                                "schema": response_model.model_json_schema(),
+                            }
+                        )
                     completion = await self.client.chat.completions.create(
                         model=model,
                         messages=[
@@ -84,6 +100,7 @@ class OpenAICompatibleModelGateway:
                                         "prompt_version": prompt_version,
                                         "input": payload,
                                         "output_schema": response_model.model_json_schema(),
+                                        "schema_feedback": schema_feedback,
                                     },
                                     ensure_ascii=False,
                                     default=str,
@@ -92,7 +109,15 @@ class OpenAICompatibleModelGateway:
                         ],
                         response_format={"type": "json_object"},
                         temperature=0,
+                        **completion_options,
                     )
+                    usage = getattr(completion, "usage", None)
+                    input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+                    output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+                    total_input_tokens += input_tokens
+                    total_output_tokens += output_tokens
+                    if budget:
+                        budget.add_usage(input_tokens, output_tokens)
                     content = completion.choices[0].message.content
                     if not content:
                         raise ModelGatewayError(
@@ -101,18 +126,27 @@ class OpenAICompatibleModelGateway:
                             retryable=True,
                         )
                     output = response_model.model_validate(json.loads(content))
-                    usage = getattr(completion, "usage", None)
                     return GatewayResult(
                         output=output,
                         model=model,
                         usage=ModelUsage(
-                            input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
-                            output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+                            input_tokens=total_input_tokens,
+                            output_tokens=total_output_tokens,
                         ),
                         attempts=total_attempts,
                         used_fallback=model_index > 0,
                     )
+                except ExecutionLimitExceeded:
+                    raise
                 except (json.JSONDecodeError, ValidationError) as exc:
+                    schema_feedback = (
+                        [
+                            {"field": list(error["loc"]), "type": error["type"]}
+                            for error in exc.errors()[:10]
+                        ]
+                        if isinstance(exc, ValidationError)
+                        else [{"type": "invalid_json"}]
+                    )
                     last_error = ModelGatewayError(
                         "INVALID_STRUCTURED_OUTPUT",
                         "The model response did not match the required schema.",
@@ -125,13 +159,18 @@ class OpenAICompatibleModelGateway:
                     last_error = _classify_error(exc)
 
                 if not last_error.retryable:
+                    last_error.usage = ModelUsage(
+                        input_tokens=total_input_tokens, output_tokens=total_output_tokens
+                    )
                     raise last_error
                 if attempt < self.max_retries:
                     await asyncio.sleep(min(0.1 * (2**attempt), 1.0))
 
-        raise last_error or ModelGatewayError(
+        error = last_error or ModelGatewayError(
             "MODEL_UNAVAILABLE", "No configured model produced a response.", retryable=True
         )
+        error.usage = ModelUsage(input_tokens=total_input_tokens, output_tokens=total_output_tokens)
+        raise error
 
 
 def _classify_error(exc: Exception) -> ModelGatewayError:

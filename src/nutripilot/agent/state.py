@@ -20,6 +20,7 @@ class AgentState(TypedDict, total=False):
     slots: dict[str, Any]
     missing_slots: list[str]
     conversation_summary: str | None
+    clarification_intent: str | None
     execution_plan: list[dict[str, Any]]
     pending_tool_calls: list[dict[str, Any]]
     tool_results: list[dict[str, Any]]
@@ -38,6 +39,7 @@ class AgentState(TypedDict, total=False):
     prompt_versions: dict[str, str]
     final_response: dict[str, Any] | None
     error: dict[str, Any] | None
+    plan_quality: dict[str, Any] | None
 
 
 def new_agent_state(
@@ -80,6 +82,7 @@ def new_agent_state(
         prompt_versions={},
         final_response=None,
         error=None,
+        plan_quality=None,
     )
 
 

@@ -14,6 +14,7 @@ export interface RuntimeStatus {
   rerankModel: string;
   storage: string;
   mcpTransport: string;
+  authRequired: boolean;
 }
 
 export interface Citation {
@@ -65,6 +66,7 @@ export interface PendingConfirmation {
   description: string;
   operation?: string;
   payload?: Record<string, unknown>;
+  mealPreview?: MealPlanItem[];
   idempotencyKey: string;
 }
 
@@ -84,6 +86,7 @@ export interface UserProfile {
   allergens: string[];
   dietaryRestrictions: string[];
   dailyCalorieTarget?: number;
+  dailyProteinTarget?: number;
   location: string;
   updatedAt?: string;
 }
@@ -95,7 +98,15 @@ export interface MealPlanItem {
   mealType?: string;
   mealName: string;
   calories?: number;
+  protein?: number;
   status?: string;
+}
+
+export interface ConversationSummary {
+  threadId: string;
+  title: string;
+  updatedAt: string;
+  messageCount: number;
 }
 
 export interface MealPlan {
@@ -106,6 +117,7 @@ export interface MealPlan {
   endDate?: string;
   createdAt?: string;
   totalCalories?: number;
+  qualityWarnings: string[];
   items: MealPlanItem[];
 }
 

@@ -161,7 +161,7 @@ class PostgresDataStore:
         from sqlalchemy import text
 
         current = await self.get_user_profile(user_id)
-        patch = update.model_dump(exclude_none=True)
+        patch = update.to_patch()
         patch["updated_at"] = datetime.now(UTC)
         profile = UserProfile.model_validate(current.model_copy(update=patch))
         async with self.engine.begin() as connection:
@@ -216,6 +216,7 @@ class PostgresDataStore:
             start_date=request.start_date,
             items=request.items,
             created_at=datetime.now(UTC),
+            quality=request.quality,
         )
         async with self.engine.begin() as connection:
             await connection.execute(

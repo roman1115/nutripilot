@@ -69,6 +69,7 @@ export function ProfileView({ connection }: { connection: ConnectionState }) {
       ["allergens", "过敏原"],
       ["dietaryRestrictions", "饮食限制"],
       ["dailyCalorieTarget", "每日热量目标"],
+      ["dailyProteinTarget", "每日蛋白质目标"],
       ["location", "所在城市"],
     ];
     return labels.filter(([key]) => JSON.stringify(profile[key]) !== JSON.stringify(baseline[key])).map(([, label]) => label);
@@ -163,6 +164,19 @@ export function ProfileView({ connection }: { connection: ConnectionState }) {
                     )
                   }
                   placeholder="如：2000"
+                />
+              </label>
+              <label className="field field-block">
+                <span>每日蛋白质目标（g）</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={1000}
+                  step={1}
+                  value={profile.dailyProteinTarget ?? ""}
+                  onChange={(event) =>
+                    update("dailyProteinTarget", event.target.value ? Number(event.target.value) : undefined)
+                  }
                 />
               </label>
               <label className="field field-block">

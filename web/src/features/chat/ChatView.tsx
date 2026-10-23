@@ -8,6 +8,7 @@ import {
   Circle,
   CircleAlert,
   ExternalLink,
+  History,
   LoaderCircle,
   Plus,
   Quote,
@@ -22,13 +23,18 @@ import {
   X,
 } from "lucide-react";
 import { EmptyState, ErrorNotice } from "../../components/Common";
-import { ApiError, confirmChat, getThread, getTrace, streamChat } from "../../lib/api";
+import {
+  ApiError, cancelChat, confirmChat, getConversationMessages, getConversations,
+  getThread, getTrace, streamChat,
+  normalizePlanItem,
+} from "../../lib/api";
 import { asArray, asRecord, firstNumber, firstString, formatDuration } from "../../lib/format";
 import type {
   ChatMessage,
   ChatStreamEvent,
   Citation,
   ConnectionState,
+  ConversationSummary,
   MealRecommendation,
   PendingConfirmation,
   ToolActivity,
@@ -189,6 +195,16 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
   const [error, setError] = useState<string | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const [confirmationBusy, setConfirmationBusy] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const [historyMore, setHistoryMore] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [planWarnings, setPlanWarnings] = useState<string[]>([]);
+  const restoredThreadRef = useRef<string | null>(null);
   const [activePhase, setActivePhase] = useState("等待请求");
   const abortRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -197,20 +213,43 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
 
-  useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => () => {
+    if (abortRef.current) {
+      void cancelChat(threadId).catch(() => undefined);
+      abortRef.current.abort();
+    }
+  }, [threadId]);
 
   useEffect(() => {
-    if (connection !== "online" || messages.length || isSending) return;
+    if (connection !== "online" || isSending || restoredThreadRef.current === threadId) return;
     let cancelled = false;
-    void getThread(threadId)
-      .then(async (result) => {
+    let finished = false;
+    restoredThreadRef.current = threadId;
+    setRestoring(true);
+    void Promise.all([getThread(threadId), getConversationMessages(threadId)])
+      .then(async ([result, history]) => {
         if (cancelled) return;
         const finalResponse = asRecord(result.final_response);
         const pendingAction = asRecord(result.pending_action);
         const traceId = firstString(result.trace_id);
         const content = extractResponseContent(result);
         const restored: ChatMessage[] = [];
-        if (content || result.requires_confirmation === true) {
+        for (const item of history) {
+          const response = asRecord(item.response);
+          const role = item.role === "user" || item.role === "system" ? item.role : "assistant";
+          restored.push({
+            id: String(item.id),
+            role,
+            content: String(item.content),
+            createdAt: String(item.created_at),
+            traceId: firstString(item.trace_id),
+            recommendations: normalizeRecommendations(response.recommendations),
+            citations: normalizeCitations(response.citations),
+            warnings: normalizeStringList(response.warnings),
+            suggestedActions: normalizeStringList(response.suggested_actions),
+          });
+        }
+        if (!history.length && (content || result.requires_confirmation === true)) {
           restored.push({
             id: makeId("restored"),
             role: "assistant",
@@ -229,6 +268,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
           });
         }
         if (restored.length) setMessages(restored);
+        setPlanWarnings(normalizeStringList(asRecord(result.plan_quality).warnings));
         if (result.requires_confirmation === true && Object.keys(pendingAction).length) {
           setPendingConfirmation({
             id: firstString(pendingAction.id),
@@ -238,6 +278,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
               "Agent 准备执行一项会修改数据的操作，请核对后确认。",
             operation: firstString(pendingAction.operation),
             payload: asRecord(pendingAction.payload),
+            mealPreview: asArray(pendingAction.meal_preview).map(normalizePlanItem),
             idempotencyKey:
               firstString(pendingAction.idempotency_key, pendingAction.id) ||
               crypto.randomUUID(),
@@ -260,11 +301,48 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
         if (!(caught instanceof ApiError && caught.status === 404) && !cancelled) {
           setError(caught instanceof Error ? caught.message : "无法恢复上次会话");
         }
+      })
+      .finally(() => {
+        finished = true;
+        if (!cancelled) setRestoring(false);
       });
     return () => {
       cancelled = true;
+      if (!finished) restoredThreadRef.current = null;
     };
-  }, [connection, isSending, messages.length, onTraceDiscovered, threadId]);
+  }, [connection, isSending, onTraceDiscovered, threadId]);
+
+  useEffect(() => {
+    if (!historyOpen || connection !== "online") return;
+    let cancelled = false;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    const timer = window.setTimeout(() => {
+      void getConversations(historyQuery.trim()).then((items) => {
+        if (cancelled) return;
+        setConversations(items);
+        setHistoryOffset(items.length);
+        setHistoryMore(items.length === 30);
+      }).catch((caught) => {
+        if (!cancelled) setHistoryError(caught instanceof Error ? caught.message : "历史会话读取失败");
+      }).finally(() => { if (!cancelled) setHistoryLoading(false); });
+    }, 250);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [connection, historyOpen, historyQuery, isSending]);
+
+  const loadMoreHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const items = await getConversations(historyQuery.trim(), historyOffset);
+      setConversations((current) => [...current, ...items]);
+      setHistoryOffset((current) => current + items.length);
+      setHistoryMore(items.length === 30);
+    } catch (caught) {
+      setHistoryError(caught instanceof Error ? caught.message : "历史会话读取失败");
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
 
   const updateAssistant = (
     assistantId: string,
@@ -354,6 +432,9 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
     }
 
     const finalResponse = asRecord(source.final_response);
+    if (source.plan_quality) {
+      setPlanWarnings(normalizeStringList(asRecord(source.plan_quality).warnings));
+    }
     const recommendations = normalizeRecommendations(
       source.recommendations ?? source.meals ?? finalResponse.recommendations ?? finalResponse.meals,
     );
@@ -384,6 +465,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
           "Agent 准备执行一项会修改数据的操作，请核对后确认。",
         operation: firstString(confirmation.operation, source.operation, source.tool_name),
         payload: asRecord(confirmation.payload ?? source.arguments ?? source.payload),
+        mealPreview: asArray(confirmation.meal_preview).map(normalizePlanItem),
         idempotencyKey: firstString(source.idempotency_key, confirmation.idempotency_key) || crypto.randomUUID(),
       });
       setActivePhase("等待人工确认");
@@ -397,7 +479,8 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
 
   const sendMessage = async (content: string) => {
     const trimmed = content.trim();
-    if (!trimmed || isSending) return;
+    if (!trimmed || isSending || restoring || confirmationBusy) return;
+    restoredThreadRef.current = threadId;
     const userMessage: ChatMessage = {
       id: makeId("user"),
       role: "user",
@@ -417,6 +500,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
     setActivities([]);
     setError(null);
     setPendingConfirmation(null);
+    setPlanWarnings([]);
     setIsSending(true);
     setActivePhase("Supervisor 接收请求");
     abortRef.current = new AbortController();
@@ -555,8 +639,17 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
     }
   };
 
+  const stopGeneration = async () => {
+    try {
+      await cancelChat(threadId);
+      abortRef.current?.abort();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "无法停止服务端请求，请重试");
+    }
+  };
+
   const startNewThread = () => {
-    abortRef.current?.abort();
+    if (isSending || confirmationBusy || restoring) return;
     const next = crypto.randomUUID();
     localStorage.setItem("nutripilot.threadId", next);
     setThreadId(next);
@@ -565,6 +658,25 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
     setPendingConfirmation(null);
     setError(null);
     setActivePhase("等待请求");
+    setHistoryOpen(false);
+    setPlanWarnings([]);
+  };
+
+  const selectThread = (id: string) => {
+    if (isSending || confirmationBusy || restoring) return;
+    if (id === threadId) {
+      setHistoryOpen(false);
+      return;
+    }
+    localStorage.setItem("nutripilot.threadId", id);
+    setThreadId(id);
+    setMessages([]);
+    setActivities([]);
+    setPendingConfirmation(null);
+    setPlanWarnings([]);
+    setError(null);
+    setDraft("");
+    setHistoryOpen(false);
   };
 
   const retryLast = () => {
@@ -580,13 +692,49 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
             <span className="chat-thread-label">当前会话</span>
             <strong title={threadId}>{threadId.slice(0, 8)}</strong>
           </div>
-          <button className="button button-secondary button-compact" type="button" onClick={startNewThread}>
+          <div className="chat-toolbar-actions">
+          <button className="icon-button" type="button" title="历史会话" aria-label="历史会话"
+            aria-expanded={historyOpen} onClick={() => setHistoryOpen((open) => !open)}>
+            <History size={18} />
+          </button>
+          <button className="button button-secondary button-compact" type="button" onClick={startNewThread}
+            disabled={isSending || confirmationBusy || restoring}>
             <Plus size={16} />
             新对话
           </button>
+          </div>
         </div>
 
         <div className="messages" aria-live="polite">
+          {historyOpen ? (
+            <section className="conversation-history" aria-label="历史会话列表">
+              <div className="history-heading">
+                <h2>历史会话</h2>
+                <button className="icon-button" type="button" title="关闭历史会话" aria-label="关闭历史会话"
+                  onClick={() => setHistoryOpen(false)}><X size={18} /></button>
+              </div>
+              <label className="field">
+                <span>搜索会话</span>
+                <input value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)}
+                  type="search" maxLength={200} />
+              </label>
+              {historyError ? <ErrorNotice message={historyError} /> : null}
+              {conversations.map((item) => (
+                <button key={item.threadId} type="button" className="conversation-item"
+                  aria-current={item.threadId === threadId ? "true" : undefined}
+                  disabled={isSending || confirmationBusy || restoring}
+                  onClick={() => selectThread(item.threadId)}>
+                  <strong>{item.title}</strong>
+                  <span>{new Date(item.updatedAt).toLocaleString("zh-CN")} · {item.messageCount} 条消息</span>
+                </button>
+              ))}
+              {!conversations.length && !historyLoading ? <p>暂无匹配的会话</p> : null}
+              {historyLoading ? <p role="status">正在读取历史会话…</p> : null}
+              {historyMore ? <button type="button" className="button button-secondary"
+                onClick={() => void loadMoreHistory()} disabled={historyLoading}>加载更多</button> : null}
+            </section>
+          ) : null}
+          {restoring ? <p className="history-loading" role="status">正在恢复会话…</p> : null}
           {messages.length === 0 ? (
             <EmptyState
               icon={<Sparkles size={24} />}
@@ -720,14 +868,15 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
               rows={1}
               placeholder="描述你的餐次、口味、目标或需要调整的计划…"
               aria-label="发送给 NutriPilot 的消息"
-              disabled={connection === "offline"}
+              disabled={connection === "offline" || restoring || confirmationBusy}
             />
             {isSending ? (
-              <button className="composer-send is-stop" type="button" onClick={() => abortRef.current?.abort()} aria-label="停止生成">
+              <button className="composer-send is-stop" type="button" onClick={() => void stopGeneration()} aria-label="停止生成">
                 <Square size={16} fill="currentColor" />
               </button>
             ) : (
-              <button className="composer-send" type="submit" disabled={!draft.trim() || connection !== "online"} aria-label="发送消息">
+              <button className="composer-send" type="submit"
+                disabled={!draft.trim() || connection !== "online" || restoring || confirmationBusy} aria-label="发送消息">
                 <Send size={17} />
               </button>
             )}
@@ -737,6 +886,9 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
       </section>
 
       <aside className="activity-panel" aria-label="Agent 执行状态">
+        {planWarnings.length ? <div className="plan-quality-warnings" role="status">
+          {planWarnings.map((warning) => <p key={warning}>{warning}</p>)}
+        </div> : null}
         <div className="activity-panel-heading">
           <div>
             <span className="eyebrow">Live run</span>
@@ -759,7 +911,30 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
             </div>
             <p>{pendingConfirmation.description}</p>
             {pendingConfirmation.operation ? <code>{pendingConfirmation.operation}</code> : null}
-            {pendingConfirmation.payload && Object.keys(pendingConfirmation.payload).length ? (
+            {pendingConfirmation.mealPreview?.length ? (
+              <div className="confirmation-meals">
+                <p>每日热量目标：{String(asRecord(pendingConfirmation.payload?.quality).daily_calorie_target ?? "未设置")}
+                  {" kcal（匹配容差 ±10%）"}
+                  <br />每日蛋白质最低目标：{String(asRecord(pendingConfirmation.payload?.quality).daily_protein_target_g ?? "未设置")} g
+                </p>
+                {asArray(asRecord(pendingConfirmation.payload?.quality).daily_totals).map((value) => {
+                  const day = asRecord(value);
+                  return <p key={String(day.date)}>{String(day.date)}：
+                    {" "}{String(day.calories_kcal ?? "未知")} kcal
+                    {" · "}{String(day.protein_g ?? "未知")} g 蛋白质</p>;
+                })}
+                <details className="plan-preview">
+                  <summary>餐单明细（{pendingConfirmation.mealPreview.length} 餐）</summary>
+                  <ol>{pendingConfirmation.mealPreview.map((meal, index) => (
+                    <li key={`${meal.date}-${meal.mealType}-${index}`}>
+                      <span>{meal.date} · {({ breakfast: "早餐", lunch: "午餐", dinner: "晚餐", snack: "加餐" } as Record<string, string>)[meal.mealType || ""] || "餐食"}</span>
+                      <strong>{meal.mealName}</strong>
+                      <span>{meal.calories ?? "未知"} kcal · 蛋白质 {meal.protein ?? "未知"} g</span>
+                    </li>
+                  ))}</ol>
+                </details>
+              </div>
+            ) : pendingConfirmation.payload && Object.keys(pendingConfirmation.payload).length ? (
               <dl className="confirmation-payload">
                 {Object.entries(pendingConfirmation.payload).slice(0, 6).map(([key, value]) => (
                   <div key={key}>

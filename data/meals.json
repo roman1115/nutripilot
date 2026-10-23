@@ -19,6 +19,7 @@
   {
     "id": 2,
     "name": "鸡胸藜麦能量碗",
+    "aliases": ["鸡胸肉藜麦能量碗"],
     "description": "烤鸡胸搭配藜麦、彩椒和西兰花，适合希望提高蛋白质摄入的午餐。",
     "meal_types": ["lunch", "dinner"],
     "cuisines": ["轻食", "西式"],
@@ -212,7 +213,7 @@
     "tastes": ["香甜", "浓郁"],
     "health_goals": ["饱腹", "便捷"],
     "dietary_tags": ["纯素", "无乳制品"],
-    "allergens": ["花生", "麸质"],
+    "allergens": ["花生", "麸质", "大豆"],
     "ingredients": ["燕麦", "香蕉", "花生酱", "豆奶"],
     "nutrition": {"calories_kcal": 446, "protein_g": 16, "carbohydrates_g": 62, "fat_g": 17, "fiber_g": 10, "sodium_mg": 148, "serving_size": "1杯"},
     "prep_minutes": 6,

@@ -150,6 +150,9 @@ export function MealPlansView({
                 ) : null}
               </div>
 
+              {selected.qualityWarnings.length ? <div className="notice notice-warning" role="status">
+                <div>{selected.qualityWarnings.map((warning) => <p key={warning}>{warning}</p>)}</div>
+              </div> : null}
               {groupedItems.length ? (
                 <div className="plan-days">
                   {groupedItems.map(([date, items]) => (
@@ -159,6 +162,8 @@ export function MealPlansView({
                         <strong>{date}</strong>
                         <span>
                           {items.length} 餐 · {Math.round(items.reduce((sum, item) => sum + (item.calories ?? 0), 0))} kcal
+                          {" · 蛋白质 "}
+                          {Math.round(items.reduce((sum, item) => sum + (item.protein ?? 0), 0))} g
                         </span>
                       </div>
                       <div className="plan-meals">

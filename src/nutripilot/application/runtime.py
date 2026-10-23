@@ -77,14 +77,18 @@ async def start_container(container: ApplicationContainer) -> None:
             recorder=container.recorder,
             checkpointer=checkpointer,
             max_tool_steps=container.settings.agent_max_steps,
+            deadline_seconds=container.settings.agent_deadline_seconds,
+            token_budget=container.settings.agent_token_budget,
         )
-        chat_service = ChatService(graph)
+        chat_service = ChatService(graph, container.chat_service.history)
 
         container.data_store = store
         container.tool_executor = executor
         container.graph = graph
         container.chat_service = chat_service
-        container.evaluation_service = EvaluationService(EvalRunner(chat_service))
+        container.evaluation_service = EvaluationService(
+            EvalRunner(chat_service), container.run_store
+        )
         container.resource_stack = stack
     except BaseException:
         await stack.aclose()
@@ -92,6 +96,7 @@ async def start_container(container: ApplicationContainer) -> None:
 
 
 async def stop_container(container: ApplicationContainer) -> None:
+    await container.evaluation_service.close()
     stack = container.resource_stack
     container.resource_stack = None
     if stack is not None:

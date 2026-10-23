@@ -20,12 +20,20 @@ class EvalCase(BaseModel):
     expected_intent: Intent
     expected_slots: dict[str, Any] = Field(default_factory=dict)
     expected_tools: list[str] = Field(default_factory=list)
+    optional_tools: list[str] = Field(default_factory=list)
     expected_requires_confirmation: bool = False
     expected_blocked: bool = False
     expected_response_contains: list[str] = Field(default_factory=list)
     user_id: int = 1
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    expected_phase: str | None = None
+    forbidden_response_terms: list[str] = Field(default_factory=list)
+    expected_plan_start_date: str | None = None
+    follow_up_messages: list[str] = Field(default_factory=list, max_length=10)
+    expected_error_code: str | None = None
+    expected_plan_item_count: int | None = Field(default=None, ge=1, le=28)
+    expected_daily_targets_met: bool | None = None
 
 
 class EvalResult(BaseModel):
@@ -37,12 +45,17 @@ class EvalResult(BaseModel):
     checks: dict[str, bool] = Field(default_factory=dict)
     phase: str
     trace_id: str
+    trace_ids: list[str] = Field(default_factory=list)
     latency_ms: float = Field(ge=0)
     failure_reasons: list[str] = Field(default_factory=list)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
 
 
 class EvalReport(BaseModel):
     status: str = "completed"
+    owner_user_id: int = 1
+    runtime: dict[str, str] = Field(default_factory=dict)
     run_id: str = Field(default_factory=lambda: str(uuid4()))
     dataset_version: str
     prompt_versions: dict[str, str] = Field(default_factory=dict)

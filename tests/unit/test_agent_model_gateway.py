@@ -15,9 +15,11 @@ class FakeCompletions:
     def __init__(self, responses: list[Any]) -> None:
         self.responses = list(responses)
         self.models: list[str] = []
+        self.requests: list[dict[str, Any]] = []
 
     async def create(self, **kwargs: Any) -> Any:
         self.models.append(kwargs["model"])
+        self.requests.append(kwargs)
         response = self.responses.pop(0)
         if isinstance(response, BaseException):
             raise response
@@ -77,7 +79,9 @@ async def test_openai_gateway_repairs_invalid_structured_output_by_retrying() ->
 
     assert result.output.intent is Intent.MEAL_RECOMMENDATION
     assert result.attempts == 2
-    assert result.usage.total_tokens == 20
+    assert result.usage.total_tokens == 40
+    repaired = json.loads(client.chat.completions.requests[1]["messages"][1]["content"])
+    assert repaired["schema_feedback"] == [{"type": "invalid_json"}]
 
 
 @pytest.mark.asyncio

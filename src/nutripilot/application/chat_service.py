@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from typing import Any, cast
 from uuid import uuid4
 
 from nutripilot.agent.graph import AgentGraph
 from nutripilot.agent.state import AgentState, new_agent_state
+from nutripilot.application.history import (
+    ConversationMessage,
+    ConversationStore,
+    ConversationSummary,
+)
 from nutripilot.domain.enums import Phase
 
 
@@ -19,21 +26,55 @@ class InvalidConfirmationStateError(ValueError):
     pass
 
 
+class ThreadBusyError(RuntimeError):
+    pass
+
+
 class ChatService:
-    def __init__(self, graph: AgentGraph) -> None:
+    def __init__(self, graph: AgentGraph, history: ConversationStore | None = None) -> None:
         self.graph = graph
+        self.history = history
+        self._active: dict[str, tuple[int, asyncio.Task[Any]]] = {}
+
+    @contextmanager
+    def _claim(self, user_id: int, thread_id: str) -> Iterator[None]:
+        key = thread_id
+        if key in self._active:
+            raise ThreadBusyError("该会话已有请求正在执行。")
+        task = asyncio.current_task()
+        assert task is not None
+        self._active[key] = (user_id, task)
+        try:
+            yield
+        finally:
+            self._active.pop(key, None)
+
+    def cancel(self, *, thread_id: str, user_id: int) -> bool:
+        entry = self._active.get(thread_id)
+        if entry is None or entry[0] != user_id:
+            return False
+        entry[1].cancel()
+        return True
 
     @staticmethod
     def _config(thread_id: str) -> dict[str, Any]:
         return {"configurable": {"thread_id": thread_id}}
 
     async def chat(self, *, user_id: int, message: str, thread_id: str | None = None) -> AgentState:
-        state, config = await self._prepare_turn(
-            user_id=user_id,
-            message=message,
-            thread_id=thread_id,
-        )
-        return await self.graph.ainvoke(state, config)
+        thread_id = thread_id or str(uuid4())
+        with self._claim(user_id, thread_id):
+            state, config = await self._prepare_turn(
+                user_id=user_id,
+                message=message,
+                thread_id=thread_id,
+            )
+            try:
+                result = await self.graph.ainvoke(state, config)
+            except asyncio.CancelledError:
+                await self._save_checkpoint(config)
+                raise
+            await self._save_response(result)
+            return result
 
     async def stream(
         self,
@@ -41,6 +82,22 @@ class ChatService:
         user_id: int,
         message: str,
         thread_id: str | None = None,
+    ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
+        thread_id = thread_id or str(uuid4())
+        with self._claim(user_id, thread_id):
+            try:
+                async for event in self._stream_turn(
+                    user_id=user_id,
+                    message=message,
+                    thread_id=thread_id,
+                ):
+                    yield event
+            except asyncio.CancelledError:
+                await self._save_checkpoint(self._config(thread_id))
+                raise
+
+    async def _stream_turn(
+        self, *, user_id: int, message: str, thread_id: str
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
         state, config = await self._prepare_turn(
             user_id=user_id,
@@ -72,6 +129,7 @@ class ChatService:
         final = await self.graph.aget_state(config)
         if final is None:
             raise RuntimeError("The Agent graph completed without a checkpointed state.")
+        await self._save_response(final)
         yield "completed", cast("dict[str, Any]", final)
 
     async def _prepare_turn(
@@ -87,10 +145,23 @@ class ChatService:
         if previous is not None and previous.get("user_id") != user_id:
             raise ThreadNotFoundError(thread_id)
         state = new_agent_state(message=message, user_id=user_id, thread_id=thread_id)
+        if self.history:
+            await asyncio.to_thread(
+                self.history.append,
+                user_id,
+                thread_id,
+                ConversationMessage(id=f"{state['turn_id']}:user", role="user", content=message),
+            )
         if previous:
             state["slots"] = dict(previous.get("slots", {}))
             state["conversation_summary"] = previous.get("conversation_summary")
             state["candidate_ids"] = list(previous.get("candidate_ids", []))
+            if previous.get("phase") == Phase.CLARIFY.value:
+                state["clarification_intent"] = previous.get("intent")
+                state["conversation_summary"] = (
+                    f"上一轮意图：{previous.get('intent')}。"
+                    f"上一轮追问：{(previous.get('final_response') or {}).get('message', '')}"
+                )
         return state, config
 
     async def confirm(
@@ -100,6 +171,22 @@ class ChatService:
         user_id: int,
         approved: bool,
         confirmation_id: str | None = None,
+    ) -> AgentState:
+        with self._claim(user_id, thread_id):
+            return await self._confirm(
+                thread_id=thread_id,
+                user_id=user_id,
+                approved=approved,
+                confirmation_id=confirmation_id,
+            )
+
+    async def _confirm(
+        self,
+        *,
+        thread_id: str,
+        user_id: int,
+        approved: bool,
+        confirmation_id: str | None,
     ) -> AgentState:
         config = self._config(thread_id)
         previous = await self.graph.aget_state(config)
@@ -121,10 +208,69 @@ class ChatService:
             phase=Phase.AWAITING_CONFIRMATION.value,
             confirmation_decision=approved,
         )
-        return await self.graph.ainvoke(update, config)
+        if self.history:
+            await asyncio.to_thread(
+                self.history.append,
+                user_id,
+                thread_id,
+                ConversationMessage(
+                    id=f"{previous['turn_id']}:decision",
+                    role="system",
+                    content="已确认操作。" if approved else "已拒绝本次写入操作。",
+                ),
+            )
+        try:
+            result = await self.graph.ainvoke(update, config)
+        except asyncio.CancelledError:
+            await self._save_checkpoint(config, suffix="confirmation")
+            raise
+        await self._save_response(result, suffix="confirmation")
+        return result
 
     async def get_thread(self, *, thread_id: str, user_id: int) -> AgentState:
         state = await self.graph.aget_state(self._config(thread_id))
         if state is None or state.get("user_id") != user_id:
             raise ThreadNotFoundError(thread_id)
         return state
+
+    async def list_threads(
+        self, *, user_id: int, query: str = "", limit: int = 30, offset: int = 0
+    ) -> list[ConversationSummary]:
+        if self.history is None:
+            return []
+        return await asyncio.to_thread(self.history.list_threads, user_id, query, limit, offset)
+
+    async def messages(
+        self, *, user_id: int, thread_id: str, limit: int = 100, offset: int = 0
+    ) -> list[ConversationMessage]:
+        await self.get_thread(thread_id=thread_id, user_id=user_id)
+        if self.history is None:
+            return []
+        return await asyncio.to_thread(self.history.messages, user_id, thread_id, limit, offset)
+
+    async def _save_checkpoint(self, config: dict[str, Any], suffix: str = "response") -> None:
+        state = await self.graph.aget_state(config)
+        if state is not None:
+            await self._save_response(state, suffix=suffix)
+
+    async def _save_response(self, state: AgentState, suffix: str = "response") -> None:
+        if self.history is None:
+            return
+        response = state.get("final_response") or {}
+        content = response.get("message") or (
+            "计划已准备，请核对后确认。"
+            if state.get("requires_confirmation")
+            else "本轮请求已结束。"
+        )
+        await asyncio.to_thread(
+            self.history.append,
+            state["user_id"],
+            state["thread_id"],
+            ConversationMessage(
+                id=f"{state['turn_id']}:{suffix}",
+                role="assistant",
+                content=str(content),
+                trace_id=state["trace_id"],
+                response=response,
+            ),
+        )

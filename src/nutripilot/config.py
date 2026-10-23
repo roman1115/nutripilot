@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
     rerank_device: str | None = None
     agent_max_steps: int = Field(default=8, ge=1, le=20)
+    agent_deadline_seconds: float = Field(default=90, gt=0, le=600)
+    agent_token_budget: int = Field(default=24000, ge=1, le=1_000_000)
+    run_store_path: str | None = None
+    api_access_tokens: dict[str, int] = Field(default_factory=dict)
+    api_rate_limit_per_minute: int = Field(default=60, ge=1, le=10000)
     database_url: str = "postgresql+asyncpg://nutripilot:nutripilot@localhost:5432/nutripilot"
     redis_url: str = "redis://localhost:6379/0"
     qdrant_url: str = "http://localhost:6333"
@@ -51,6 +56,12 @@ class Settings(BaseSettings):
     def validate_model_credentials(self) -> Settings:
         if self.model_provider == "openai" and not self.model_api_key:
             raise ValueError("MODEL_API_KEY is required when MODEL_PROVIDER=openai")
+        if any(len(token) < 32 or user_id < 1 for token, user_id in self.api_access_tokens.items()):
+            raise ValueError(
+                "API_ACCESS_TOKENS requires 32+ character tokens and positive user IDs"
+            )
+        if self.app_mode == "production" and not self.api_access_tokens:
+            raise ValueError("API_ACCESS_TOKENS is required in production")
         return self
 
     @property

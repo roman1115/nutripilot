@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from collections import defaultdict, deque
 from collections.abc import Callable
+from contextlib import suppress
+from datetime import date, timedelta
 from typing import Any
 
 from pydantic import BaseModel
@@ -91,7 +93,19 @@ class FakeModelGateway:
 
         if any(word in message for word in ("诊断", "处方", "药物", "催吐", "绝食")):
             intent = Intent.HEALTH_RISK
-        elif any(word in message for word in ("一周", "一星期", "七天", "饮食计划", "餐单")):
+        elif any(
+            word in message
+            for word in (
+                "一周",
+                "一星期",
+                "七天",
+                "7天",
+                "饮食计划",
+                "餐单",
+                "一天",
+                "一日",
+            )
+        ):
             intent = Intent.MEAL_PLAN
             slots["plan_range"] = (
                 "one_day"
@@ -112,11 +126,21 @@ class FakeModelGateway:
         missing: list[str] = []
         if intent is Intent.MEAL_RECOMMENDATION and "meal_type" not in slots:
             missing.append("meal_type")
-        if intent is Intent.NUTRITION_QUERY and "food_name" not in slots:
+        if (
+            intent is Intent.OTHER
+            and payload.get("clarification_intent") == Intent.NUTRITION_QUERY.value
+        ):
+            intent = Intent.NUTRITION_QUERY
+            slots["food_name"] = message.strip("，。？? ")
+        elif (
+            intent is Intent.OTHER and payload.get("clarification_intent") == Intent.MEAL_PLAN.value
+        ):
+            intent = Intent.MEAL_PLAN
+        if intent is Intent.NUTRITION_QUERY:
             food_name = _extract_food_name(message)
             if food_name:
                 slots["food_name"] = food_name
-            else:
+            elif not slots.get("food_name"):
                 missing.append("food_name")
         if intent is Intent.PROFILE_UPDATE and not any(
             key in slots for key in ("allergens", "preferences", "excluded_ingredients")
@@ -184,12 +208,23 @@ class FakeModelGateway:
                     else _feedback_excluded_ids(results),
                     "max_calories_kcal": slots.get("max_calories_kcal"),
                     "max_price_cny": slots.get("max_price_cny"),
-                    "limit": 10 if intent == Intent.MEAL_PLAN.value else 3,
+                    "limit": 20 if intent == Intent.MEAL_PLAN.value else 3,
                 }
             elif intent == Intent.MEAL_PLAN.value and "create_meal_plan" not in called:
                 try:
                     plan = PlanBuilder().build(
-                        PlanSpec.from_slots(slots),
+                        PlanSpec.from_slots(
+                            slots,
+                            profile=next(
+                                (
+                                    result["data"]
+                                    for result in results
+                                    if result.get("tool_name") == "get_user_profile"
+                                    and result.get("status") == "success"
+                                ),
+                                {},
+                            ),
+                        ),
                         candidate_meals_from_results(results),
                     )
                 except PlanBuildError:
@@ -315,11 +350,23 @@ def _extract_slots(message: str) -> dict[str, Any]:
         slots["max_calories_kcal"] = float(calories.group(1))
     if "北京" in message:
         slots["location"] = "北京"
+    start_date = re.search(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)", message)
+    if start_date:
+        with suppress(ValueError):
+            slots["start_date"] = date.fromisoformat(start_date.group(1)).isoformat()
+    else:
+        for term, offset in (("后天", 2), ("明天", 1), ("今天", 0)):
+            if term in message:
+                slots["start_date"] = (date.today() + timedelta(days=offset)).isoformat()
+                break
     return slots
 
 
 def _extract_food_name(message: str) -> str | None:
     match = re.search(r"(.{1,20}?)(?:有多少|多少)(?:热量|蛋白质|脂肪|碳水)", message)
+    if match:
+        return match.group(1).strip("，。？? ")
+    match = re.search(r"(?:查询|查一下|查查)?(.{1,120}?)(?:的营养|营养信息)", message)
     if match:
         return match.group(1).strip("，。？? ")
     return None

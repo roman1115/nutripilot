@@ -118,10 +118,14 @@ class ToolExecutor:
             return result
 
         retries = 0
+        tool_deadline = time.monotonic() + timeout
         while True:
             try:
+                remaining = tool_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
                 raw = await asyncio.wait_for(
-                    definition.handler(arguments, context), timeout=timeout
+                    definition.handler(arguments, context), timeout=remaining
                 )
                 result = self._normalise_success(call, definition, raw, retries)
                 break
@@ -139,7 +143,8 @@ class ToolExecutor:
                     definition=definition,
                     status=ToolStatus.CANCELLED,
                 )
-                break
+                await self._trace(call, context, definition, result)
+                raise
             except Exception:
                 error = ToolRuntimeError(
                     "TOOL_INTERNAL_ERROR",

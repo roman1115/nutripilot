@@ -1,5 +1,6 @@
 import type {
   ChatStreamEvent,
+  ConversationSummary,
   EvaluationRun,
   FeedbackType,
   MealFeedback,
@@ -15,6 +16,26 @@ import { asArray, asRecord, firstNumber, firstString } from "./format";
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim();
 export const API_BASE_URL = (configuredBaseUrl || "http://localhost:8000").replace(/\/$/, "");
 export const DEMO_USER_ID = import.meta.env.VITE_DEMO_USER_ID?.trim() || "1";
+
+function activeUserId(): number {
+  return Number(sessionStorage.getItem("nutripilot.userId") || DEMO_USER_ID);
+}
+
+export async function authenticateAccessToken(token: string): Promise<void> {
+  const response = await fetch(endpoint("/api/v1/profile"), {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw await readError(response);
+  const profile = asRecord(await response.json());
+  const userId = String(profile.user_id);
+  if (sessionStorage.getItem("nutripilot.userId") !== userId) {
+    localStorage.removeItem("nutripilot.threadId");
+    localStorage.removeItem("nutripilot.traceIds");
+  }
+  sessionStorage.setItem("nutripilot.accessToken", token);
+  sessionStorage.setItem("nutripilot.userId", userId);
+}
 
 export class ApiError extends Error {
   readonly status?: number;
@@ -33,10 +54,12 @@ function endpoint(path: string): string {
 }
 
 function baseHeaders(): HeadersInit {
+  const token = sessionStorage.getItem("nutripilot.accessToken");
   return {
     Accept: "application/json",
     "Content-Type": "application/json",
-    "X-User-ID": DEMO_USER_ID,
+    "X-User-ID": String(activeUserId()),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }
 
@@ -98,10 +121,18 @@ export async function checkHealth(signal?: AbortSignal): Promise<RuntimeStatus |
       rerankModel: firstString(source.rerank_model) || "unknown",
       storage: firstString(source.storage) || "unknown",
       mcpTransport: firstString(source.mcp_transport) || "unknown",
+      authRequired: source.auth_required === true,
     };
   } catch {
     return null;
   }
+}
+
+export async function cancelChat(threadId: string): Promise<void> {
+  await apiRequest(`/api/v1/chat/${encodeURIComponent(threadId)}/cancel`, {
+    method: "POST",
+    signal: AbortSignal.timeout(5000),
+  });
 }
 
 function parseSseBlock(block: string): ChatStreamEvent | null {
@@ -174,7 +205,7 @@ export async function streamChat(
       headers: { ...baseHeaders(), Accept: "text/event-stream, application/json" },
       body: JSON.stringify({
         thread_id: request.threadId,
-        user_id: Number.isNaN(Number(DEMO_USER_ID)) ? DEMO_USER_ID : Number(DEMO_USER_ID),
+        user_id: activeUserId(),
         message: request.message,
       }),
       signal,
@@ -226,15 +257,38 @@ export async function confirmChat(
       approved,
       confirmation_id: confirmationId,
       idempotency_key: idempotencyKey,
-      user_id: Number.isNaN(Number(DEMO_USER_ID)) ? DEMO_USER_ID : Number(DEMO_USER_ID),
+      user_id: activeUserId(),
     }),
   });
 }
 
 export async function getThread(threadId: string): Promise<Record<string, unknown>> {
   return apiRequest<Record<string, unknown>>(
-    `/api/v1/threads/${encodeURIComponent(threadId)}`,
+    `/api/v1/threads/${encodeURIComponent(threadId)}?user_id=${activeUserId()}`,
   );
+}
+
+export async function getConversations(query: string, offset = 0): Promise<ConversationSummary[]> {
+  const value = await apiRequest<{ items: Array<Record<string, unknown>> }>(
+    `/api/v1/threads?q=${encodeURIComponent(query)}&limit=30&offset=${offset}`,
+  );
+  return value.items.map((item) => ({
+    threadId: String(item.thread_id),
+    title: String(item.title),
+    updatedAt: String(item.updated_at),
+    messageCount: Number(item.message_count),
+  }));
+}
+
+export async function getConversationMessages(threadId: string): Promise<Array<Record<string, unknown>>> {
+  const messages: Array<Record<string, unknown>> = [];
+  for (let offset = 0; ; offset += 200) {
+    const page = await apiRequest<{ items: Array<Record<string, unknown>> }>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/messages?limit=200&offset=${offset}`,
+    );
+    messages.push(...page.items);
+    if (page.items.length < 200) return messages;
+  }
 }
 
 function stringList(...values: unknown[]): string[] {
@@ -254,6 +308,7 @@ export function normalizeProfile(value: unknown): UserProfile {
     allergens: stringList(source.allergens, source.allergies),
     dietaryRestrictions: stringList(source.dietary_restrictions, source.restrictions),
     dailyCalorieTarget: firstNumber(source.daily_calorie_target, source.calorie_target),
+    dailyProteinTarget: firstNumber(source.daily_protein_target_g),
     location: firstString(source.location, source.city) || "",
     updatedAt: firstString(source.updated_at),
   };
@@ -275,14 +330,15 @@ export async function updateProfile(profile: UserProfile): Promise<UserProfile> 
       avoidances: profile.avoidances,
       allergens: profile.allergens,
       dietary_restrictions: profile.dietaryRestrictions,
-      daily_calorie_target: profile.dailyCalorieTarget,
+      daily_calorie_target: profile.dailyCalorieTarget ?? null,
+      daily_protein_target_g: profile.dailyProteinTarget ?? null,
       location: profile.location || undefined,
     }),
   });
   return normalizeProfile(value);
 }
 
-function normalizePlanItem(value: unknown): MealPlanItem {
+export function normalizePlanItem(value: unknown): MealPlanItem {
   const source = asRecord(value);
   const meal = asRecord(source.meal);
   return {
@@ -290,10 +346,11 @@ function normalizePlanItem(value: unknown): MealPlanItem {
     mealId:
       (source.meal_id as string | number | undefined) ??
       (meal.id as string | number | undefined),
-    date: firstString(source.date, source.plan_date),
+    date: firstString(source.date, source.meal_date, source.plan_date),
     mealType: firstString(source.meal_type, source.mealType, source.slot),
     mealName: firstString(source.meal_name, source.name, meal.name, meal.title) || "未命名餐食",
     calories: firstNumber(source.calories, source.calories_kcal, meal.calories, meal.calories_kcal),
+    protein: firstNumber(source.protein_g),
     status: firstString(source.status),
   };
 }
@@ -308,6 +365,7 @@ function normalizePlan(value: unknown, index: number): MealPlan {
     endDate: firstString(source.end_date, source.endDate),
     createdAt: firstString(source.created_at, source.createdAt),
     totalCalories: firstNumber(source.total_calories, source.totalCalories),
+    qualityWarnings: stringList(asRecord(source.quality).warnings),
     items: asArray(source.items ?? source.meals).map(normalizePlanItem),
   };
 }

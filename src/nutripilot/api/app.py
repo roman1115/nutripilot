@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from nutripilot.agent.state import AgentState
+from nutripilot.api.access import AccessMiddleware
 from nutripilot.api.schemas import (
     ChatRequest,
     ChatResponse,
@@ -28,8 +29,10 @@ from nutripilot.application import (
 )
 from nutripilot.application.chat_service import (
     InvalidConfirmationStateError,
+    ThreadBusyError,
     ThreadNotFoundError,
 )
+from nutripilot.application.evaluation_service import EvaluationBusyError
 from nutripilot.application.runtime import start_container, stop_container
 from nutripilot.evaluation import EvalReport, load_dataset
 from nutripilot.paths import project_root
@@ -54,6 +57,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.container = container or build_container()
+    app.add_middleware(AccessMiddleware, settings=app.state.container.settings)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=app.state.container.settings.web_origins,
@@ -65,18 +69,26 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     def get_container(request: Request) -> ApplicationContainer:
         return cast("ApplicationContainer", request.app.state.container)
 
-    def get_user_id(x_user_id: int = Header(default=1, alias="X-User-ID", gt=0)) -> int:
-        return x_user_id
+    def get_user_id(
+        request: Request, x_user_id: int = Header(default=1, alias="X-User-ID", gt=0)
+    ) -> int:
+        return cast("int", getattr(request.state, "user_id", x_user_id))
+
+    def ensure_owner(request: Request, user_id: int) -> None:
+        identity = getattr(request.state, "user_id", None)
+        if identity is not None and identity != user_id:
+            raise HTTPException(status_code=403, detail="User identity mismatch")
 
     @app.get("/health/live", tags=["health"])
     async def live() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/health/ready", tags=["health"])
-    async def ready() -> dict[str, str]:
+    async def ready() -> dict[str, Any]:
         active = app.state.container.settings
         return {
             "status": "ready",
+            "auth_required": bool(active.api_access_tokens),
             "app_mode": active.app_mode,
             "model_provider": active.model_provider,
             "model_name": active.model_name if not active.uses_fake_model else "fake-nutripilot-v1",
@@ -93,8 +105,10 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     @app.post("/api/v1/chat", response_model=ChatResponse, tags=["chat"])
     async def chat(
         payload: ChatRequest,
+        request: Request,
         container: ApplicationContainer = Depends(get_container),
     ) -> ChatResponse:
+        ensure_owner(request, payload.user_id)
         try:
             state = await container.chat_service.chat(
                 user_id=payload.user_id,
@@ -103,13 +117,18 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
             )
         except ThreadNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Thread not found") from exc
+        except ThreadBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return ChatResponse.from_state(state)
 
     @app.post("/api/v1/chat/stream", tags=["chat"])
     async def chat_stream(
         payload: ChatRequest,
+        request: Request,
         container: ApplicationContainer = Depends(get_container),
     ) -> StreamingResponse:
+        ensure_owner(request, payload.user_id)
+
         async def events() -> AsyncIterator[str]:
             try:
                 async for event_type, data in container.chat_service.stream(
@@ -127,6 +146,8 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
                         yield _sse("status" if event_type == "started" else event_type, data)
             except ThreadNotFoundError:
                 yield _sse("error", {"message": "Thread not found"})
+            except ThreadBusyError:
+                yield _sse("error", {"message": "该会话已有请求正在执行，请等待或停止。"})
 
         return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -134,8 +155,10 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     async def confirm(
         thread_id: str,
         payload: ConfirmationRequest,
+        request: Request,
         container: ApplicationContainer = Depends(get_container),
     ) -> ChatResponse:
+        ensure_owner(request, payload.user_id)
         try:
             state = await container.chat_service.confirm(
                 thread_id=thread_id,
@@ -147,14 +170,55 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Thread not found") from exc
         except InvalidConfirmationStateError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ThreadBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return ChatResponse.from_state(state)
+
+    @app.post("/api/v1/chat/{thread_id}/cancel", tags=["chat"])
+    async def cancel(
+        thread_id: str,
+        user_id: int = Depends(get_user_id),
+        container: ApplicationContainer = Depends(get_container),
+    ) -> dict[str, bool]:
+        return {"cancelled": container.chat_service.cancel(thread_id=thread_id, user_id=user_id)}
+
+    @app.get("/api/v1/threads", tags=["chat"])
+    async def threads(
+        user_id: int = Depends(get_user_id),
+        container: ApplicationContainer = Depends(get_container),
+        q: str = Query(default="", max_length=200),
+        limit: int = Query(default=30, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
+        items = await container.chat_service.list_threads(
+            user_id=user_id, query=q.strip(), limit=limit, offset=offset
+        )
+        return {"items": [item.model_dump(mode="json") for item in items]}
+
+    @app.get("/api/v1/threads/{thread_id}/messages", tags=["chat"])
+    async def thread_messages(
+        thread_id: str,
+        user_id: int = Depends(get_user_id),
+        container: ApplicationContainer = Depends(get_container),
+        limit: int = Query(default=100, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
+        try:
+            items = await container.chat_service.messages(
+                user_id=user_id, thread_id=thread_id, limit=limit, offset=offset
+            )
+        except ThreadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Thread not found") from exc
+        return {"items": [item.model_dump(mode="json") for item in items]}
 
     @app.get("/api/v1/threads/{thread_id}", response_model=ChatResponse, tags=["chat"])
     async def thread(
         thread_id: str,
+        request: Request,
         container: ApplicationContainer = Depends(get_container),
         user_id: int = Query(default=1, gt=0),
     ) -> ChatResponse:
+        ensure_owner(request, user_id)
         try:
             state = await container.chat_service.get_thread(thread_id=thread_id, user_id=user_id)
         except ThreadNotFoundError as exc:
@@ -164,13 +228,18 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     @app.get("/api/v1/traces/{trace_id}", tags=["traces"])
     async def trace(
         trace_id: str,
+        request: Request,
         container: ApplicationContainer = Depends(get_container),
     ) -> dict[str, object]:
+        events = container.recorder.get_trace(trace_id)
+        identity = getattr(request.state, "user_id", None)
+        if identity is not None and (
+            not events or any(event.user_id != identity for event in events)
+        ):
+            raise HTTPException(status_code=404, detail="Trace not found")
         return {
             "trace_id": trace_id,
-            "events": [
-                event.model_dump(mode="json") for event in container.recorder.get_trace(trace_id)
-            ],
+            "events": [event.model_dump(mode="json") for event in events],
         }
 
     @app.get("/api/v1/profile", response_model=UserProfile, tags=["profile"])
@@ -209,6 +278,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
                         "meal_id": item.meal_id,
                         "meal_name": meal.name if meal else f"餐食 {item.meal_id}",
                         "calories": meal.nutrition.calories_kcal if meal else None,
+                        "protein_g": meal.nutrition.protein_g if meal else None,
                         "note": item.note,
                     }
                 )
@@ -216,6 +286,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
                 {
                     **plan.model_dump(mode="json", exclude={"items"}),
                     "status": "active",
+                    "end_date": max(item.meal_date for item in plan.items).isoformat(),
                     "items": items,
                 }
             )
@@ -245,6 +316,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     @app.post("/api/v1/evaluations/run", response_model=EvalReport, tags=["evaluation"])
     async def run_evaluation(
         payload: EvaluationRequest,
+        user_id: int = Depends(get_user_id),
         container: ApplicationContainer = Depends(get_container),
     ) -> EvalReport:
         if payload.cases is None:
@@ -253,10 +325,16 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
         else:
             cases = payload.cases
             dataset_version = payload.dataset_version or "api-v1"
-        return container.evaluation_service.start(
-            cases,
-            dataset_version=dataset_version,
-        )
+        if container.settings.api_access_tokens and any(case.user_id != user_id for case in cases):
+            cases = [case.model_copy(update={"user_id": user_id}) for case in cases]
+        try:
+            return container.evaluation_service.start(
+                cases,
+                dataset_version=dataset_version,
+                user_id=user_id,
+            )
+        except EvaluationBusyError as exc:
+            raise HTTPException(status_code=409, detail="已有评测在运行，请等待完成") from exc
 
     @app.get(
         "/api/v1/evaluations/{run_id}",
@@ -265,10 +343,13 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     )
     async def get_evaluation(
         run_id: str,
+        request: Request,
         container: ApplicationContainer = Depends(get_container),
     ) -> EvalReport:
         try:
-            return container.evaluation_service.get(run_id)
+            return container.evaluation_service.get(
+                run_id, user_id=getattr(request.state, "user_id", None)
+            )
         except EvaluationNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Evaluation run not found") from exc
 

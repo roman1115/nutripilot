@@ -11,16 +11,19 @@ from nutripilot.agent.grounding import ground_recommendation_facts
 from nutripilot.agent.state import AgentState
 from nutripilot.domain.enums import Phase
 from nutripilot.domain.models import FinalResponse
-from nutripilot.model_gateway import ModelGateway
+from nutripilot.model_gateway import ModelGateway, ModelUsage
+from nutripilot.model_gateway.budget import ExecutionLimitExceeded
 from nutripilot.tracing import TraceRecorder
 
 
 class RecommendationAgent:
     name = "RecommendationAgent"
-    prompt_version = "recommendation-v1"
+    prompt_version = "recommendation-v2"
     system_prompt = (
         "你是推荐生成 Worker。只能使用工具结果中的餐食、营养数据和引用，"
         "不得虚构 meal_id，不得给出医疗诊断或治疗建议，必须返回结构化响应。"
+        "用户的过敏原只能来自 get_user_profile；餐食 allergens 描述食物本身，"
+        "不能推断用户过敏。没有画像事实时不得声称用户有某种过敏或疾病。"
     )
     reads = frozenset({"intent", "slots", "tool_results", "candidate_ids", "citations"})
     writes = frozenset({"final_response"})
@@ -49,16 +52,24 @@ class RecommendationAgent:
             response = ground_recommendation_facts(
                 result.output.response,
                 state.get("tool_results", []),
+                state.get("slots", {}),
             )
+            if state.get("plan_quality"):
+                response.warnings = list(
+                    dict.fromkeys(
+                        [
+                            *response.warnings,
+                            *(state.get("plan_quality") or {}).get("warnings", []),
+                        ]
+                    )
+                )
             record_worker_event(
                 self.recorder,
                 state,
                 worker=self.name,
                 event_type="model.completed",
                 payload={
-                    "recommendation_ids": [
-                        item.meal_id for item in response.recommendations
-                    ],
+                    "recommendation_ids": [item.meal_id for item in response.recommendations],
                     "model": result.model,
                     "attempts": result.attempts,
                     "used_fallback_model": result.used_fallback,
@@ -76,15 +87,23 @@ class RecommendationAgent:
                     self.name: self.prompt_version,
                 },
             }
+        except ExecutionLimitExceeded:
+            raise
         except Exception as exc:
             response = _fallback_response(state)
+            usage = getattr(exc, "usage", ModelUsage())
             record_worker_event(
                 self.recorder,
                 state,
                 worker=self.name,
                 event_type="model.fallback",
-                payload={"error_type": type(exc).__name__},
+                payload={
+                    "error_type": type(exc).__name__,
+                    "error_code": getattr(exc, "code", "MODEL_OR_SCHEMA_ERROR"),
+                },
                 duration_ms=(time.monotonic() - started) * 1000,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
             )
             return {
                 "phase": Phase.RECOMMENDATION.value,

@@ -24,7 +24,7 @@ dependencies = [
   "pydantic-settings>=2.10,<3",
   "psycopg[binary]>=3.2,<4",
   "python-multipart>=0.0.20,<1",
-  "qdrant-client>=1.14,<2",
+  "qdrant-client>=1.14,<1.15",
   "redis>=6,<8",
   "sqlalchemy[asyncio]>=2.0.40,<3",
   "structlog>=25.1,<26",
@@ -50,6 +50,7 @@ dev = [
   "respx>=0.22,<1",
   "ruff>=0.12,<1",
 ]
+e2e = ["playwright>=1.55,<2"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nutripilot", "apps"]

@@ -104,8 +104,14 @@ async def _safe_call(
     try:
         return await service.call_tool(name, arguments)
     except ToolRuntimeError as exc:
-        # MCP receives a concise controlled error; internal exceptions never cross the boundary.
-        raise ValueError(f"{exc.code}: {exc.safe_message}") from None
+        return {
+            "_tool_error": {
+                "code": exc.code,
+                "message": exc.safe_message,
+                "retryable": exc.retryable,
+                "details": exc.details,
+            }
+        }
 
 
 class BearerTokenMiddleware:

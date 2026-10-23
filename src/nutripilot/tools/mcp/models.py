@@ -23,7 +23,7 @@ class SearchMealsMCPArgs(BaseModel):
     min_protein_g: float | None = Field(default=None, ge=0)
     max_prep_minutes: int | None = Field(default=None, ge=0)
     max_price_cny: float | None = Field(default=None, ge=0)
-    limit: int = Field(default=5, ge=1, le=10)
+    limit: int = Field(default=5, ge=1, le=20)
 
 
 class MCPMealHit(BaseModel):
@@ -39,6 +39,9 @@ class MCPMealHit(BaseModel):
     allergens: list[str]
     prep_minutes: int
     price_cny: float
+    tastes: list[str] = Field(default_factory=list)
+    cuisines: list[str] = Field(default_factory=list)
+    dietary_tags: list[str] = Field(default_factory=list)
     reasons: list[str]
     citation: dict[str, Any]
 
@@ -47,7 +50,7 @@ class SearchMealsMCPResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     query: str
-    hits: list[MCPMealHit] = Field(max_length=10)
+    hits: list[MCPMealHit] = Field(max_length=20)
     total_candidates: int
     retrieval_version: str
 

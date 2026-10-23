@@ -1,4 +1,8 @@
 .git
+.env
+.env.*
+.runtime
+.codex
 .venv
 __pycache__
 .pytest_cache

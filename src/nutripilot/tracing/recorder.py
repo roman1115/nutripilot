@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 from threading import Lock
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from nutripilot.tracing.models import TraceEvent
+
+if TYPE_CHECKING:
+    from nutripilot.infrastructure.run_store import SQLiteRunStore
 
 _SENSITIVE_KEYS = {"api_key", "authorization", "password", "token", "secret"}
 
@@ -98,3 +101,44 @@ class NullTraceRecorder:
 
     def get_trace(self, trace_id: str) -> list[TraceEvent]:
         return []
+
+
+class SQLiteTraceRecorder:
+    def __init__(self, store: SQLiteRunStore) -> None:
+        self.store = store
+
+    def record(
+        self,
+        *,
+        trace_id: str,
+        thread_id: str,
+        turn_id: str,
+        user_id: int,
+        event_type: str,
+        component: str,
+        phase_before: str | None = None,
+        phase_after: str | None = None,
+        payload: dict[str, Any] | None = None,
+        duration_ms: float = 0,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+    ) -> TraceEvent:
+        return self.store.append_trace(
+            {
+                "trace_id": trace_id,
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "user_id": user_id,
+                "event_type": event_type,
+                "component": component,
+                "phase_before": phase_before,
+                "phase_after": phase_after,
+                "payload": _sanitize(payload or {}),
+                "duration_ms": duration_ms,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }
+        )
+
+    def get_trace(self, trace_id: str) -> list[TraceEvent]:
+        return self.store.get_trace(trace_id)

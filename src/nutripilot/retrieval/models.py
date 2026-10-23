@@ -10,7 +10,7 @@ def _normalise_terms(values: list[str]) -> list[str]:
 
 
 class NutritionFacts(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     calories_kcal: float = Field(ge=0)
     protein_g: float = Field(ge=0)
@@ -18,7 +18,7 @@ class NutritionFacts(BaseModel):
     fat_g: float = Field(ge=0)
     fiber_g: float = Field(default=0, ge=0)
     sodium_mg: float = Field(default=0, ge=0)
-    serving_size: str = "1 serving"
+    serving_size: str = Field(default="1 serving", min_length=1)
 
 
 class Meal(BaseModel):
@@ -26,6 +26,7 @@ class Meal(BaseModel):
 
     id: int = Field(gt=0)
     name: str = Field(min_length=1, max_length=120)
+    aliases: list[str] = Field(default_factory=list)
     description: str = Field(min_length=1, max_length=1000)
     meal_types: list[str] = Field(min_length=1)
     cuisines: list[str] = Field(default_factory=list)
@@ -37,7 +38,7 @@ class Meal(BaseModel):
     nutrition: NutritionFacts
     prep_minutes: int = Field(ge=0, le=1440)
     price_cny: float = Field(ge=0)
-    source: str
+    source: str = Field(min_length=1)
     source_uri: str | None = None
     data_version: str = "2026.07"
 

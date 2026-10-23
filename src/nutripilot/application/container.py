@@ -14,6 +14,8 @@ from nutripilot.application.evaluation_service import EvaluationService
 from nutripilot.config import Settings, get_settings
 from nutripilot.evaluation import EvalRunner
 from nutripilot.infrastructure import InMemoryDataStore, StaticWeatherProvider, load_seed_store
+from nutripilot.infrastructure.history import InMemoryConversationStore, SQLiteConversationStore
+from nutripilot.infrastructure.run_store import SQLiteRunStore
 from nutripilot.model_gateway import (
     FakeModelGateway,
     ModelGateway,
@@ -37,6 +39,7 @@ from nutripilot.tools.mcp import (
 )
 from nutripilot.tools.mcp.transport import MCPTransport
 from nutripilot.tracing import InMemoryTraceRecorder, TraceRecorder
+from nutripilot.tracing.recorder import SQLiteTraceRecorder
 
 
 @dataclass(slots=True)
@@ -51,6 +54,7 @@ class ApplicationContainer:
     evaluation_service: EvaluationService
     resource_stack: AsyncExitStack | None = None
     runtime_mode: str = "demo"
+    run_store: SQLiteRunStore | None = None
 
 
 def build_container(
@@ -63,7 +67,15 @@ def build_container(
 ) -> ApplicationContainer:
     selected_settings = settings or get_settings()
     selected_gateway = gateway or _build_gateway(selected_settings)
-    selected_recorder = recorder or InMemoryTraceRecorder()
+    run_path = selected_settings.run_store_path
+    if not run_path and selected_settings.uses_external_infrastructure:
+        run_path = str(project_root() / ".runtime" / "observability.sqlite3")
+    run_store = SQLiteRunStore(run_path) if run_path else None
+    if run_store:
+        run_store.interrupt_running_reports()
+    selected_recorder = recorder or (
+        SQLiteTraceRecorder(run_store) if run_store else InMemoryTraceRecorder()
+    )
     selected_store = data_store or load_seed_store(project_root() / "data")
     selected_executor = tool_executor or _build_tool_executor(selected_store, selected_settings)
     graph = create_agent_graph(
@@ -71,8 +83,12 @@ def build_container(
         tool_executor=selected_executor,
         recorder=selected_recorder,
         max_tool_steps=selected_settings.agent_max_steps,
+        deadline_seconds=selected_settings.agent_deadline_seconds,
+        token_budget=selected_settings.agent_token_budget,
     )
-    chat_service = ChatService(graph)
+    chat_service = ChatService(
+        graph, SQLiteConversationStore(run_store) if run_store else InMemoryConversationStore()
+    )
     return ApplicationContainer(
         settings=selected_settings,
         gateway=selected_gateway,
@@ -81,8 +97,9 @@ def build_container(
         tool_executor=selected_executor,
         graph=graph,
         chat_service=chat_service,
-        evaluation_service=EvaluationService(EvalRunner(chat_service)),
+        evaluation_service=EvaluationService(EvalRunner(chat_service), run_store),
         runtime_mode=selected_settings.app_mode,
+        run_store=run_store,
     )
 
 

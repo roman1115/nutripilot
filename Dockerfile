@@ -25,6 +25,7 @@ RUN pip install --upgrade pip uv==0.11.32 \
          uv sync --frozen --no-dev --no-editable; \
        fi \
     && useradd --create-home --uid 10001 nutripilot \
+    && mkdir -p /app/.runtime \
     && chown -R nutripilot:nutripilot /app
 
 USER nutripilot
