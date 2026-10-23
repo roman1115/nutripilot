@@ -1,7 +1,11 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import {
   Activity,
-  Bot,
+  Salad,
+  ArrowUpRight,
+  ChevronDown,
+  ChevronRight,
+  Search,
   BrainCircuit,
   Check,
   CheckCircle2,
@@ -15,14 +19,13 @@ import {
   RotateCcw,
   Send,
   ShieldCheck,
-  Sparkles,
   Square,
   UserRound,
   Utensils,
   Wrench,
   X,
 } from "lucide-react";
-import { EmptyState, ErrorNotice } from "../../components/Common";
+import { ErrorNotice } from "../../components/Common";
 import {
   ApiError, cancelChat, confirmChat, getConversationMessages, getConversations,
   getThread, getTrace, streamChat,
@@ -42,9 +45,12 @@ import type {
 } from "../../types";
 
 const promptSuggestions = [
-  "晚餐想吃清淡一点，预算 40 元以内",
-  "帮我制定一个高蛋白的一日饮食计划",
-  "鸡胸肉和豆腐的营养差异是什么？",
+  { title: "今天吃点清爽的", detail: "清淡晚餐", prompt: "晚餐想吃清淡一点，预算 40 元以内",
+    image: "/images/fresh-bowl.jpg", alt: "新鲜蔬菜与谷物组成的餐碗" },
+  { title: "把一天安排妥当", detail: "一日餐单", prompt: "帮我制定一个高蛋白的一日饮食计划",
+    image: "/images/daily-table.jpg", alt: "桌面上摆放的谷物、水果和蔬菜" },
+  { title: "午餐也好好吃", detail: "高蛋白午餐", prompt: "推荐一份高蛋白的午餐",
+    image: "/images/simple-meal.jpg", alt: "一份搭配蔬菜的日常餐碗" },
 ];
 
 const componentLabels: Record<string, string> = {
@@ -195,7 +201,8 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
   const [error, setError] = useState<string | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const [confirmationBusy, setConfirmationBusy] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(() => window.matchMedia("(min-width: 1100px)").matches);
+  const [activityOpen, setActivityOpen] = useState(false);
   const [historyQuery, setHistoryQuery] = useState("");
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -208,6 +215,26 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
   const [activePhase, setActivePhase] = useState("等待请求");
   const abortRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const desktop = window.matchMedia("(min-width: 1100px)");
+    const updateHistory = (event: MediaQueryListEvent) => setHistoryOpen(event.matches);
+    desktop.addEventListener("change", updateHistory);
+    return () => desktop.removeEventListener("change", updateHistory);
+  }, []);
+
+  useEffect(() => {
+    if (pendingConfirmation) setActivityOpen(true);
+  }, [pendingConfirmation]);
+
+  useEffect(() => {
+    if (!activityOpen) return;
+    const close = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setActivityOpen(false);
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [activityOpen]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -631,6 +658,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
         }
       }
       setPendingConfirmation(null);
+      setActivityOpen(false);
       setActivePhase(approved ? "操作已确认" : "操作已取消");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "确认请求失败");
@@ -658,14 +686,14 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
     setPendingConfirmation(null);
     setError(null);
     setActivePhase("等待请求");
-    setHistoryOpen(false);
+    if (!window.matchMedia("(min-width: 1100px)").matches) setHistoryOpen(false);
     setPlanWarnings([]);
   };
 
   const selectThread = (id: string) => {
     if (isSending || confirmationBusy || restoring) return;
     if (id === threadId) {
-      setHistoryOpen(false);
+      if (!window.matchMedia("(min-width: 1100px)").matches) setHistoryOpen(false);
       return;
     }
     localStorage.setItem("nutripilot.threadId", id);
@@ -676,7 +704,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
     setPlanWarnings([]);
     setError(null);
     setDraft("");
-    setHistoryOpen(false);
+    if (!window.matchMedia("(min-width: 1100px)").matches) setHistoryOpen(false);
   };
 
   const retryLast = () => {
@@ -685,76 +713,87 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
   };
 
   return (
-    <div className="chat-layout">
-      <section className="chat-surface" aria-label="Agent 对话">
-        <div className="chat-toolbar">
-          <div>
-            <span className="chat-thread-label">当前会话</span>
-            <strong title={threadId}>{threadId.slice(0, 8)}</strong>
-          </div>
-          <div className="chat-toolbar-actions">
-          <button className="icon-button" type="button" title="历史会话" aria-label="历史会话"
-            aria-expanded={historyOpen} onClick={() => setHistoryOpen((open) => !open)}>
-            <History size={18} />
-          </button>
-          <button className="button button-secondary button-compact" type="button" onClick={startNewThread}
-            disabled={isSending || confirmationBusy || restoring}>
-            <Plus size={16} />
-            新对话
-          </button>
-          </div>
-        </div>
-
-        <div className="messages" aria-live="polite">
-          {historyOpen ? (
+    <div className={`chat-layout${historyOpen ? " has-history" : ""}`}>
+          {historyOpen ? <>
+            <button className="history-scrim" type="button" aria-label="收起历史会话" onClick={() => setHistoryOpen(false)} />
             <section className="conversation-history" aria-label="历史会话列表">
               <div className="history-heading">
-                <h2>历史会话</h2>
+                <h2><History size={16} />历史会话</h2>
                 <button className="icon-button" type="button" title="关闭历史会话" aria-label="关闭历史会话"
                   onClick={() => setHistoryOpen(false)}><X size={18} /></button>
               </div>
-              <label className="field">
-                <span>搜索会话</span>
+              <label className="history-search">
+                <Search size={15} aria-hidden="true" />
                 <input value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)}
-                  type="search" maxLength={200} />
+                  type="search" maxLength={200} aria-label="搜索会话" placeholder="搜索对话…" />
               </label>
               {historyError ? <ErrorNotice message={historyError} /> : null}
+              <div className="conversation-items">
               {conversations.map((item) => (
                 <button key={item.threadId} type="button" className="conversation-item"
                   aria-current={item.threadId === threadId ? "true" : undefined}
                   disabled={isSending || confirmationBusy || restoring}
                   onClick={() => selectThread(item.threadId)}>
                   <strong>{item.title}</strong>
-                  <span>{new Date(item.updatedAt).toLocaleString("zh-CN")} · {item.messageCount} 条消息</span>
+                  <span>{new Date(item.updatedAt).toLocaleDateString("zh-CN", { month: "long", day: "numeric" })} · {item.messageCount} 条消息</span>
                 </button>
               ))}
-              {!conversations.length && !historyLoading ? <p>暂无匹配的会话</p> : null}
+              {!conversations.length && !historyLoading ? <div className="history-empty">
+                <History size={24} strokeWidth={1.5} aria-hidden="true" />
+                <p>{historyQuery ? "没有找到相关对话" : "还没有历史会话"}</p>
+              </div> : null}
               {historyLoading ? <p role="status">正在读取历史会话…</p> : null}
               {historyMore ? <button type="button" className="button button-secondary"
                 onClick={() => void loadMoreHistory()} disabled={historyLoading}>加载更多</button> : null}
+              </div>
             </section>
-          ) : null}
+          </> : null}
+      <section className="chat-surface" aria-label="饮食对话">
+        <div className="chat-toolbar">
+          <div className="chat-toolbar-title">
+            <button className="icon-button" type="button" title="历史会话" aria-label="历史会话"
+              aria-expanded={historyOpen} onClick={() => setHistoryOpen((open) => !open)}>
+              <History size={18} />
+            </button>
+            <strong title={threadId}>{messages.find((message) => message.role === "user")?.content || "新的饮食对话"}</strong>
+          </div>
+          <div className="chat-toolbar-actions">
+            <button className={`icon-button${activityOpen ? " is-selected" : ""}`} type="button"
+              title="执行过程" aria-label="执行过程" aria-expanded={activityOpen}
+              aria-controls="chat-activity" onClick={() => setActivityOpen((open) => !open)}>
+              <Activity size={18} />
+              {pendingConfirmation ? <span className="pending-dot" /> : null}
+            </button>
+            <button className="button button-secondary button-compact" type="button" onClick={startNewThread}
+              disabled={isSending || confirmationBusy || restoring}>
+              <Plus size={16} />新对话
+            </button>
+          </div>
+        </div>
+
+        <div className="messages" aria-live="polite">
           {restoring ? <p className="history-loading" role="status">正在恢复会话…</p> : null}
           {messages.length === 0 ? (
-            <EmptyState
-              icon={<Sparkles size={24} />}
-              title="从一个真实饮食目标开始"
-              description="Agent 会补全必要信息、调用餐食与营养工具，并在写入计划前请求确认。"
-              action={
-                <div className="prompt-suggestions">
-                  {promptSuggestions.map((suggestion) => (
-                    <button key={suggestion} type="button" onClick={() => setDraft(suggestion)}>
-                      {suggestion}
-                    </button>
-                  ))}
-                </div>
-              }
-            />
+            <div className="chat-welcome">
+              <div className="welcome-mark"><Salad size={31} strokeWidth={1.5} /></div>
+              <p className="welcome-eyebrow">好好吃饭的每一天</p>
+              <h1>今天，想吃点什么？</h1>
+              <div className="prompt-suggestions">
+                {promptSuggestions.map((suggestion) => (
+                  <button key={suggestion.title} type="button" onClick={() => setDraft(suggestion.prompt)}>
+                    <img src={suggestion.image} alt={suggestion.alt} width="720" height="440" />
+                    <span className="suggestion-copy"><small>{suggestion.detail}</small>
+                      <strong>{suggestion.title}</strong><ArrowUpRight size={17} aria-hidden="true" /></span>
+                  </button>
+                ))}
+              </div>
+              <p className="welcome-footnote">餐桌灵感 · 图片为示意，具体餐食以推荐结果为准</p>
+            </div>
           ) : (
             messages.map((message) => (
               <article className={`message message-${message.role}`} key={message.id}>
                 <div className="message-avatar" aria-hidden="true">
-                  {message.role === "user" ? <UserRound size={17} /> : message.role === "assistant" ? <Bot size={18} /> : <Activity size={17} />}
+                  {message.role === "user" ? <UserRound size={17} /> : message.role === "assistant" ? <Salad size={18} /> : <Activity size={17} />}
                 </div>
                 <div className="message-body">
                   <div className="message-meta">
@@ -790,8 +829,9 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
                   ) : null}
 
                   {message.citations?.length ? (
-                    <div className="citation-list">
-                      <div className="section-inline-label"><Quote size={14} />回答依据</div>
+                    <details className="citation-list">
+                      <summary className="section-inline-label"><Quote size={14} />回答依据
+                        <span>{message.citations.length} 条来源</span><ChevronDown size={14} /></summary>
                       {message.citations.map((citation, index) => (
                         <div className="citation-item" key={String(citation.id ?? `${citation.title}-${index}`)}>
                           <div>
@@ -813,7 +853,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
                           </div>
                         </div>
                       ))}
-                    </div>
+                    </details>
                   ) : null}
 
                   {message.warnings?.length ? (
@@ -828,7 +868,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
                     <div className="suggested-actions" aria-label="建议的后续操作">
                       {message.suggestedActions.map((action) => (
                         <button key={action} type="button" onClick={() => setDraft(action)}>
-                          <Sparkles size={13} />{action}
+                          <ChevronRight size={13} />{action}
                         </button>
                       ))}
                     </div>
@@ -836,7 +876,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
 
                   {message.traceId ? (
                     <button className="trace-link" type="button" onClick={() => onOpenTrace(message.traceId!)}>
-                      <Activity size={14} />查看 Trace {message.traceId.slice(0, 8)}
+                      <Activity size={14} />查看执行记录
                     </button>
                   ) : null}
                 </div>
@@ -858,7 +898,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
             />
           ) : null}
           {connection === "offline" ? (
-            <div className="offline-strip">Agent API 当前不可用，连接恢复后才能发送请求。</div>
+            <div className="offline-strip">暂时无法连接服务，请稍后重试。</div>
           ) : null}
           <form className="composer" onSubmit={handleSubmit}>
             <textarea
@@ -866,7 +906,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={handleComposerKey}
               rows={1}
-              placeholder="描述你的餐次、口味、目标或需要调整的计划…"
+              placeholder="想吃什么，或是有什么饮食打算？"
               aria-label="发送给 NutriPilot 的消息"
               disabled={connection === "offline" || restoring || confirmationBusy}
             />
@@ -885,19 +925,21 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
         </div>
       </section>
 
-      <aside className="activity-panel" aria-label="Agent 执行状态">
+      {activityOpen ? <button className="activity-scrim" type="button" aria-label="收起执行过程" onClick={() => setActivityOpen(false)} /> : null}
+      <aside id="chat-activity" className="activity-panel" aria-label="Agent 执行状态" hidden={!activityOpen}>
         {planWarnings.length ? <div className="plan-quality-warnings" role="status">
           {planWarnings.map((warning) => <p key={warning}>{warning}</p>)}
         </div> : null}
         <div className="activity-panel-heading">
           <div>
-            <span className="eyebrow">Live run</span>
             <h2>执行过程</h2>
           </div>
           <span className={`run-state${isSending ? " is-running" : ""}`}>
             {isSending ? <LoaderCircle className="spin" size={13} /> : <Check size={13} />}
             {activePhase}
           </span>
+          <button className="icon-button" type="button" title="关闭执行过程" aria-label="关闭执行过程"
+            onClick={() => setActivityOpen(false)}><X size={18} /></button>
         </div>
 
         {pendingConfirmation ? (
@@ -910,7 +952,6 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
               </div>
             </div>
             <p>{pendingConfirmation.description}</p>
-            {pendingConfirmation.operation ? <code>{pendingConfirmation.operation}</code> : null}
             {pendingConfirmation.mealPreview?.length ? (
               <div className="confirmation-meals">
                 <p>每日热量目标：{String(asRecord(pendingConfirmation.payload?.quality).daily_calorie_target ?? "未设置")}
@@ -975,7 +1016,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
           <div className="activity-empty">
             <BrainCircuit size={24} />
             <strong>尚未开始执行</strong>
-            <p>发送请求后，这里会展示 Agent、工具和安全检查的真实进度。</p>
+            <p>暂无执行记录</p>
           </div>
         )}
 

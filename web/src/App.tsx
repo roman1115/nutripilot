@@ -3,7 +3,8 @@ import {
   Activity,
   CalendarDays,
   FlaskConical,
-  Leaf,
+  Salad,
+  ChevronRight,
   Menu,
   MessageSquareText,
   RefreshCw,
@@ -23,15 +24,15 @@ import type { ConnectionState, RuntimeStatus, ViewKey } from "./types";
 
 const navigation = [
   { key: "chat" as const, label: "对话", icon: MessageSquareText },
-  { key: "profile" as const, label: "用户画像", icon: UserRound },
+  { key: "profile" as const, label: "饮食偏好", icon: UserRound },
   { key: "plans" as const, label: "饮食计划", icon: CalendarDays },
-  { key: "traces" as const, label: "Trace", icon: Activity },
-  { key: "evaluations" as const, label: "评估", icon: FlaskConical },
+  { key: "traces" as const, label: "执行记录", icon: Activity },
+  { key: "evaluations" as const, label: "质量评估", icon: FlaskConical },
 ];
 
 const viewTitles: Record<ViewKey, string> = {
-  chat: "Agent 对话",
-  profile: "用户画像",
+  chat: "饮食对话",
+  profile: "饮食偏好",
   plans: "饮食计划",
   traces: "调用链回放",
   evaluations: "离线评估",
@@ -139,11 +140,11 @@ export default function App() {
       <aside className={`sidebar${mobileOpen ? " is-open" : ""}`} aria-label="主导航">
         <div className="brand-row">
           <div className="brand-mark" aria-hidden="true">
-            <Leaf size={19} />
+            <Salad size={23} strokeWidth={1.7} />
           </div>
           <div>
             <strong>NutriPilot</strong>
-            <span>Agent Workspace</span>
+            <span>好好吃饭，慢慢计划。</span>
           </div>
           <button
             className="icon-button sidebar-close"
@@ -156,8 +157,8 @@ export default function App() {
         </div>
 
         <nav className="nav-list">
-          <p className="nav-label">工作台</p>
-          {navigation.map((item) => {
+          <p className="nav-label">我的日常</p>
+          {navigation.slice(0, 3).map((item) => {
             const Icon = item.icon;
             return (
               <button
@@ -165,6 +166,7 @@ export default function App() {
                 key={item.key}
                 type="button"
                 onClick={() => navigate(item.key)}
+                aria-current={view === item.key ? "page" : undefined}
               >
                 <Icon size={18} aria-hidden="true" />
                 <span>{item.label}</span>
@@ -172,8 +174,24 @@ export default function App() {
             );
           })}
         </nav>
+        <nav className="nav-list nav-tools" aria-label="开发工具">
+          <p className="nav-label">开发工具</p>
+          {navigation.slice(3).map((item) => {
+            const Icon = item.icon;
+            return <button className={`nav-item${view === item.key ? " is-active" : ""}`}
+              key={item.key} type="button" onClick={() => navigate(item.key)}
+              aria-current={view === item.key ? "page" : undefined}>
+              <Icon size={18} aria-hidden="true" /><span>{item.label}</span>
+            </button>;
+          })}
+        </nav>
 
         <div className="sidebar-footer">
+          <button className="personal-space" type="button" onClick={() => navigate("profile")}>
+            <span className="personal-avatar"><UserRound size={19} /></span>
+            <span><strong>我的饮食空间</strong><small>偏好与饮食目标</small></span>
+            <ChevronRight size={15} />
+          </button>
           <div className="connection-card">
             <div className={`connection-icon connection-${connection}`}>
               {connection === "offline" ? <WifiOff size={17} /> : <Wifi size={17} />}
@@ -182,17 +200,17 @@ export default function App() {
               <strong>
                 {connection === "checking" ? "正在检查" : connection === "online" ? "服务已就绪" : "服务未连接"}
               </strong>
-              <span title={API_BASE_URL}>{API_BASE_URL.replace(/^https?:\/\//, "")}</span>
+              <span>{runtime?.modelProvider === "fake" ? "演示模式" : "日常饮食助手"}</span>
             </div>
             <button className="icon-button" type="button" onClick={() => void refreshHealth()} aria-label="重新检查服务">
               <RefreshCw size={15} className={connection === "checking" ? "spin" : ""} />
             </button>
           </div>
-          <p className="environment-note">
-            {runtime
-              ? `${runtime.modelProvider === "fake" ? "规则演示" : "真实模型"} · ${runtime.modelName} · ${runtime.storage} · ${runtime.mcpTransport}`
-              : "运行环境未识别"}
-          </p>
+          <details className="environment-note">
+            <summary>连接信息</summary>
+            <p>{API_BASE_URL}</p>
+            <p>{runtime ? `${runtime.modelName} · ${runtime.storage} · ${runtime.mcpTransport}` : "运行环境未识别"}</p>
+          </details>
         </div>
       </aside>
 
@@ -203,17 +221,23 @@ export default function App() {
           <button className="icon-button mobile-menu" type="button" onClick={() => setMobileOpen(true)} aria-label="打开导航">
             <Menu size={20} />
           </button>
-          <div>
-            <span className="topbar-kicker">NutriPilot</span>
+          <div className="topbar-breadcrumb">
+            <span className="mobile-brand">NutriPilot</span>
+            <span className="topbar-kicker">我的空间</span>
+            <ChevronRight size={13} aria-hidden="true" />
             <strong>{viewTitles[view]}</strong>
           </div>
+          <time className="topbar-date" dateTime={new Date().toLocaleDateString("en-CA")}>
+            <CalendarDays size={15} aria-hidden="true" />
+            {new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "long" }).format(new Date())}
+          </time>
           <div
             className={`compact-connection compact-${connection}`}
             title={runtime ? `${runtime.modelName} · ${runtime.embeddingProvider}/${runtime.rerankProvider}` : `API: ${API_BASE_URL}`}
           >
             <span />
             {connection === "online"
-              ? runtime?.modelProvider === "fake" ? "规则演示" : "真实模型"
+              ? runtime?.modelProvider === "fake" ? "演示模式" : "已连接"
               : connection === "checking" ? "检查中" : "离线"}
           </div>
         </header>
@@ -262,7 +286,7 @@ export default function App() {
               aria-label={item.label}
             >
               <Icon size={19} />
-              <span>{item.label === "用户画像" ? "画像" : item.label === "饮食计划" ? "计划" : item.label}</span>
+              <span>{item.key === "profile" ? "偏好" : item.key === "plans" ? "餐单" : item.label}</span>
             </button>
           );
         })}

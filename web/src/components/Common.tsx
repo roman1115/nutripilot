@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import { AlertCircle, LoaderCircle, Plus, X } from "lucide-react";
 
 export function PageHeader({
-  eyebrow,
   title,
   description,
   action,
@@ -15,9 +14,8 @@ export function PageHeader({
   return (
     <header className="page-header">
       <div>
-        <p className="eyebrow">{eyebrow}</p>
         <h1>{title}</h1>
-        <p className="page-description">{description}</p>
+        {description ? <p className="page-description">{description}</p> : null}
       </div>
       {action ? <div className="page-header-action">{action}</div> : null}
     </header>

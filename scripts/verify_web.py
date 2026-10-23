@@ -36,6 +36,9 @@ def main() -> None:
             page.goto(args.base_url)
             page.wait_for_load_state("networkidle")
             expect(page.get_by_text("服务已就绪", exact=True)).to_be_visible()
+            expect(page.locator("#chat-activity")).not_to_be_visible()
+            expect(page.get_by_role("region", name="历史会话列表")).to_be_visible()
+            checks.append("desktop history is visible and execution details start collapsed")
             token = os.getenv("NUTRIPILOT_ACCESS_TOKEN")
             if token:
                 page.screenshot(path=str(args.output_dir / "access.png"), full_page=True)
@@ -58,7 +61,7 @@ def main() -> None:
             expect(page.get_by_text("餐食记录标注的过敏原", exact=False).first).to_be_visible()
             page.screenshot(path=str(args.output_dir / "recommendation.png"), full_page=True)
             checks.append("recommendation includes authoritative nutrition/allergen explanations")
-            page.get_by_role("button", name="查看 Trace").first.click()
+            page.get_by_role("button", name="查看执行记录", exact=True).first.click()
             expect(page.get_by_role("heading", name="调用链回放")).to_be_visible()
             checks.append("trace can be opened")
             page.locator(".sidebar").get_by_role("button", name="对话", exact=True).click()
@@ -84,7 +87,9 @@ def main() -> None:
             expect(page.locator(".message-user")).to_have_count(2)
             expect(page.locator(".message-assistant")).to_have_count(2)
             checks.append("all messages restore after reload")
-            page.get_by_role("button", name="历史会话", exact=True).click()
+            history_toggle = page.get_by_role("button", name="历史会话", exact=True)
+            if history_toggle.get_attribute("aria-expanded") != "true":
+                history_toggle.click()
             page.get_by_label("搜索会话").fill(run_tag)
             history = page.get_by_role("region", name="历史会话列表")
             expect(history.locator(".conversation-item")).to_have_count(1)
@@ -117,6 +122,20 @@ def main() -> None:
             page.screenshot(path=str(args.output_dir / "saved-plan.png"), full_page=True)
             checks.append("approved plan persists and lists calories and protein")
             page.locator(".sidebar").get_by_role("button", name="对话", exact=True).click()
+            page.get_by_role("button", name="新对话", exact=True).click()
+            page.screenshot(path=str(args.output_dir / "welcome.png"), full_page=True)
+            for size in ((1440, 1000), (1024, 768), (768, 1024), (390, 844), (320, 740)):
+                page.set_viewport_size({"width": size[0], "height": size[1]})
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+                assert page.locator(".prompt-suggestions img").evaluate_all(
+                    "images => images.every(image => image.complete && image.naturalWidth > 0)"
+                )
+                page.screenshot(
+                    path=str(args.output_dir / f"welcome-{size[0]}.png"),
+                    full_page=True,
+                    animations="disabled",
+                )
+            checks.append("welcome images load and five responsive widths fit without overflow")
             page.set_viewport_size({"width": 390, "height": 844})
             expect(page.locator(".sidebar")).not_to_be_in_viewport()
             expect(page.get_by_role("textbox", name="发送给 NutriPilot 的消息")).to_be_visible()

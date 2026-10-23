@@ -85,7 +85,7 @@ export function ProfileView({ connection }: { connection: ConnectionState }) {
       setProfile(saved);
       setBaseline(saved);
       setReviewOpen(false);
-      setSuccess("用户画像已由服务端保存。后续推荐将使用最新约束。");
+      setSuccess("饮食偏好已更新。");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "画像保存失败");
       setReviewOpen(false);
@@ -103,8 +103,8 @@ export function ProfileView({ connection }: { connection: ConnectionState }) {
     <div className="page-container">
       <PageHeader
         eyebrow="Preference memory"
-        title="用户画像"
-        description="管理服务端长期记忆中的目标、偏好和安全约束；过敏原与忌口会参与推荐前的硬过滤。"
+        title="饮食偏好"
+        description=""
         action={
           <button className="button button-secondary" type="button" onClick={() => void load()} disabled={loading || connection === "checking"}>
             <RefreshCw size={16} className={loading ? "spin" : ""} />
@@ -128,7 +128,7 @@ export function ProfileView({ connection }: { connection: ConnectionState }) {
           <section className="form-section identity-section">
             <div className="section-heading">
               <div className="section-icon"><UserRound size={18} /></div>
-              <div><h2>目标与偏好</h2><p>这些信息会作为跨会话的推荐依据。</p></div>
+              <div><h2>日常偏好</h2></div>
             </div>
             <div className="form-grid form-grid-two">
               <label className="field field-block">
@@ -136,7 +136,7 @@ export function ProfileView({ connection }: { connection: ConnectionState }) {
                 <input
                   value={profile.displayName}
                   onChange={(event) => update("displayName", event.target.value)}
-                  placeholder="如：史振亭"
+                  placeholder="你的称呼"
                   maxLength={80}
                 />
               </label>
@@ -201,7 +201,7 @@ export function ProfileView({ connection }: { connection: ConnectionState }) {
           <section className="form-section safety-section">
             <div className="section-heading">
               <div className="section-icon"><ShieldAlert size={18} /></div>
-              <div><h2>安全约束</h2><p>此处信息会直接排除冲突候选，请只填写已确认的信息。</p></div>
+              <div><h2>过敏与饮食限制</h2><p>请只填写已确认的信息。</p></div>
             </div>
             <div className="form-grid form-grid-two">
               <label className="field field-block">
@@ -216,13 +216,13 @@ export function ProfileView({ connection }: { connection: ConnectionState }) {
           </section>
 
           <div className="form-footer">
-            <p>{profile.updatedAt ? `服务端最后更新：${formatDate(profile.updatedAt)}` : "服务端未返回更新时间"}</p>
+            <p>{profile.updatedAt ? `上次更新于 ${formatDate(profile.updatedAt)}` : "尚无更新记录"}</p>
             <div>
               <button className="button button-secondary" type="button" onClick={() => baseline && setProfile(baseline)} disabled={!isDirty}>
                 <X size={16} />撤销修改
               </button>
               <button className="button button-primary" type="submit" disabled={!isDirty || saving || connection !== "online"}>
-                <Save size={16} />保存画像
+                <Save size={16} />保存修改
               </button>
             </div>
           </div>
@@ -239,7 +239,7 @@ export function ProfileView({ connection }: { connection: ConnectionState }) {
         <div className="modal-backdrop" role="presentation" onMouseDown={() => !saving && setReviewOpen(false)}>
           <section className="modal" role="dialog" aria-modal="true" aria-labelledby="profile-review-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-heading">
-              <div><span className="eyebrow">Human in the loop</span><h2 id="profile-review-title">确认更新用户画像</h2></div>
+              <div><h2 id="profile-review-title">确认更新饮食偏好</h2></div>
               <button className="icon-button" type="button" onClick={() => setReviewOpen(false)} aria-label="关闭" disabled={saving}><X size={18} /></button>
             </div>
             <p className="modal-description">这些长期信息会影响后续推荐与安全过滤，请确认内容准确。</p>

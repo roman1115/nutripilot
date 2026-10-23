@@ -84,14 +84,14 @@ export function MealPlansView({
       <PageHeader
         eyebrow="Saved decisions"
         title="饮食计划"
-        description="查看已经由 Agent 生成、经你确认并由服务端持久化的饮食计划。"
+        description=""
         action={
           <div className="page-action-group">
             <button className="button button-secondary" type="button" onClick={() => void load()} disabled={loading || connection === "checking"}>
               <RefreshCw size={16} className={loading ? "spin" : ""} />刷新
             </button>
             <button className="button button-primary" type="button" onClick={onNavigateChat}>
-              <MessageSquareText size={16} />在对话中制定
+              <MessageSquareText size={16} />制定餐单
             </button>
           </div>
         }
@@ -110,7 +110,7 @@ export function MealPlansView({
         <EmptyState
           icon={<CalendarDays size={24} />}
           title="还没有已保存的计划"
-          description="计划只有在 Agent 提出写入请求并得到你的明确确认后才会显示在这里。"
+          description="确认后的餐单会保存在这里。"
           action={<button className="button button-primary" type="button" onClick={onNavigateChat}><MessageSquareText size={16} />开始制定</button>}
         />
       ) : (
