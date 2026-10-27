@@ -3,11 +3,41 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from nutripilot.infrastructure import load_seed_store
-from nutripilot.retrieval import MealSearchFilters, MealSearchRequest, RetrievalService
+from nutripilot.retrieval import (
+    MealSearchFilters,
+    MealSearchRequest,
+    NutritionFacts,
+    RetrievalService,
+)
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+
+
+@pytest.mark.asyncio
+async def test_seed_nutrition_is_explicitly_unverified_and_not_missing_provenance() -> None:
+    meals = [
+        meal for meal in await load_seed_store(DATA_DIR).list_meals() if meal.recipe_id is None
+    ]
+
+    assert len(meals) == 18
+    assert all(meal.nutrition.source_status == "unverified_estimate" for meal in meals)
+    assert all(meal.nutrition.serving_weight_g is None for meal in meals)
+    assert all(meal.nutrition.source_uri is None for meal in meals)
+    assert all("未独立核验" in meal.source for meal in meals)
+
+
+def test_verified_nutrition_requires_source_and_serving_weight() -> None:
+    with pytest.raises(ValidationError, match="source URI and serving weight"):
+        NutritionFacts(
+            calories_kcal=300,
+            protein_g=20,
+            carbohydrates_g=30,
+            fat_g=10,
+            source_status="verified",
+        )
 
 
 @pytest.mark.asyncio
@@ -44,7 +74,7 @@ async def test_retrieval_returns_authoritative_ids_and_citations() -> None:
     assert response.hits
     for hit in response.hits:
         assert hit.citation["source_id"] == f"meal:{hit.meal.id}"
-        assert hit.meal.prep_minutes <= 20
+        assert hit.meal.prep_minutes is not None and hit.meal.prep_minutes <= 20
         assert hit.meal.nutrition.protein_g >= 20
 
 

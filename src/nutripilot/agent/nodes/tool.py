@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from nutripilot.agent.contracts import PlanSpec
@@ -88,7 +89,11 @@ class ToolExecutionNode:
                         dietary_constraints=dietary_constraints,
                     )
                     plan_quality = PlanBuilder().assess(
-                        plan_spec_from_results(state.get("slots", {}), results),
+                        plan_spec_from_results(
+                            state.get("slots", {}),
+                            results,
+                            current_date=date.fromisoformat(state["current_date"]),
+                        ),
                         PlanBuilder.parse_request(call.arguments),
                         candidate_meals_from_results(results),
                     )
@@ -297,7 +302,11 @@ def _validate_meal_plan_call(
     dietary_constraints: dict[str, Any],
 ) -> ToolCall:
     request = PlanBuilder.parse_request(call.arguments)
-    spec = plan_spec_from_results(state.get("slots", {}), results)
+    spec = plan_spec_from_results(
+        state.get("slots", {}),
+        results,
+        current_date=date.fromisoformat(state["current_date"]),
+    )
     PlanBuilder().validate_prewrite(
         spec=spec,
         request=request,
@@ -325,7 +334,9 @@ def _validate_meal_plan_call(
     return call.model_copy(update={"arguments": canonical.model_dump(mode="json")})
 
 
-def plan_spec_from_results(slots: dict[str, Any], results: list[dict[str, Any]]) -> PlanSpec:
+def plan_spec_from_results(
+    slots: dict[str, Any], results: list[dict[str, Any]], *, current_date: date
+) -> PlanSpec:
     profile: dict[str, Any] = next(
         (
             result["data"]
@@ -336,7 +347,7 @@ def plan_spec_from_results(slots: dict[str, Any], results: list[dict[str, Any]])
         ),
         {},
     )
-    return PlanSpec.from_slots(slots, profile=profile)
+    return PlanSpec.from_slots(slots, start_date=current_date, profile=profile)
 
 
 def _profile_terms(results: list[dict[str, Any]], field: str) -> list[str]:

@@ -1,0 +1,4 @@
+[
+{"id":"usda-sr-legacy-2018-04","name":"USDA FoodData Central SR Legacy","uri":"https://fdc.nal.usda.gov/fdc-datasets/FoodData_Central_sr_legacy_food_csv_2018-04.zip","license":"CC0-1.0","version":"2018-04","sha256":"b80817294b8850530aaedf2e515c02593b1824f763a0ff356e5c2081643e6fd0","checksum_scope":"archive"},
+{"id":"howtocook","name":"Anduin2017/HowToCook","uri":"https://github.com/Anduin2017/HowToCook/tree/308cc8b7dab1da84b20e7fafdf836a715437f582","license":"Unlicense","version":"308cc8b7dab1da84b20e7fafdf836a715437f582","sha256":"6b0382b16279f26ff69014300541967a356a666eb0b91b422f6862f6b7dad17e","checksum_scope":"license"}
+]

@@ -6,7 +6,7 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -36,6 +36,7 @@ from nutripilot.application.evaluation_service import EvaluationBusyError
 from nutripilot.application.runtime import start_container, stop_container
 from nutripilot.evaluation import EvalReport, load_dataset
 from nutripilot.paths import project_root
+from nutripilot.retrieval.catalog import calculate_recipe
 from nutripilot.tools.errors import ToolRuntimeError
 from nutripilot.tools.local.models import FeedbackRecord, RecordFeedbackArgs, UserProfile
 
@@ -120,6 +121,103 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
         except ThreadBusyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return ChatResponse.from_state(state)
+
+    @app.get("/api/v1/catalog", tags=["catalog"])
+    async def catalog_summary(
+        container: ApplicationContainer = Depends(get_container),
+    ) -> dict[str, Any]:
+        catalog = container.food_catalog
+        ready_count = sum(recipe.status == "calculation_ready" for recipe in catalog.recipes)
+        return {
+            "ingredients": len(catalog.ingredients),
+            "ingredients_with_mapping_notes": sum(
+                bool(item.mapping_note) for item in catalog.ingredients
+            ),
+            "recipes": len(catalog.recipes),
+            "calculation_ready_recipes": ready_count,
+            "pending_recipes": len(catalog.recipes) - ready_count,
+            "sources": [source.model_dump(mode="json") for source in catalog.sources],
+            "note": "源数据库食品条目不等于已完成中文映射；计算估算不等于成菜检测。",
+        }
+
+    @app.get("/api/v1/ingredients", tags=["catalog"])
+    async def ingredients(
+        q: str = Query(default="", max_length=200),
+        limit: int = Query(default=30, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        container: ApplicationContainer = Depends(get_container),
+    ) -> dict[str, Any]:
+        query = q.strip().casefold()
+        items = [
+            ingredient
+            for ingredient in container.food_catalog.ingredients
+            if query in " ".join(
+                [ingredient.name, ingredient.source_description, *ingredient.aliases]
+            ).casefold()
+        ]
+        return {
+            "items": [item.model_dump(mode="json") for item in items[offset:offset + limit]],
+            "total": len(items),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    @app.get("/api/v1/ingredients/{ingredient_id}", tags=["catalog"])
+    async def ingredient_detail(
+        ingredient_id: str,
+        container: ApplicationContainer = Depends(get_container),
+    ) -> dict[str, Any]:
+        ingredient = next(
+            (item for item in container.food_catalog.ingredients if item.id == ingredient_id),
+            None,
+        )
+        if ingredient is None:
+            raise HTTPException(status_code=404, detail="Ingredient not found")
+        return ingredient.model_dump(mode="json")
+
+    @app.get("/api/v1/recipes", tags=["catalog"])
+    async def recipes(
+        q: str = Query(default="", max_length=200),
+        status: Literal["pending", "calculation_ready"] | None = None,
+        limit: int = Query(default=30, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        container: ApplicationContainer = Depends(get_container),
+    ) -> dict[str, Any]:
+        items = [
+            recipe
+            for recipe in container.food_catalog.recipes
+            if q.strip().casefold() in recipe.name.casefold()
+            and (status is None or recipe.status == status)
+        ]
+        return {
+            "items": [item.model_dump(mode="json") for item in items[offset:offset + limit]],
+            "total": len(items),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    @app.get("/api/v1/recipes/{recipe_id}", tags=["catalog"])
+    async def recipe_detail(
+        recipe_id: int,
+        container: ApplicationContainer = Depends(get_container),
+    ) -> dict[str, Any]:
+        catalog = container.food_catalog
+        recipe = next((item for item in catalog.recipes if item.id == recipe_id), None)
+        if recipe is None:
+            raise HTTPException(status_code=404, detail="Recipe not found")
+        nutrition = (
+            calculate_recipe(recipe, {item.id: item for item in catalog.ingredients})
+            if recipe.status == "calculation_ready"
+            else None
+        )
+        return {
+            **recipe.model_dump(mode="json"),
+            "source": next(
+                item.model_dump(mode="json")
+                for item in catalog.sources if item.id == recipe.source_id
+            ),
+            "nutrition": nutrition.model_dump(mode="json") if nutrition else None,
+        }
 
     @app.post("/api/v1/chat/stream", tags=["chat"])
     async def chat_stream(

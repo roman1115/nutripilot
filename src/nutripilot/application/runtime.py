@@ -80,7 +80,11 @@ async def start_container(container: ApplicationContainer) -> None:
             deadline_seconds=container.settings.agent_deadline_seconds,
             token_budget=container.settings.agent_token_budget,
         )
-        chat_service = ChatService(graph, container.chat_service.history)
+        chat_service = ChatService(
+            graph,
+            container.chat_service.history,
+            timezone_name=container.settings.user_timezone,
+        )
 
         container.data_store = store
         container.tool_executor = executor

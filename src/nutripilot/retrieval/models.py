@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def _normalise_terms(values: list[str]) -> list[str]:
@@ -19,6 +19,30 @@ class NutritionFacts(BaseModel):
     fiber_g: float = Field(default=0, ge=0)
     sodium_mg: float = Field(default=0, ge=0)
     serving_size: str = Field(default="1 serving", min_length=1)
+    serving_weight_g: float | None = Field(default=None, gt=0)
+    source_status: Literal[
+        "unverified_estimate", "calculated_estimate", "verified"
+    ] = "unverified_estimate"
+    source_uri: str | None = None
+    weight_basis: Literal["as_served", "ingredient_input"] = "as_served"
+    ingredient_source_uris: list[str] = Field(default_factory=list)
+    calculation_note: str | None = None
+
+    @model_validator(mode="after")
+    def validate_verified_source(self) -> NutritionFacts:
+        if self.source_status == "verified" and (
+            not self.source_uri or self.serving_weight_g is None
+        ):
+            raise ValueError("Verified nutrition requires a source URI and serving weight.")
+        if self.source_status == "calculated_estimate" and (
+            not self.source_uri
+            or self.serving_weight_g is None
+            or not self.ingredient_source_uris
+            or not self.calculation_note
+            or self.weight_basis != "ingredient_input"
+        ):
+            raise ValueError("Calculated nutrition requires recipe and ingredient provenance.")
+        return self
 
 
 class Meal(BaseModel):
@@ -35,9 +59,11 @@ class Meal(BaseModel):
     dietary_tags: list[str] = Field(default_factory=list)
     allergens: list[str] = Field(default_factory=list)
     ingredients: list[str] = Field(default_factory=list)
+    recipe_id: int | None = Field(default=None, ge=1000)
+    meal_role: Literal["complete_meal", "dish", "staple", "soup", "snack"] = "complete_meal"
     nutrition: NutritionFacts
-    prep_minutes: int = Field(ge=0, le=1440)
-    price_cny: float = Field(ge=0)
+    prep_minutes: int | None = Field(default=None, ge=0, le=1440)
+    price_cny: float | None = Field(default=None, ge=0)
     source: str = Field(min_length=1)
     source_uri: str | None = None
     data_version: str = "2026.07"

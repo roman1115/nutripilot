@@ -29,6 +29,7 @@ from nutripilot.retrieval import (
     LexicalReranker,
     RetrievalService,
 )
+from nutripilot.retrieval.catalog import FoodCatalog
 from nutripilot.retrieval.ports import Embedder, MealReranker
 from nutripilot.tools import ToolExecutor, ToolRegistry
 from nutripilot.tools.local import register_local_tools
@@ -52,6 +53,7 @@ class ApplicationContainer:
     graph: AgentGraph
     chat_service: ChatService
     evaluation_service: EvaluationService
+    food_catalog: FoodCatalog
     resource_stack: AsyncExitStack | None = None
     runtime_mode: str = "demo"
     run_store: SQLiteRunStore | None = None
@@ -87,7 +89,9 @@ def build_container(
         token_budget=selected_settings.agent_token_budget,
     )
     chat_service = ChatService(
-        graph, SQLiteConversationStore(run_store) if run_store else InMemoryConversationStore()
+        graph,
+        SQLiteConversationStore(run_store) if run_store else InMemoryConversationStore(),
+        timezone_name=selected_settings.user_timezone,
     )
     return ApplicationContainer(
         settings=selected_settings,
@@ -98,6 +102,7 @@ def build_container(
         graph=graph,
         chat_service=chat_service,
         evaluation_service=EvaluationService(EvalRunner(chat_service), run_store),
+        food_catalog=selected_store.catalog,
         runtime_mode=selected_settings.app_mode,
         run_store=run_store,
     )

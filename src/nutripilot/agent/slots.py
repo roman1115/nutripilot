@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
-def extract_plan_scope(message: str) -> tuple[dict[str, Any], list[str]]:
+def today_in_timezone(timezone_name: str, *, now: datetime | None = None) -> date:
+    instant = now or datetime.now(UTC)
+    local = instant.astimezone(ZoneInfo(timezone_name))
+    return local.date()
+
+
+def extract_plan_scope(
+    message: str, *, current_date: date | None = None
+) -> tuple[dict[str, Any], list[str]]:
     slots: dict[str, Any] = {}
     missing: list[str] = []
     if "三餐" in message or all(term in message for term in ("早餐", "午餐", "晚餐")):
@@ -47,8 +56,9 @@ def extract_plan_scope(message: str) -> tuple[dict[str, Any], list[str]]:
         except ValueError:
             missing.append("start_date")
     else:
+        today = current_date or date.today()
         for term, offset in (("后天", 2), ("明天", 1), ("今天", 0)):
             if term in message:
-                slots["start_date"] = (date.today() + timedelta(days=offset)).isoformat()
+                slots["start_date"] = (today + timedelta(days=offset)).isoformat()
                 break
     return slots, missing

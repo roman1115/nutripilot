@@ -138,6 +138,15 @@ def test_daily_targets_are_extracted_separately_from_single_meal_filters() -> No
     assert slots["start_date"] == date(2026, 10, 22).isoformat()
 
 
+def test_relative_plan_date_uses_the_supplied_user_local_date() -> None:
+    slots, missing = extract_plan_scope(
+        "明天制定一周晚餐计划", current_date=date(2026, 10, 26)
+    )
+
+    assert not missing
+    assert slots["start_date"] == "2026-10-27"
+
+
 @pytest.mark.asyncio
 async def test_graph_blocks_unreachable_daily_target_without_pending_write() -> None:
     container = build_container(settings=Settings(_env_file=None))
@@ -150,6 +159,50 @@ async def test_graph_blocks_unreachable_daily_target_without_pending_write() -> 
     assert not state["requires_confirmation"]
     assert not await container.data_store.list_plans(22)
     assert "无法同时满足" in state["final_response"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_relative_date_reaches_pending_plan_in_configured_user_timezone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "nutripilot.application.chat_service.today_in_timezone",
+        lambda _: date(2026, 10, 26),
+    )
+    container = build_container(
+        settings=Settings(_env_file=None, user_timezone="America/Los_Angeles")
+    )
+
+    state = await container.chat_service.chat(
+        user_id=29,
+        message="明天制定一周晚餐计划",
+    )
+
+    plan_call = next(
+        call for call in state["pending_tool_calls"] if call["name"] == "create_meal_plan"
+    )
+    assert state["current_date"] == "2026-10-26"
+    assert state["slots"]["start_date"] == "2026-10-27"
+    assert plan_call["arguments"]["start_date"] == "2026-10-27"
+    assert {item["meal_date"] for item in plan_call["arguments"]["items"]} == {
+        "2026-10-27",
+        "2026-10-28",
+        "2026-10-29",
+        "2026-10-30",
+        "2026-10-31",
+        "2026-11-01",
+        "2026-11-02",
+    }
+
+
+def test_plan_quality_warns_when_nutrition_has_no_verified_source() -> None:
+    meals = candidates()
+    spec = PlanSpec(plan_range="one_day")
+    request = PlanBuilder().build(spec, meals)
+
+    quality = PlanBuilder().assess(spec, request, meals)
+
+    assert any("未独立核验" in warning for warning in quality["warnings"])
 
 
 @pytest.mark.asyncio

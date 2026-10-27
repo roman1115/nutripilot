@@ -89,7 +89,12 @@ class FakeModelGateway:
     def _intent(payload: dict[str, Any]) -> dict[str, Any]:
         message = str(payload.get("message", "")).strip()
         slots = dict(payload.get("slots") or {})
-        slots.update(_extract_slots(message))
+        current_date = (
+            date.fromisoformat(str(payload["current_date"]))
+            if payload.get("current_date")
+            else date.today()
+        )
+        slots.update(_extract_slots(message, current_date=current_date))
 
         if any(word in message for word in ("诊断", "处方", "药物", "催吐", "绝食")):
             intent = Intent.HEALTH_RISK
@@ -159,6 +164,11 @@ class FakeModelGateway:
     def _planner(payload: dict[str, Any]) -> dict[str, Any]:
         intent = str(payload.get("intent") or Intent.OTHER.value)
         slots = dict(payload.get("slots") or {})
+        current_date = (
+            date.fromisoformat(str(payload["current_date"]))
+            if payload.get("current_date")
+            else date.today()
+        )
         results = list(payload.get("tool_results") or [])
         called = [str(item.get("tool_name", "")) for item in results]
         turn_id = str(payload.get("turn_id", "turn"))
@@ -215,6 +225,7 @@ class FakeModelGateway:
                     plan = PlanBuilder().build(
                         PlanSpec.from_slots(
                             slots,
+                            start_date=current_date,
                             profile=next(
                                 (
                                     result["data"]
@@ -324,7 +335,7 @@ class FakeModelGateway:
         }
 
 
-def _extract_slots(message: str) -> dict[str, Any]:
+def _extract_slots(message: str, *, current_date: date | None = None) -> dict[str, Any]:
     slots: dict[str, Any] = {}
     meal_types = {"早餐": "breakfast", "午餐": "lunch", "晚餐": "dinner", "夜宵": "late_snack"}
     for word, value in meal_types.items():
@@ -357,7 +368,9 @@ def _extract_slots(message: str) -> dict[str, Any]:
     else:
         for term, offset in (("后天", 2), ("明天", 1), ("今天", 0)):
             if term in message:
-                slots["start_date"] = (date.today() + timedelta(days=offset)).isoformat()
+                slots["start_date"] = (
+                    (current_date or date.today()) + timedelta(days=offset)
+                ).isoformat()
                 break
     return slots
 

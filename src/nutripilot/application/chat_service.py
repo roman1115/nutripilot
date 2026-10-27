@@ -7,8 +7,10 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from typing import Any, cast
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from nutripilot.agent.graph import AgentGraph
+from nutripilot.agent.slots import today_in_timezone
 from nutripilot.agent.state import AgentState, new_agent_state
 from nutripilot.application.history import (
     ConversationMessage,
@@ -31,9 +33,17 @@ class ThreadBusyError(RuntimeError):
 
 
 class ChatService:
-    def __init__(self, graph: AgentGraph, history: ConversationStore | None = None) -> None:
+    def __init__(
+        self,
+        graph: AgentGraph,
+        history: ConversationStore | None = None,
+        *,
+        timezone_name: str = "America/Los_Angeles",
+    ) -> None:
         self.graph = graph
         self.history = history
+        self.timezone_name = timezone_name
+        ZoneInfo(timezone_name)
         self._active: dict[str, tuple[int, asyncio.Task[Any]]] = {}
 
     @contextmanager
@@ -144,7 +154,12 @@ class ChatService:
         previous = await self.graph.aget_state(config)
         if previous is not None and previous.get("user_id") != user_id:
             raise ThreadNotFoundError(thread_id)
-        state = new_agent_state(message=message, user_id=user_id, thread_id=thread_id)
+        state = new_agent_state(
+            message=message,
+            user_id=user_id,
+            thread_id=thread_id,
+            current_date=today_in_timezone(self.timezone_name),
+        )
         if self.history:
             await asyncio.to_thread(
                 self.history.append,

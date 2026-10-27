@@ -83,6 +83,18 @@ async def test_docker_container_calls_mcp_over_authenticated_http() -> None:
 
         assert result.ok
         assert result.data["meal_id"] == 1
+        calculated = await container.tool_executor.execute(
+            ToolCall(
+                call_id="remote-calculated-recipe",
+                name="get_nutrition",
+                arguments={"meal_id": 1004},
+            ),
+            ToolContext(),
+        )
+        assert calculated.ok
+        assert calculated.data["recipe_id"] == 1004
+        assert calculated.data["nutrition"]["source_status"] == "calculated_estimate"
+        assert len(calculated.data["nutrition"]["ingredient_source_uris"]) == 2
     finally:
         server.should_exit = True
         await asyncio.wait_for(server_task, timeout=5)

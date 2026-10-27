@@ -151,9 +151,14 @@ class RetrievalService:
             return False
         if filters.min_protein_g is not None and meal.nutrition.protein_g < filters.min_protein_g:
             return False
-        if filters.max_prep_minutes is not None and meal.prep_minutes > filters.max_prep_minutes:
+        if filters.max_prep_minutes is not None and (
+            meal.prep_minutes is None or meal.prep_minutes > filters.max_prep_minutes
+        ):
             return False
-        return not (filters.max_price_cny is not None and meal.price_cny > filters.max_price_cny)
+        return not (
+            filters.max_price_cny is not None
+            and (meal.price_cny is None or meal.price_cny > filters.max_price_cny)
+        )
 
     @staticmethod
     def _structured_rank(

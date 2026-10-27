@@ -6,7 +6,10 @@ from typing import Any
 
 from nutripilot.domain.models import Citation, FinalResponse
 
-_SERVING_WARNING = "营养值为餐食记录中每份的估算值，实际值随份量和烹调方式变化。"
+_ESTIMATE_WARNING = (
+    "营养值为未独立核验的演示估算，份量缺少统一克重；实际值会随食材、份量和烹调方式变化，"
+    "不应作为精确营养或健康目标依据。"
+)
 
 
 def ground_recommendation_facts(
@@ -43,10 +46,12 @@ def ground_recommendation_facts(
                 source_id=str(citation.get("source_id") or f"meal:{recommendation.meal_id}"),
                 title=str(meal.get("name") or recommendation.name),
                 source_type="meal",
-                uri=_optional_string(citation.get("uri")),
+                uri=_optional_string(facts.get("source_uri"))
+                or _optional_string(citation.get("uri")),
                 score=_number(meal.get("score")),
             )
         )
+        citations.extend(_ingredient_citations(facts))
 
     if not any(
         result.get("tool_name") == "search_meals" and result.get("status") == "success"
@@ -55,9 +60,13 @@ def ground_recommendation_facts(
         return _ground_nutrition(response, tool_results)
 
     # Free text must never turn a meal's allergens into a claim about the user.
-    warnings = [_SERVING_WARNING]
-    if any(str(citation.uri or "").startswith("seed://") for citation in citations):
-        warnings.append("当前餐食来自演示种子库，营养值尚未经独立数据来源核验。")
+    warnings = list(
+        dict.fromkeys(
+            warning
+            for item in grounded
+            for warning in _nutrition_warnings(meals.get(item.meal_id, {}))
+        )
+    )
     profile = _latest_data(tool_results, "get_user_profile")
     profile_allergens = _strings(profile.get("allergens"))
     if profile_allergens:
@@ -124,11 +133,18 @@ def _meal_explanation(meal: dict[str, Any]) -> str:
     facts = raw_nutrition if isinstance(raw_nutrition, dict) else meal
     parts = []
     serving = _optional_string(facts.get("serving_size")) or "标准份量"
+    weight = _number(facts.get("serving_weight_g"))
+    if weight:
+        label = "投料" if facts.get("weight_basis") == "ingredient_input" else ""
+        serving = f"{serving}（{label}{weight:g} 克）"
     calories, protein = _number(facts.get("calories_kcal")), _number(facts.get("protein_g"))
+    qualifier = "估算" if _nutrition_is_unverified(meal) else ""
     if calories is not None:
-        parts.append(f"每{serving}约 {calories:g} 千卡")
+        parts.append(f"每{serving}{qualifier}约 {calories:g} 千卡")
     if protein is not None:
-        parts.append(f"蛋白质约 {protein:g} 克")
+        parts.append(f"蛋白质{qualifier}约 {protein:g} 克")
+    if meal.get("meal_role", "complete_meal") != "complete_meal":
+        parts.append("这是单道菜、主食或加餐，不能单独代表完整一餐")
     allergens = _strings(meal.get("allergens"))
     parts.append(
         f"餐食记录标注的过敏原：{'、'.join(allergens)}"
@@ -143,17 +159,50 @@ def _ground_nutrition(response: FinalResponse, tool_results: list[dict[str, Any]
     if not data:
         return response
     citation = data.get("citation") or {}
+    nutrition = data.get("nutrition")
+    facts = nutrition if isinstance(nutrition, dict) else {}
+    warnings = _nutrition_warnings(data)
     return FinalResponse(
         message=f"{data.get('name', '该餐食')}：{_meal_explanation(data)}",
         citations=[
             Citation(
                 source_id=str(citation.get("source_id") or f"meal:{data['meal_id']}"),
                 title=str(data.get("name") or "餐食营养"),
-                uri=_optional_string(citation.get("uri")),
-            )
+                uri=_optional_string(facts.get("source_uri"))
+                or _optional_string(citation.get("uri")),
+            ),
+            *_ingredient_citations(facts),
         ],
-        warnings=[_SERVING_WARNING],
+        warnings=warnings,
     )
+
+
+def _nutrition_is_unverified(meal: dict[str, Any]) -> bool:
+    nutrition = meal.get("nutrition")
+    facts = nutrition if isinstance(nutrition, dict) else meal
+    return bool(facts.get("source_status", "unverified_estimate") != "verified")
+
+
+def _nutrition_warnings(meal: dict[str, Any]) -> list[str]:
+    nutrition = meal.get("nutrition")
+    facts = nutrition if isinstance(nutrition, dict) else meal
+    if facts.get("source_status") == "calculated_estimate":
+        return [
+            str(facts.get("calculation_note") or "营养值为按配方计算的估算，未经成菜检测。")
+        ]
+    return [_ESTIMATE_WARNING] if _nutrition_is_unverified(meal) else []
+
+
+def _ingredient_citations(facts: dict[str, Any]) -> list[Citation]:
+    return [
+        Citation(
+            source_id=f"ingredient-nutrition:{uri}",
+            title="食材营养数据（每100克）",
+            source_type="ingredient",
+            uri=uri,
+        )
+        for uri in _strings(facts.get("ingredient_source_uris"))
+    ]
 
 
 def _meal_records(tool_results: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:

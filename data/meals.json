@@ -10,10 +10,10 @@
     "dietary_tags": ["素食"],
     "allergens": ["牛奶", "麸质"],
     "ingredients": ["燕麦", "无糖酸奶", "蓝莓", "奇亚籽"],
-    "nutrition": {"calories_kcal": 328, "protein_g": 15, "carbohydrates_g": 48, "fat_g": 9, "fiber_g": 8, "sodium_mg": 92, "serving_size": "1杯"},
+    "nutrition": {"calories_kcal": 328, "protein_g": 15, "carbohydrates_g": 48, "fat_g": 9, "fiber_g": 8, "sodium_mg": 92, "serving_size": "1杯", "source_status": "unverified_estimate"},
     "prep_minutes": 8,
     "price_cny": 18,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/1"
   },
   {
@@ -28,10 +28,10 @@
     "dietary_tags": ["无乳制品"],
     "allergens": [],
     "ingredients": ["鸡胸肉", "藜麦", "西兰花", "彩椒", "橄榄油"],
-    "nutrition": {"calories_kcal": 516, "protein_g": 43, "carbohydrates_g": 52, "fat_g": 15, "fiber_g": 9, "sodium_mg": 468, "serving_size": "1碗"},
+    "nutrition": {"calories_kcal": 516, "protein_g": 43, "carbohydrates_g": 52, "fat_g": 15, "fiber_g": 9, "sodium_mg": 468, "serving_size": "1碗", "source_status": "unverified_estimate"},
     "prep_minutes": 28,
     "price_cny": 36,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/2"
   },
   {
@@ -45,10 +45,10 @@
     "dietary_tags": ["无乳制品"],
     "allergens": ["大豆"],
     "ingredients": ["牛腩", "番茄", "糙米", "小米", "酱油"],
-    "nutrition": {"calories_kcal": 598, "protein_g": 36, "carbohydrates_g": 68, "fat_g": 20, "fiber_g": 7, "sodium_mg": 712, "serving_size": "1份"},
+    "nutrition": {"calories_kcal": 598, "protein_g": 36, "carbohydrates_g": 68, "fat_g": 20, "fiber_g": 7, "sodium_mg": 712, "serving_size": "1份", "source_status": "unverified_estimate"},
     "prep_minutes": 70,
     "price_cny": 42,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/3"
   },
   {
@@ -62,10 +62,10 @@
     "dietary_tags": ["无乳制品", "无麸质"],
     "allergens": ["鱼"],
     "ingredients": ["鲈鱼", "小白菜", "姜", "葱"],
-    "nutrition": {"calories_kcal": 346, "protein_g": 45, "carbohydrates_g": 14, "fat_g": 11, "fiber_g": 5, "sodium_mg": 438, "serving_size": "1份"},
+    "nutrition": {"calories_kcal": 346, "protein_g": 45, "carbohydrates_g": 14, "fat_g": 11, "fiber_g": 5, "sodium_mg": 438, "serving_size": "1份", "source_status": "unverified_estimate"},
     "prep_minutes": 25,
     "price_cny": 48,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/4"
   },
   {
@@ -79,10 +79,10 @@
     "dietary_tags": ["素食", "无乳制品"],
     "allergens": ["大豆", "麸质"],
     "ingredients": ["荞麦面", "北豆腐", "香菇", "小白菜", "酱油"],
-    "nutrition": {"calories_kcal": 432, "protein_g": 22, "carbohydrates_g": 62, "fat_g": 12, "fiber_g": 10, "sodium_mg": 596, "serving_size": "1碗"},
+    "nutrition": {"calories_kcal": 432, "protein_g": 22, "carbohydrates_g": 62, "fat_g": 12, "fiber_g": 10, "sodium_mg": 596, "serving_size": "1碗", "source_status": "unverified_estimate"},
     "prep_minutes": 20,
     "price_cny": 24,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/5"
   },
   {
@@ -96,10 +96,10 @@
     "dietary_tags": ["纯素", "无乳制品", "无麸质"],
     "allergens": [],
     "ingredients": ["南瓜", "鹰嘴豆", "番茄", "糙米", "咖喱粉"],
-    "nutrition": {"calories_kcal": 486, "protein_g": 17, "carbohydrates_g": 78, "fat_g": 13, "fiber_g": 15, "sodium_mg": 421, "serving_size": "1份"},
+    "nutrition": {"calories_kcal": 486, "protein_g": 17, "carbohydrates_g": 78, "fat_g": 13, "fiber_g": 15, "sodium_mg": 421, "serving_size": "1份", "source_status": "unverified_estimate"},
     "prep_minutes": 35,
     "price_cny": 27,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/6"
   },
   {
@@ -113,10 +113,10 @@
     "dietary_tags": ["无乳制品", "无麸质"],
     "allergens": ["甲壳类"],
     "ingredients": ["虾仁", "西兰花", "糙米", "蒜"],
-    "nutrition": {"calories_kcal": 458, "protein_g": 35, "carbohydrates_g": 57, "fat_g": 10, "fiber_g": 8, "sodium_mg": 512, "serving_size": "1份"},
+    "nutrition": {"calories_kcal": 458, "protein_g": 35, "carbohydrates_g": 57, "fat_g": 10, "fiber_g": 8, "sodium_mg": 512, "serving_size": "1份", "source_status": "unverified_estimate"},
     "prep_minutes": 20,
     "price_cny": 38,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/7"
   },
   {
@@ -130,10 +130,10 @@
     "dietary_tags": ["素食", "无乳制品"],
     "allergens": ["鸡蛋", "麸质"],
     "ingredients": ["全麦吐司", "牛油果", "鸡蛋", "番茄"],
-    "nutrition": {"calories_kcal": 402, "protein_g": 18, "carbohydrates_g": 37, "fat_g": 23, "fiber_g": 9, "sodium_mg": 386, "serving_size": "2片"},
+    "nutrition": {"calories_kcal": 402, "protein_g": 18, "carbohydrates_g": 37, "fat_g": 23, "fiber_g": 9, "sodium_mg": 386, "serving_size": "2片", "source_status": "unverified_estimate"},
     "prep_minutes": 12,
     "price_cny": 25,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/8"
   },
   {
@@ -147,10 +147,10 @@
     "dietary_tags": ["纯素", "无乳制品", "无麸质"],
     "allergens": ["芝麻"],
     "ingredients": ["小米", "山药", "菠菜", "芝麻油"],
-    "nutrition": {"calories_kcal": 312, "protein_g": 10, "carbohydrates_g": 56, "fat_g": 7, "fiber_g": 7, "sodium_mg": 286, "serving_size": "1套"},
+    "nutrition": {"calories_kcal": 312, "protein_g": 10, "carbohydrates_g": 56, "fat_g": 7, "fiber_g": 7, "sodium_mg": 286, "serving_size": "1套", "source_status": "unverified_estimate"},
     "prep_minutes": 30,
     "price_cny": 16,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/9"
   },
   {
@@ -164,10 +164,10 @@
     "dietary_tags": ["无乳制品"],
     "allergens": ["大豆", "麸质", "芝麻"],
     "ingredients": ["鸡胸肉", "全麦面", "黄瓜", "辣椒", "芝麻", "酱油"],
-    "nutrition": {"calories_kcal": 497, "protein_g": 38, "carbohydrates_g": 58, "fat_g": 14, "fiber_g": 8, "sodium_mg": 754, "serving_size": "1碗"},
+    "nutrition": {"calories_kcal": 497, "protein_g": 38, "carbohydrates_g": 58, "fat_g": 14, "fiber_g": 8, "sodium_mg": 754, "serving_size": "1碗", "source_status": "unverified_estimate"},
     "prep_minutes": 22,
     "price_cny": 28,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/10"
   },
   {
@@ -181,10 +181,10 @@
     "dietary_tags": ["无乳制品", "无麸质"],
     "allergens": ["鱼"],
     "ingredients": ["三文鱼", "紫薯", "生菜", "番茄", "橄榄油"],
-    "nutrition": {"calories_kcal": 526, "protein_g": 34, "carbohydrates_g": 48, "fat_g": 23, "fiber_g": 9, "sodium_mg": 392, "serving_size": "1碗"},
+    "nutrition": {"calories_kcal": 526, "protein_g": 34, "carbohydrates_g": 48, "fat_g": 23, "fiber_g": 9, "sodium_mg": 392, "serving_size": "1碗", "source_status": "unverified_estimate"},
     "prep_minutes": 25,
     "price_cny": 46,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/11"
   },
   {
@@ -198,10 +198,10 @@
     "dietary_tags": ["无乳制品", "无麸质"],
     "allergens": [],
     "ingredients": ["鸡腿肉", "香菇", "金针菇", "白菜", "胡萝卜"],
-    "nutrition": {"calories_kcal": 442, "protein_g": 39, "carbohydrates_g": 24, "fat_g": 22, "fiber_g": 7, "sodium_mg": 632, "serving_size": "1人份"},
+    "nutrition": {"calories_kcal": 442, "protein_g": 39, "carbohydrates_g": 24, "fat_g": 22, "fiber_g": 7, "sodium_mg": 632, "serving_size": "1人份", "source_status": "unverified_estimate"},
     "prep_minutes": 35,
     "price_cny": 34,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/12"
   },
   {
@@ -215,10 +215,10 @@
     "dietary_tags": ["纯素", "无乳制品"],
     "allergens": ["花生", "麸质", "大豆"],
     "ingredients": ["燕麦", "香蕉", "花生酱", "豆奶"],
-    "nutrition": {"calories_kcal": 446, "protein_g": 16, "carbohydrates_g": 62, "fat_g": 17, "fiber_g": 10, "sodium_mg": 148, "serving_size": "1杯"},
+    "nutrition": {"calories_kcal": 446, "protein_g": 16, "carbohydrates_g": 62, "fat_g": 17, "fiber_g": 10, "sodium_mg": 148, "serving_size": "1杯", "source_status": "unverified_estimate"},
     "prep_minutes": 6,
     "price_cny": 15,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/13"
   },
   {
@@ -232,10 +232,10 @@
     "dietary_tags": ["无乳制品", "无麸质"],
     "allergens": ["大豆"],
     "ingredients": ["猪排骨", "豆豉", "玉米", "胡萝卜", "菜心"],
-    "nutrition": {"calories_kcal": 612, "protein_g": 35, "carbohydrates_g": 45, "fat_g": 32, "fiber_g": 7, "sodium_mg": 788, "serving_size": "1份"},
+    "nutrition": {"calories_kcal": 612, "protein_g": 35, "carbohydrates_g": 45, "fat_g": 32, "fiber_g": 7, "sodium_mg": 788, "serving_size": "1份", "source_status": "unverified_estimate"},
     "prep_minutes": 45,
     "price_cny": 39,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/14"
   },
   {
@@ -249,10 +249,10 @@
     "dietary_tags": ["无乳制品"],
     "allergens": ["麸质"],
     "ingredients": ["瘦牛肉", "彩椒", "全麦饼", "生菜", "黑胡椒"],
-    "nutrition": {"calories_kcal": 521, "protein_g": 37, "carbohydrates_g": 49, "fat_g": 20, "fiber_g": 8, "sodium_mg": 624, "serving_size": "1卷"},
+    "nutrition": {"calories_kcal": 521, "protein_g": 37, "carbohydrates_g": 49, "fat_g": 20, "fiber_g": 8, "sodium_mg": 624, "serving_size": "1卷", "source_status": "unverified_estimate"},
     "prep_minutes": 20,
     "price_cny": 35,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/15"
   },
   {
@@ -266,10 +266,10 @@
     "dietary_tags": ["纯素", "无乳制品", "无麸质"],
     "allergens": ["大豆"],
     "ingredients": ["无糖豆乳", "奇亚籽", "猕猴桃", "草莓"],
-    "nutrition": {"calories_kcal": 264, "protein_g": 11, "carbohydrates_g": 31, "fat_g": 12, "fiber_g": 11, "sodium_mg": 82, "serving_size": "1杯"},
+    "nutrition": {"calories_kcal": 264, "protein_g": 11, "carbohydrates_g": 31, "fat_g": 12, "fiber_g": 11, "sodium_mg": 82, "serving_size": "1杯", "source_status": "unverified_estimate"},
     "prep_minutes": 8,
     "price_cny": 17,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/16"
   },
   {
@@ -283,10 +283,10 @@
     "dietary_tags": ["素食", "无乳制品", "无麸质"],
     "allergens": ["鸡蛋", "大豆"],
     "ingredients": ["番茄", "鸡蛋", "嫩豆腐", "小葱"],
-    "nutrition": {"calories_kcal": 286, "protein_g": 22, "carbohydrates_g": 17, "fat_g": 15, "fiber_g": 4, "sodium_mg": 426, "serving_size": "1大碗"},
+    "nutrition": {"calories_kcal": 286, "protein_g": 22, "carbohydrates_g": 17, "fat_g": 15, "fiber_g": 4, "sodium_mg": 426, "serving_size": "1大碗", "source_status": "unverified_estimate"},
     "prep_minutes": 15,
     "price_cny": 18,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/17"
   },
   {
@@ -300,10 +300,10 @@
     "dietary_tags": ["纯素", "无乳制品", "无麸质"],
     "allergens": [],
     "ingredients": ["红腰豆", "玉米", "糙米", "彩椒", "西葫芦"],
-    "nutrition": {"calories_kcal": 472, "protein_g": 18, "carbohydrates_g": 82, "fat_g": 9, "fiber_g": 17, "sodium_mg": 368, "serving_size": "1碗"},
+    "nutrition": {"calories_kcal": 472, "protein_g": 18, "carbohydrates_g": 82, "fat_g": 9, "fiber_g": 17, "sodium_mg": 368, "serving_size": "1碗", "source_status": "unverified_estimate"},
     "prep_minutes": 30,
     "price_cny": 26,
-    "source": "NutriPilot人工审核种子数据",
+    "source": "NutriPilot演示数据；营养估算未独立核验",
     "source_uri": "seed://meals/18"
   }
 ]

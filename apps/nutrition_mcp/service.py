@@ -130,6 +130,8 @@ class NutritionMCPService:
                     allergens=hit.meal.allergens,
                     prep_minutes=hit.meal.prep_minutes,
                     price_cny=hit.meal.price_cny,
+                    recipe_id=hit.meal.recipe_id,
+                    meal_role=hit.meal.meal_role,
                     tastes=hit.meal.tastes,
                     cuisines=hit.meal.cuisines,
                     dietary_tags=hit.meal.dietary_tags,
@@ -160,7 +162,10 @@ class NutritionMCPService:
             nutrition=meal.nutrition,
             ingredients=meal.ingredients,
             allergens=meal.allergens,
-            serving_note="营养值按种子数据中的标准份量估算，实际值会随食材和烹调方式变化。",
+            recipe_id=meal.recipe_id,
+            meal_role=meal.meal_role,
+            serving_note=meal.nutrition.calculation_note
+            or "营养值按记录中的标准份量估算，实际值会随食材和烹调方式变化。",
             citation={
                 "source_id": f"meal:{meal.id}",
                 "title": meal.name,

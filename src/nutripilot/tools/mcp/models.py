@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
@@ -37,8 +37,10 @@ class MCPMealHit(BaseModel):
     nutrition: NutritionFacts
     ingredients: list[str]
     allergens: list[str]
-    prep_minutes: int
-    price_cny: float
+    prep_minutes: int | None
+    price_cny: float | None
+    recipe_id: int | None = None
+    meal_role: Literal["complete_meal", "dish", "staple", "soup", "snack"] = "complete_meal"
     tastes: list[str] = Field(default_factory=list)
     cuisines: list[str] = Field(default_factory=list)
     dietary_tags: list[str] = Field(default_factory=list)
@@ -81,6 +83,8 @@ class GetNutritionMCPResult(BaseModel):
     nutrition: NutritionFacts
     ingredients: list[str]
     allergens: list[str]
+    recipe_id: int | None = None
+    meal_role: Literal["complete_meal", "dish", "staple", "soup", "snack"] = "complete_meal"
     serving_note: str
     citation: dict[str, Any]
 

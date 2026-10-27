@@ -40,7 +40,10 @@ class IntentAgent:
 
     async def run(self, state: AgentState) -> dict[str, Any]:
         started = time.monotonic()
-        explicit, invalid = extract_plan_scope(state["user_message"])
+        current_date = date.fromisoformat(state["current_date"])
+        explicit, invalid = extract_plan_scope(
+            state["user_message"], current_date=current_date
+        )
         if invalid and any(term in state["user_message"] for term in ("计划", "餐单")):
             record_worker_event(
                 self.recorder,
@@ -64,7 +67,7 @@ class IntentAgent:
             "message": state["user_message"],
             "slots": state.get("slots", {}),
             "conversation_summary": state.get("conversation_summary"),
-            "current_date": date.today().isoformat(),
+            "current_date": state["current_date"],
             "clarification_intent": state.get("clarification_intent"),
         }
         try:
@@ -153,7 +156,10 @@ def _required_missing(output: IntentOutput, slots: dict[str, Any]) -> list[str]:
 def _resolved_slots(state: AgentState, output: IntentOutput) -> tuple[dict[str, Any], list[str]]:
     slots = merge_slots(state.get("slots", {}), output.extracted_slots)
     if output.intent is Intent.MEAL_PLAN:
-        explicit, missing = extract_plan_scope(state["user_message"])
+        explicit, missing = extract_plan_scope(
+            state["user_message"],
+            current_date=date.fromisoformat(state["current_date"]),
+        )
         slots.update(explicit)
         if slots.get("max_calories_kcal") == explicit.get("daily_calorie_target"):
             slots.pop("max_calories_kcal", None)

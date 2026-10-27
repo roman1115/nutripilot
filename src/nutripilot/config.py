@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -19,6 +20,7 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     app_mode: Literal["demo", "docker", "production", "test"] = "demo"
+    user_timezone: str = "America/Los_Angeles"
     model_provider: Literal["fake", "openai"] = "fake"
     model_name: str = "qwen-plus"
     model_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -54,6 +56,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_model_credentials(self) -> Settings:
+        try:
+            ZoneInfo(self.user_timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("USER_TIMEZONE must be a valid IANA time zone") from exc
         if self.model_provider == "openai" and not self.model_api_key:
             raise ValueError("MODEL_API_KEY is required when MODEL_PROVIDER=openai")
         if any(len(token) < 32 or user_id < 1 for token, user_id in self.api_access_tokens.items()):

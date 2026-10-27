@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, TypedDict
 from uuid import uuid4
 
@@ -15,6 +16,7 @@ class AgentState(TypedDict, total=False):
     user_id: int
     phase: str
     user_message: str
+    current_date: str
     intent: str | None
     intent_confidence: float | None
     slots: dict[str, Any]
@@ -49,6 +51,7 @@ def new_agent_state(
     thread_id: str | None = None,
     turn_id: str | None = None,
     trace_id: str | None = None,
+    current_date: date | None = None,
 ) -> AgentState:
     """Create explicit defaults so every checkpoint is inspectable."""
 
@@ -59,6 +62,7 @@ def new_agent_state(
         user_id=user_id,
         phase=Phase.RECEIVED.value,
         user_message=message.strip(),
+        current_date=(current_date or date.today()).isoformat(),
         intent=None,
         intent_confidence=None,
         slots={},

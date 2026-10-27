@@ -5,6 +5,7 @@ from apps.nutrition_mcp.service import (
     _build_reranker,
     build_default_service,
 )
+from pydantic import ValidationError
 
 from nutripilot.application import build_container
 from nutripilot.application.runtime import _psycopg_url, start_container, stop_container
@@ -47,6 +48,11 @@ def test_asyncpg_url_is_converted_for_langgraph_psycopg_checkpointer() -> None:
     assert _psycopg_url("postgresql://user:pass@postgres/db") == (
         "postgresql://user:pass@postgres/db"
     )
+
+
+def test_settings_reject_unknown_user_timezone() -> None:
+    with pytest.raises(ValidationError, match="USER_TIMEZONE"):
+        Settings(_env_file=None, user_timezone="Mars/Olympus")
 
 
 def test_bge_provider_wiring_is_lazy_and_uses_configured_models(

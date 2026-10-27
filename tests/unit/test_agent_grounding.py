@@ -48,6 +48,8 @@ def test_grounding_overwrites_model_authored_meal_facts() -> None:
     assert "模型生成" not in item.reason
     assert grounded.citations[0].source_id == "meal:2"
     assert "9999" not in grounded.message
+    assert any("未独立核验" in warning for warning in grounded.warnings)
+    assert "估算约 516" in grounded.recommendations[0].reason
 
 
 def test_grounding_explains_verified_preferences_without_inventing_personal_facts() -> None:
@@ -89,3 +91,39 @@ def test_grounding_explains_verified_preferences_without_inventing_personal_fact
     assert "至少 30 克" in reason
     assert "你患有" not in grounded.model_dump_json()
     assert "餐食记录标注的过敏原：鱼" in reason
+
+
+def test_verified_nutrition_links_its_source_and_omits_estimate_warning() -> None:
+    grounded = ground_recommendation_facts(
+        FinalResponse(
+            message="原始模型内容",
+            recommendations=[MealRecommendation(meal_id=2, name="餐食", reason="原始理由")],
+        ),
+        [
+            {
+                "tool_name": "search_meals",
+                "status": "success",
+                "data": {
+                    "hits": [
+                        {
+                            "meal_id": 2,
+                            "name": "餐食",
+                            "nutrition": {
+                                "calories_kcal": 400,
+                                "protein_g": 30,
+                                "serving_size": "1碗",
+                                "serving_weight_g": 350,
+                                "source_status": "verified",
+                                "source_uri": "https://example.test/nutrition/2",
+                            },
+                            "allergens": [],
+                        }
+                    ]
+                },
+            }
+        ],
+    )
+
+    assert grounded.citations[0].uri == "https://example.test/nutrition/2"
+    assert "估算" not in grounded.recommendations[0].reason
+    assert not any("未独立核验" in warning for warning in grounded.warnings)

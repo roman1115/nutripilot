@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from nutripilot.retrieval.catalog import FoodCatalog, load_food_catalog
 from nutripilot.retrieval.models import DietaryGuideline, Meal
 from nutripilot.tools.errors import ToolRuntimeError
 from nutripilot.tools.local.models import (
@@ -30,7 +31,9 @@ class InMemoryDataStore:
         meals: list[Meal] | None = None,
         guidelines: list[DietaryGuideline] | None = None,
         profiles: list[UserProfile] | None = None,
+        catalog: FoodCatalog | None = None,
     ) -> None:
+        self.catalog = catalog or FoodCatalog(sources=[], ingredients=[], recipes=[])
         self._meals = {meal.id: meal for meal in meals or []}
         self._guidelines = {item.id: item for item in guidelines or []}
         self._profiles = {profile.user_id: profile for profile in profiles or []}
@@ -207,6 +210,10 @@ def load_seed_store(data_directory: str | Path) -> InMemoryDataStore:
         if not isinstance(item.get("nutrition"), dict) or not item["nutrition"].get("serving_size"):
             raise ValueError("Seed nutrition must include a serving size")
     meals = [Meal.model_validate(item) for item in raw_meals]
+    catalog_paths = [data_path / f"{name}.json" for name in ("sources", "ingredients", "recipes")]
+    catalog = load_food_catalog(data_path) if any(path.exists() for path in catalog_paths) else None
+    if catalog is not None:
+        meals.extend(catalog.calculated_meals())
     if len({meal.id for meal in meals}) != len(meals):
         raise ValueError("Duplicate meal IDs in seed data")
     names: dict[str, int] = {}
@@ -228,7 +235,9 @@ def load_seed_store(data_directory: str | Path) -> InMemoryDataStore:
         if profile_file.exists()
         else []
     )
-    return InMemoryDataStore(meals=meals, guidelines=guidelines, profiles=profiles)
+    return InMemoryDataStore(
+        meals=meals, guidelines=guidelines, profiles=profiles, catalog=catalog
+    )
 
 
 def _load_json_array(path: Path) -> list[dict[str, Any]]:

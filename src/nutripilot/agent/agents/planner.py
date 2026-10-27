@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import date
 from typing import Any
 
 from nutripilot.agent.agents.base import fallback_update, record_worker_event
@@ -75,6 +76,7 @@ class PlannerAgent:
             "candidate_ids": state.get("candidate_ids", []),
             "turn_id": state["turn_id"],
             "user_message": state["user_message"],
+            "current_date": state["current_date"],
             "available_tools": self.registry.planner_schemas(allowed_tools),
         }
         if (
@@ -277,7 +279,11 @@ def _plan_spec(state: AgentState) -> PlanSpec:
         ),
         {},
     )
-    return PlanSpec.from_slots(state.get("slots", {}), profile=profile)
+    return PlanSpec.from_slots(
+        state.get("slots", {}),
+        start_date=date.fromisoformat(state["current_date"]),
+        profile=profile,
+    )
 
 
 def compact_tool_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -297,6 +303,8 @@ def compact_tool_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                             "meal_id",
                             "name",
                             "meal_types",
+                            "meal_role",
+                            "recipe_id",
                             "ingredients",
                             "allergens",
                             "nutrition",

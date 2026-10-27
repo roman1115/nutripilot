@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from datetime import timedelta
 from itertools import product
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -33,6 +33,7 @@ class _PlanNutrition(BaseModel):
 
     calories_kcal: float = Field(ge=0)
     protein_g: float = Field(ge=0)
+    source_status: str = "unverified_estimate"
 
 
 class _PlanCandidate(BaseModel):
@@ -43,6 +44,7 @@ class _PlanCandidate(BaseModel):
     ingredients: list[str]
     allergens: list[str]
     nutrition: _PlanNutrition | None = None
+    meal_role: Literal["complete_meal", "dish", "staple", "soup", "snack"] = "complete_meal"
 
 # Product matching tolerance, not a clinical recommendation or a derived dietary target.
 CALORIE_TARGET_TOLERANCE = 0.10
@@ -152,7 +154,7 @@ class PlanBuilder:
         unsafe_ids: set[int] = set()
         for item in request.items:
             candidate = by_id[item.meal_id]
-            if item.meal_type not in candidate.meal_types:
+            if item.meal_type not in candidate.meal_types or candidate.meal_role != "complete_meal":
                 incompatible_ids.add(item.meal_id)
             if has_dietary_conflict(
                 meal_allergens=candidate.allergens,
@@ -190,6 +192,14 @@ class PlanBuilder:
                 days[item.meal_date.isoformat()].append(by_id[item.meal_id])
         warnings: list[str] = []
         summaries: list[dict[str, Any]] = []
+        selected = {item.meal_id for item in request.items}
+        if any(
+            meal_id in selected
+            and meal.nutrition
+            and meal.nutrition.source_status != "verified"
+            for meal_id, meal in by_id.items()
+        ):
+            warnings.append("餐单营养值包含未独立核验的估算，目标匹配结果仅供参考。")
         full_day = spec.meal_type is None
         if not full_day and (
             spec.daily_calorie_target is not None or spec.daily_protein_target_g is not None
@@ -319,7 +329,11 @@ class PlanBuilder:
         candidates: list[_PlanCandidate],
     ) -> dict[str, list[_PlanCandidate]]:
         pools = {
-            meal_type: [candidate for candidate in candidates if meal_type in candidate.meal_types]
+            meal_type: [
+                candidate
+                for candidate in candidates
+                if meal_type in candidate.meal_types and candidate.meal_role == "complete_meal"
+            ]
             for meal_type in spec.meal_types
         }
         missing = [meal_type for meal_type, pool in pools.items() if not pool]
