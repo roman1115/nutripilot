@@ -15,7 +15,8 @@ from typing import Any
 from urllib.parse import quote
 
 from nutripilot.paths import project_root
-from nutripilot.retrieval.catalog import FoodCatalog
+from nutripilot.retrieval.catalog import FoodCatalog, Ingredient
+from nutripilot.retrieval.catalog_mapping import CatalogMappings, apply_recipe_mappings
 
 USDA_URL = "https://fdc.nal.usda.gov/fdc-datasets/FoodData_Central_sr_legacy_food_csv_2018-04.zip"
 NUTRIENTS = {
@@ -125,7 +126,12 @@ def import_recipes(directory: Path, commit: str, paths: list[str]) -> list[dict[
     return recipes
 
 
-def build_catalog(usda: Path, howtocook: Path, selection: dict[str, Any]) -> FoodCatalog:
+def build_catalog(
+    usda: Path,
+    howtocook: Path,
+    selection: dict[str, Any],
+    mappings: CatalogMappings | None = None,
+) -> FoodCatalog:
     commit = selection["howtocook_commit"]
     license_bytes = subprocess.run(
         ["git", "-C", str(howtocook), "show", f"{commit}:LICENSE"],
@@ -135,58 +141,13 @@ def build_catalog(usda: Path, howtocook: Path, selection: dict[str, Any]) -> Foo
     if b"public domain" not in license_bytes or b"unlicense.org" not in license_bytes:
         raise ValueError("The pinned HowToCook license must be reviewed before import.")
     recipes = import_recipes(howtocook, commit, selection["recipes"])
-    # Only these three source recipes have a complete initial mass-based mapping.
-    ready: dict[str, dict[str, Any]] = {
-        "清蒸南瓜": {
-            "ingredients": [
-                {"quantity_text": "南瓜 300 g", "ingredient_id": "fdc:168448", "grams": 300},
-                {
-                    "quantity_text": "饮用水 1000 ml（用于蒸锅）",
-                    "consumed": False,
-                    "note": "蒸锅用水不作为食用投料，也不作为成菜重量。",
-                },
-            ],
-            "servings": 1,
-            "serving_label": "整份配方（原文供1至2人分食）",
-            "meal_types": ["snack"],
-            "meal_role": "dish",
-            "preparation_note": "以去籽后可食生南瓜300克作为投料；没有测量蒸熟后的重量。",
-        },
-        "糖拌西红柿": {
-            "ingredients": [
-                {
-                    "quantity_text": "西红柿2个（原文明确共200g）",
-                    "ingredient_id": "fdc:170457",
-                    "grams": 200,
-                },
-                {"quantity_text": "白砂糖20g", "ingredient_id": "fdc:169655", "grams": 20},
-            ],
-            "servings": 2,
-            "serving_label": "半份配方（原文2人份中的1人份）",
-            "meal_types": ["snack"],
-            "meal_role": "snack",
-            "preparation_note": "采用原文明确的200克番茄和20克白砂糖，不采用原文预估卡路里。",
-        },
-        "小米粥": {
-            "ingredients": [
-                {"quantity_text": "小米100克", "ingredient_id": "fdc:169702", "grams": 100},
-                {
-                    "quantity_text": "水2000克",
-                    "ingredient_id": "fdc:173647",
-                    "grams": 2000,
-                },
-            ],
-            "servings": 1,
-            "serving_label": "整锅配方（未确定单人份量）",
-            "meal_types": ["breakfast"],
-            "meal_role": "staple",
-            "preparation_note": "按整锅计算，不把2100克投料当作成粥重量或单人份量。",
-        },
-    }
-    for recipe in recipes:
-        if recipe["name"] in ready:
-            recipe.update(ready[recipe["name"]])
-            recipe.update(status="calculation_ready", review_issues=[])
+    if mappings is None:
+        mappings = CatalogMappings.model_validate_json(
+            (project_root() / "data" / "recipe_mappings.json").read_text(encoding="utf-8")
+        )
+    supplement_path = project_root() / "data" / "supplemental_ingredients.json"
+    supplement = import_supplement(supplement_path, selection["supplemental_sha256"])
+    prepared = apply_recipe_mappings(recipes, mappings)
     return FoodCatalog.model_validate(
         {
             "sources": [
@@ -208,13 +169,25 @@ def build_catalog(usda: Path, howtocook: Path, selection: dict[str, Any]) -> Foo
                     "sha256": hashlib.sha256(license_bytes).hexdigest(),
                     "checksum_scope": "license",
                 },
-            ],
+            ] + [source.model_dump(mode="json") for source in supplement.sources],
             "ingredients": import_ingredients(
-                usda, selection["usda_sha256"], selection["ingredient_mappings"]
-            ),
-            "recipes": recipes,
+                usda,
+                selection["usda_sha256"],
+                {**selection["ingredient_mappings"], **mappings.ingredient_mappings},
+            ) + [item.model_dump(mode="json") for item in supplement.ingredients],
+            "recipes": [recipe.model_dump(mode="json") for recipe in prepared],
         }
     )
+
+
+def import_supplement(path: Path, expected_sha256: str) -> FoodCatalog:
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != expected_sha256:
+        raise ValueError("Supplement checksum differs from the reviewed snapshot.")
+    supplement = FoodCatalog.model_validate_json(content)
+    if supplement.recipes:
+        raise ValueError("Ingredient supplements must not replace imported source recipes.")
+    return supplement
 
 
 def main() -> None:
@@ -230,11 +203,38 @@ def main() -> None:
     outputs = {}
     for key in ("sources", "ingredients", "recipes"):
         items = getattr(catalog, key)
-        content = "[\n" + ",\n".join(item.model_dump_json() for item in items) + "\n]\n"
+        records = [
+            item.model_dump_json(
+                exclude={"source_nutrient_values"}
+                if isinstance(item, Ingredient) and not item.source_nutrient_values
+                else None
+            )
+            for item in items
+        ]
+        content = "[\n" + ",\n".join(records) + "\n]\n"
         path = args.output / f"{key}.json"
         if path.exists() and path.read_text(encoding="utf-8") != content:
             raise ValueError("Refusing to overwrite changed catalog files; use a new --output.")
         outputs[path] = content
+    report = [
+        "# 菜谱批量整理记录",
+        "",
+        "本文件由导入脚本生成，记录全部50道原始菜谱的整理结果。",
+        "通过仅表示可按记录的投料与假设估算，不表示实测或专业审核。",
+        "",
+        "| ID | 菜谱 | 状态 | 整理说明或异常原因 |",
+        "| --- | --- | --- | --- |",
+    ]
+    for recipe in catalog.recipes:
+        detail = "；".join(recipe.review_issues) or recipe.preparation_note or ""
+        report.append(
+            f"| {recipe.id} | {recipe.name} | {recipe.status} | {detail.replace('|', '/')} |"
+        )
+    report_path = args.output / "catalog_report.md"
+    report_content = "\n".join(report) + "\n"
+    if report_path.exists() and report_path.read_text(encoding="utf-8") != report_content:
+        raise ValueError("Refusing to overwrite changed catalog report; use a new --output.")
+    outputs[report_path] = report_content
     for path, content in outputs.items():
         if not path.exists():
             path.write_text(content, encoding="utf-8")

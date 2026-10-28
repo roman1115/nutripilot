@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class NumericRange(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, strict=True)
+
+    minimum: float = Field(ge=0)
+    maximum: float = Field(ge=0)
+
+    @model_validator(mode="after")
+    def ordered(self) -> NumericRange:
+        if self.maximum < self.minimum:
+            raise ValueError("Range maximum must be at least its minimum.")
+        return self
 
 
 class Citation(BaseModel):
@@ -19,6 +32,7 @@ class MealRecommendation(BaseModel):
     reason: str
     calories_kcal: float | None = Field(default=None, ge=0)
     protein_g: float | None = Field(default=None, ge=0)
+    nutrient_ranges: dict[str, NumericRange] = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
 
 

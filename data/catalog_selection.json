@@ -1,6 +1,7 @@
 {
   "howtocook_commit": "308cc8b7dab1da84b20e7fafdf836a715437f582",
   "usda_sha256": "b80817294b8850530aaedf2e515c02593b1824f763a0ff356e5c2081643e6fd0",
+  "supplemental_sha256": "769e098a6034c875e641ddae33dc42b34d6f328143543ba0189952454e4e303e",
   "recipes": [
     "dishes/vegetable_dish/西红柿炒鸡蛋.md",
     "dishes/vegetable_dish/蒜蓉西兰花.md",

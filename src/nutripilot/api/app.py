@@ -136,6 +136,11 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
             "recipes": len(catalog.recipes),
             "calculation_ready_recipes": ready_count,
             "pending_recipes": len(catalog.recipes) - ready_count,
+            "recipes_with_ranges": sum(
+                recipe.status == "calculation_ready"
+                and any(part.grams_range is not None for part in recipe.ingredients)
+                for recipe in catalog.recipes
+            ),
             "sources": [source.model_dump(mode="json") for source in catalog.sources],
             "note": "源数据库食品条目不等于已完成中文映射；计算估算不等于成菜检测。",
         }

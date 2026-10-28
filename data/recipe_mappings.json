@@ -1,0 +1,810 @@
+{
+  "ingredient_mappings": {
+    "170005": {"name": "生小葱", "aliases": ["香葱", "葱花"], "allergens": [], "mapping_note": "USDA Onions, spring or scallions；项目配方选择生小葱可食部分。"},
+    "171016": {"name": "芝麻油", "aliases": ["香油", "麻油"], "allergens": ["芝麻"], "mapping_note": "USDA Oil, sesame；项目选择纯芝麻油，不代表复合香油。"},
+    "171401": {"name": "猪油", "aliases": [], "allergens": [], "mapping_note": "USDA Lard；项目选择纯猪油。"},
+    "173430": {"name": "无盐黄油", "aliases": [], "allergens": ["牛奶"], "mapping_note": "USDA Butter, without salt；项目明确选择无盐乳制黄油。"},
+    "169756": {"name": "干长粒白米", "aliases": ["项目用干大米"], "allergens": [], "mapping_note": "USDA Rice, white, long-grain, regular, raw, unenriched；项目统一选择该干米，不与熟米混用。"},
+    "171077": {"name": "去皮去骨生鸡胸肉", "aliases": ["鸡胸肉"], "allergens": [], "mapping_note": "USDA Chicken breast, skinless, boneless, raw；不带皮骨且未注液。"},
+    "167902": {"name": "生猪肉末", "aliases": [], "allergens": [], "mapping_note": "USDA Pork, fresh, ground, raw；采用源记录的肥瘦比例，非纯瘦肉。"},
+    "170390": {"name": "生小白菜", "aliases": ["项目用青菜"], "allergens": [], "mapping_note": "USDA Cabbage, chinese (pak-choi), raw；泛称青菜的配方在项目中明确选择小白菜。"},
+    "169228": {"name": "生茄子", "aliases": ["茄子"], "allergens": [], "mapping_note": "USDA Eggplant, raw；生鲜可食部分。"},
+    "170106": {"name": "生红辣椒", "aliases": ["项目用小米辣"], "allergens": [], "mapping_note": "USDA Peppers, hot chili, red, raw；项目红辣椒近似选择，未校正品种差异。"},
+    "170931": {"name": "黑胡椒粉", "aliases": [], "allergens": [], "mapping_note": "USDA Spices, pepper, black。"},
+    "170933": {"name": "白胡椒粉", "aliases": [], "allergens": [], "mapping_note": "USDA Spices, pepper, white。"},
+    "172237": {"name": "蒸馏白醋", "aliases": [], "allergens": [], "mapping_note": "USDA Vinegar, distilled；本批凉拌配方明确改用白醋，不声称代表原配方陈醋或香醋。"},
+    "174529": {"name": "通用蚝油估算记录", "aliases": [], "allergens": ["贝类", "大豆", "麸质"], "mapping_note": "USDA Sauce, oyster, ready-to-serve；仅为项目通用替代，牡蛎及复合调味料潜在大豆小麦保守标注；不代表特定品牌已核验。"},
+    "169070": {"name": "通用烹调用酒估算记录", "aliases": [], "allergens": ["亚硫酸盐"], "mapping_note": "USDA Alcoholic beverage, wine, cooking；项目以含盐烹调用酒替代料酒，不是原文中式料酒品牌；能量及钠全量计入，不估计酒精挥发。保守保留葡萄酒潜在亚硫酸盐。"},
+    "171562": {"name": "干鸡汤调味粉估算记录", "aliases": [], "allergens": ["牛奶", "大豆", "麸质", "芹菜"], "mapping_note": "USDA Soup, chicken broth or bouillon, dry；项目用干鸡汤调味粉替代泛称鸡精，不是纯味精或已核验品牌；复合粉可能含乳、大豆、小麦、芹菜，保守标注。"},
+    "168451": {"name": "生白萝卜", "aliases": ["白萝卜"], "allergens": [], "mapping_note": "USDA Radishes, oriental, raw；按去皮后生鲜可食投料使用，不与熟萝卜或干萝卜记录混用。"},
+    "169975": {"name": "生圆白菜", "aliases": ["包菜", "卷心菜"], "allergens": [], "mapping_note": "USDA Cabbage, raw；去除硬芯后的可食投料。"},
+    "167812": {"name": "生猪五花肉", "aliases": ["五花肉"], "allergens": [], "mapping_note": "USDA Pork, fresh, belly, raw；含肥肉，不用纯瘦肉营养代替五花肉。"},
+    "174924": {"name": "普通白吐司估算记录", "aliases": [], "allergens": ["麸质", "牛奶", "大豆", "鸡蛋"], "mapping_note": "USDA Bread, white, commercially prepared；采用普通白面包估算吐司，非品牌实测。复合面包潜在乳、蛋、大豆保守标注；按切边后称重。"},
+    "168277": {"name": "生培根估算记录", "aliases": [], "allergens": ["牛奶", "大豆", "麸质"], "mapping_note": "USDA Pork, cured, bacon, unprepared；生培根投料，不与煎熟脱脂克重混用。加工品潜在乳、大豆、小麦保守标注；非品牌配料核验。"},
+    "171009": {"name": "普通蛋黄酱估算记录", "aliases": [], "allergens": ["鸡蛋", "大豆", "芥末"], "mapping_note": "USDA Salad dressing, mayonnaise, regular；普通全脂蛋黄酱估算，保守标注蛋、大豆及芥末，非特定品牌配料核验。"},
+    "168556": {"name": "番茄调味酱估算记录", "aliases": [], "allergens": ["芹菜"], "mapping_note": "USDA Catsup；项目选择加糖盐的番茄调味酱，不当作纯番茄膏；复合调味可能含芹菜，保守标注。"},
+    "168908": {"name": "干小麦细面估算记录", "aliases": [], "allergens": ["麸质"], "mapping_note": "USDA Noodles, japanese, somen, dry；项目选择含盐干小麦细面作为干挂面版本，非蛋面、荞麦面或米粉；不扣减煮面水中的盐分流失。"},
+    "168878": {"name": "熟长粒白米饭", "aliases": ["项目用冷饭"], "allergens": [], "mapping_note": "USDA Rice, white, long-grain, regular, enriched, cooked；冷饭按熟饭可食重量近似，非干米换算。"},
+    "172964": {"name": "猪肉法兰克福香肠估算记录", "aliases": [], "allergens": ["牛奶", "大豆", "麸质"], "mapping_note": "USDA Frankfurter, pork；项目明确选择猪肉法兰克福香肠替代原文火腿肠；不声称为中式淀粉火腿肠同款。复合香肠潜在乳、大豆及小麦保守标注。"},
+    "170427": {"name": "生青甜椒", "aliases": ["青椒"], "allergens": [], "mapping_note": "USDA Peppers, sweet, green, raw；项目选择去蒂去籽青甜椒。"},
+    "170108": {"name": "生红甜椒", "aliases": ["红椒"], "allergens": [], "mapping_note": "USDA Peppers, sweet, red, raw；项目选择去蒂去籽红甜椒。"},
+    "173744": {"name": "干红芸豆", "aliases": ["红芸豆"], "allergens": [], "mapping_note": "USDA Beans, kidney, red, mature seeds, raw；按浸泡前干重计，不将泡发重量套入干豆数据。"},
+    "170917": {"name": "干月桂叶", "aliases": [], "allergens": [], "mapping_note": "USDA Spices, bay leaf；本批作为加热后捞出的香料，不计入主体营养。"},
+    "170919": {"name": "小豆蔻香料", "aliases": [], "allergens": [], "mapping_note": "USDA Spices, cardamom；项目混合香料子配方用，按干香料投料。"},
+    "170922": {"name": "芫荽籽粉", "aliases": ["香菜粉"], "allergens": [], "mapping_note": "USDA Spices, coriander seed；项目按磨粉使用，不用香菜叶替代。"},
+    "170923": {"name": "孜然粉", "aliases": [], "allergens": [], "mapping_note": "USDA Spices, cumin seed；项目按磨粉使用。"},
+    "170932": {"name": "干红辣椒粉", "aliases": [], "allergens": [], "mapping_note": "USDA Spices, pepper, red or cayenne；原文干整辣椒在项目中改用去梗干辣椒粉，明确形态和品种近似。"},
+    "171320": {"name": "肉桂粉", "aliases": [], "allergens": [], "mapping_note": "USDA Spices, cinnamon, ground；用于项目混合香料子配方。"},
+    "171321": {"name": "丁香粉", "aliases": [], "allergens": [], "mapping_note": "USDA Spices, cloves, ground；用于项目混合香料子配方。"},
+    "172231": {"name": "姜黄粉", "aliases": [], "allergens": [], "mapping_note": "USDA Spices, turmeric, ground。"},
+    "169997": {"name": "生香菜叶", "aliases": ["香菜"], "allergens": [], "mapping_note": "USDA Coriander (cilantro) leaves, raw；不与芫荽籽粉混用。"},
+    "168436": {"name": "干香菇", "aliases": [], "allergens": [], "mapping_note": "USDA Mushrooms, shiitake, dried；按泡发前干重计，泡发水只计一次。"},
+    "172385": {"name": "带皮去骨生鸡腿肉", "aliases": [], "allergens": [], "mapping_note": "USDA Chicken, broilers or fryers, thigh, meat and skin, raw；按去骨后肉和皮投料，不使用带骨购买重量。"},
+    "175142": {"name": "去骨生鲈鱼肉估算记录", "aliases": [], "allergens": ["鱼"], "mapping_note": "USDA Fish, sea bass, mixed species, raw；项目以混合鲈鱼记录近似泛称鲈鱼，非中国某一特定鲈鱼种；按可食鱼肉重量，不包括头骨鳞内脏。"},
+    "170069": {"name": "生冬瓜", "aliases": ["冬瓜"], "allergens": [], "mapping_note": "USDA Waxgourd, (chinese preserving melon), raw；去皮籽后的可食投料。"},
+    "169961": {"name": "生四季豆", "aliases": [], "allergens": [], "mapping_note": "USDA Beans, snap, green, raw；泛称豆角的项目版本明确选择四季豆，不当作豇豆。"},
+    "169698": {"name": "玉米淀粉", "aliases": [], "allergens": [], "mapping_note": "USDA Cornstarch；仅用于原文未指定类型的淀粉，明确指定土豆淀粉的菜谱仍使用土豆淀粉。"}
+  },
+  "quantity_rules": {
+    "tomato": {"ingredient_id": "fdc:170457", "grams_per_unit": 1, "unit": "g", "evidence": "原文克重；项目按生番茄可食投料计。"},
+    "pumpkin": {"ingredient_id": "fdc:168448", "grams_per_unit": 1, "unit": "g", "evidence": "原文克重；以去籽后可食投料计。"},
+    "sugar": {"ingredient_id": "fdc:169655", "grams_per_unit": 1, "unit": "g", "evidence": "普通白砂糖克重。"},
+    "salt": {"ingredient_id": "fdc:173468", "grams_per_unit": 1, "unit": "g", "evidence": "普通食盐克重；不替代低钠盐。"},
+    "egg": {"ingredient_id": "fdc:171287", "grams_per_unit": 50, "unit": "个", "evidence": "项目假设：每个鸡蛋去壳可食部分50克，不是源菜谱实测；完整鸡蛋60克不直接当可食重量。"},
+    "garlic": {"ingredient_id": "fdc:169230", "grams_per_unit": 1, "unit": "g", "evidence": "生大蒜可食克重。"},
+    "garlic_clove": {"ingredient_id": "fdc:169230", "grams_per_unit": 4, "unit": "瓣", "evidence": "项目假设：每瓣去皮蒜4克，不是统一自然规格。"},
+    "onion": {"ingredient_id": "fdc:170000", "grams_per_unit": 1, "unit": "g", "evidence": "生洋葱可食克重。"},
+    "scallion": {"ingredient_id": "fdc:170005", "grams_per_unit": 1, "unit": "g", "evidence": "生小葱可食克重。"},
+    "ginger": {"ingredient_id": "fdc:169231", "grams_per_unit": 1, "unit": "g", "evidence": "生姜可食克重。"},
+    "oil_ml": {"ingredient_id": "fdc:172336", "grams_per_unit": 0.92, "unit": "ml", "evidence": "项目明确选择菜籽油；假设每毫升0.92克，非实测密度；普通炒菜全部投料计入。"},
+    "oil": {"ingredient_id": "fdc:172336", "grams_per_unit": 1, "unit": "g", "evidence": "项目明确选择菜籽油，按克计量。"},
+    "absorbed_oil": {"ingredient_id": "fdc:172336", "grams_per_unit": 1, "unit": "g", "evidence": "项目菜籽油吸油量假设，必须按具体配方记录上下限；不代表炸锅总油或实测吸油率。"},
+    "sesame_ml": {"ingredient_id": "fdc:171016", "grams_per_unit": 0.92, "unit": "ml", "evidence": "项目假设：纯芝麻油每毫升0.92克。"},
+    "soy_ml": {"ingredient_id": "fdc:174277", "grams_per_unit": 1.15, "unit": "ml", "evidence": "项目选择含小麦酿造酱油作生抽估算替代；假设每毫升1.15克，不代表原文具体品牌。"},
+    "soy": {"ingredient_id": "fdc:174277", "grams_per_unit": 1, "unit": "g", "evidence": "项目选择含小麦酿造酱油作生抽估算替代，按克计。"},
+    "oyster_ml": {"ingredient_id": "fdc:174529", "grams_per_unit": 1.2, "unit": "ml", "evidence": "项目通用蚝油估算替代；假设每毫升1.2克，不代表具体品牌。"},
+    "oyster": {"ingredient_id": "fdc:174529", "grams_per_unit": 1, "unit": "g", "evidence": "项目通用蚝油估算替代；按原文克重，不再做密度换算。"},
+    "vinegar_ml": {"ingredient_id": "fdc:172237", "grams_per_unit": 1, "unit": "ml", "evidence": "项目明确改用蒸馏白醋；假设每毫升1克，不将其称为原文陈醋或香醋。"},
+    "broccoli": {"ingredient_id": "fdc:170379", "grams_per_unit": 1, "unit": "g", "evidence": "生西兰花可食克重。"},
+    "cauliflower": {"ingredient_id": "fdc:169986", "grams_per_unit": 1, "unit": "g", "evidence": "生花椰菜可食克重。"},
+    "cucumber": {"ingredient_id": "fdc:168409", "grams_per_unit": 1, "unit": "g", "evidence": "项目采用带皮生黄瓜可食克重。"},
+    "tofu": {"ingredient_id": "fdc:172475", "grams_per_unit": 1, "unit": "g", "evidence": "项目明确选择硫酸钙凝固硬豆腐，非任意嫩豆腐。"},
+    "zucchini": {"ingredient_id": "fdc:169291", "grams_per_unit": 1, "unit": "g", "evidence": "带皮生西葫芦可食克重。"},
+    "spinach": {"ingredient_id": "fdc:168462", "grams_per_unit": 1, "unit": "g", "evidence": "生菠菜投料克重，不扣减焯水损失。"},
+    "pakchoi": {"ingredient_id": "fdc:170390", "grams_per_unit": 1, "unit": "g", "evidence": "项目将泛称叶菜明确选为小白菜。"},
+    "celery": {"ingredient_id": "fdc:169988", "grams_per_unit": 1, "unit": "g", "evidence": "项目以USDA普通生芹菜替代原文香芹，注明品种差异。"},
+    "lard_ml": {"ingredient_id": "fdc:171401", "grams_per_unit": 0.9, "unit": "ml", "evidence": "项目选择纯猪油；假设每毫升0.9克。"},
+    "milk_ml": {"ingredient_id": "fdc:172217", "grams_per_unit": 1.03, "unit": "ml", "evidence": "项目选择全脂牛奶；假设每毫升1.03克，非品牌实测。"},
+    "oats": {"ingredient_id": "fdc:169705", "grams_per_unit": 1, "unit": "g", "evidence": "干燕麦投料，非煮熟燕麦重量。"},
+    "butter": {"ingredient_id": "fdc:173430", "grams_per_unit": 1, "unit": "g", "evidence": "项目选择无盐乳制黄油。"},
+    "corn": {"ingredient_id": "fdc:169998", "grams_per_unit": 1, "unit": "g", "evidence": "项目选择生甜玉米粒可食部分；不含玉米芯及皮。"},
+    "millet": {"ingredient_id": "fdc:169702", "grams_per_unit": 1, "unit": "g", "evidence": "干小米投料克重。"},
+    "rice_ml": {"ingredient_id": "fdc:169756", "grams_per_unit": 0.8, "unit": "ml", "evidence": "项目选择干长粒白米；假设每毫升堆积重量0.8克，不是水密度或熟饭密度。"},
+    "water": {"ingredient_id": "fdc:173647", "grams_per_unit": 1, "unit": "g", "evidence": "原文水的克重。"},
+    "water_ml": {"ingredient_id": "fdc:173647", "grams_per_unit": 1, "unit": "ml", "evidence": "项目近似：饮用水每毫升1克。"},
+    "chicken": {"ingredient_id": "fdc:171077", "grams_per_unit": 1, "unit": "g", "evidence": "去皮去骨未注液生鸡胸肉投料。"},
+    "pork": {"ingredient_id": "fdc:168249", "grams_per_unit": 1, "unit": "g", "evidence": "项目将泛称猪肉明确选为生猪里脊瘦肉，不冒充原作者指定部位。"},
+    "ground_pork": {"ingredient_id": "fdc:167902", "grams_per_unit": 1, "unit": "g", "evidence": "源营养记录的生猪肉末肥瘦比例。"},
+    "chili": {"ingredient_id": "fdc:170106", "grams_per_unit": 1, "unit": "g", "evidence": "项目以普通生红辣椒替代小米辣，未校正品种差异。"},
+    "white_pepper": {"ingredient_id": "fdc:170933", "grams_per_unit": 1, "unit": "g", "evidence": "白胡椒粉克重。"},
+    "enoki": {"ingredient_id": "fdc:169382", "grams_per_unit": 1, "unit": "g", "evidence": "生鲜金针菇可食投料，不扣减焯水损失。"},
+    "lettuce": {"ingredient_id": "fdc:169249", "grams_per_unit": 1, "unit": "g", "evidence": "项目选择生绿叶生菜，未校正品种差异。"},
+    "wine_ml": {"ingredient_id": "fdc:169070", "grams_per_unit": 1, "unit": "ml", "evidence": "项目以USDA含盐通用烹调用酒替代原文料酒，假设1克/毫升；能量和钠全量计入，未校正酒精挥发。"},
+    "bouillon": {"ingredient_id": "fdc:171562", "grams_per_unit": 1, "unit": "g", "evidence": "项目以USDA干鸡汤调味粉替代原文鸡精；不是纯味精或原品牌营养。"},
+    "msg": {"ingredient_id": "cj:msg-2018", "grams_per_unit": 1, "unit": "g", "evidence": "项目选CJ原始规格书的纯味精记录；按原文克重；原表粗蛋白0，不计游离谷氨酸为蛋白质。"},
+    "chives": {"ingredient_id": "mext:06207", "grams_per_unit": 1, "unit": "g", "evidence": "文部科学省06207，生韭菜叶可食投料。"},
+    "potato": {"ingredient_id": "mext:02017", "grams_per_unit": 1, "unit": "g", "evidence": "文部科学省02017，去皮生土豆可食投料；纤维含抗性淀粉口径，未校正烹调。"},
+    "eggplant": {"ingredient_id": "fdc:169228", "grams_per_unit": 1, "unit": "g", "evidence": "生茄子可食投料克重。"},
+    "potato_starch": {"ingredient_id": "mext:02034", "grams_per_unit": 1, "unit": "g", "evidence": "文部科学省02034，干马铃薯淀粉，不用全粉或玉米淀粉冒充。"},
+    "radish": {"ingredient_id": "fdc:168451", "grams_per_unit": 1, "unit": "g", "evidence": "USDA生白萝卜，按去皮后可食投料。"},
+    "cabbage": {"ingredient_id": "fdc:169975", "grams_per_unit": 1, "unit": "g", "evidence": "生圆白菜去硬芯后重量；每颗500克仅为本配方项目默认。"},
+    "belly": {"ingredient_id": "fdc:167812", "grams_per_unit": 1, "unit": "g", "evidence": "原文五花肉按生猪腹肉投料，不改成纯瘦肉。"},
+    "bread": {"ingredient_id": "fdc:174924", "grams_per_unit": 1, "unit": "g", "evidence": "项目选择普通白吐司；每片切边后25克为默认假设，非包装实测。"},
+    "bacon": {"ingredient_id": "fdc:168277", "grams_per_unit": 1, "unit": "g", "evidence": "项目选择生培根；每片15克为默认假设，全投料计入，不扣减煎出油。"},
+    "mayo": {"ingredient_id": "fdc:171009", "grams_per_unit": 1, "unit": "g", "evidence": "项目选择普通全脂蛋黄酱估算记录。"},
+    "catsup_ml": {"ingredient_id": "fdc:168556", "grams_per_unit": 1.1, "unit": "ml", "evidence": "项目选择加糖盐番茄调味酱；每毫升1.1克为假设，非纯番茄膏。"},
+    "dry_noodles": {"ingredient_id": "fdc:168908", "grams_per_unit": 1, "unit": "g", "evidence": "项目干挂面选含盐干小麦细面somen；不代表任意品牌，未扣煮面盐分流失。"},
+    "cooked_rice": {"ingredient_id": "fdc:168878", "grams_per_unit": 1, "unit": "g", "evidence": "熟长粒白米饭；项目将500ml冷饭近似为300克可食熟饭，不与干米换算混用。"},
+    "sausage": {"ingredient_id": "fdc:172964", "grams_per_unit": 1, "unit": "g", "evidence": "项目火腿肠替换为猪肉法兰克福香肠，每根40克为默认；非中式火腿肠同款。"},
+    "green_pepper": {"ingredient_id": "fdc:170427", "grams_per_unit": 1, "unit": "g", "evidence": "项目明确选择去蒂去籽青甜椒可食克重。"},
+    "red_pepper": {"ingredient_id": "fdc:170108", "grams_per_unit": 1, "unit": "g", "evidence": "项目明确选择去蒂去籽红甜椒可食克重。"},
+    "dry_chili": {"ingredient_id": "fdc:170932", "grams_per_unit": 1, "unit": "g", "evidence": "项目将干辣椒指定为干红辣椒粉；3个干辣椒换为1.5克粉为项目近似，不是原文实测。"},
+    "black_pepper": {"ingredient_id": "fdc:170931", "grams_per_unit": 1, "unit": "g", "evidence": "干黑胡椒粉克重。"},
+    "kidney_beans": {"ingredient_id": "fdc:173744", "grams_per_unit": 1, "unit": "g", "evidence": "干红芸豆按泡发前投料，非泡发后重量。"},
+    "rice": {"ingredient_id": "fdc:169756", "grams_per_unit": 1, "unit": "g", "evidence": "项目选择干长粒白米，按原文干米克重。"},
+    "turmeric": {"ingredient_id": "fdc:172231", "grams_per_unit": 1, "unit": "g", "evidence": "姜黄粉克重。"},
+    "coriander_seed": {"ingredient_id": "fdc:170922", "grams_per_unit": 1, "unit": "g", "evidence": "芫荽籽磨粉克重，不是香菜叶。"},
+    "cumin": {"ingredient_id": "fdc:170923", "grams_per_unit": 1, "unit": "g", "evidence": "孜然磨粉克重。"},
+    "cardamom": {"ingredient_id": "fdc:170919", "grams_per_unit": 1, "unit": "g", "evidence": "小豆蔻干香料克重。"},
+    "cinnamon": {"ingredient_id": "fdc:171320", "grams_per_unit": 1, "unit": "g", "evidence": "肉桂粉克重。"},
+    "cloves": {"ingredient_id": "fdc:171321", "grams_per_unit": 1, "unit": "g", "evidence": "丁香粉克重。"},
+    "cilantro": {"ingredient_id": "fdc:169997", "grams_per_unit": 1, "unit": "g", "evidence": "生香菜叶可食投料。"},
+    "dark_soy_ml": {"ingredient_id": "fdc:174277", "grams_per_unit": 1.15, "unit": "ml", "evidence": "项目明确以普通含小麦酿造酱油替代老抽或蒸鱼豉油作估算，非同款产品；每毫升1.15克为项目假设。"},
+    "lard": {"ingredient_id": "fdc:171401", "grams_per_unit": 1, "unit": "g", "evidence": "纯猪油克重。"},
+    "sesame": {"ingredient_id": "fdc:171016", "grams_per_unit": 1, "unit": "g", "evidence": "纯芝麻油克重。"},
+    "dried_shiitake": {"ingredient_id": "fdc:168436", "grams_per_unit": 1, "unit": "g", "evidence": "干香菇按泡发前重量；每粒3克为本配方项目默认。"},
+    "chicken_thigh": {"ingredient_id": "fdc:172385", "grams_per_unit": 1, "unit": "g", "evidence": "项目鸡腿去骨保留皮；每只取125克可食生肉皮为假设，不是带骨整腿重量。"},
+    "shrimp": {"ingredient_id": "mext:10328", "grams_per_unit": 1, "unit": "g", "evidence": "项目选しばえび小型海虾估算；可食部分不含头壳尾，来源废弃率50%；整虾重量另按配方记录换算。"},
+    "fish": {"ingredient_id": "fdc:175142", "grams_per_unit": 1, "unit": "g", "evidence": "项目以混合鲈鱼可食生肉记录估算；一条整鱼600克、可食50%即300克均为默认假设。"},
+    "soft_tofu": {"ingredient_id": "mext:04035", "grams_per_unit": 1, "unit": "g", "evidence": "项目以日本充填嫩豆腐估算内酯豆腐，每盒300克为默认；不冒充原文具体品牌。"},
+    "pidan": {"ingredient_id": "mext:12020", "grams_per_unit": 1, "unit": "g", "evidence": "项目选鸭皮蛋，每个去壳可食50克为默认，不套用生鸡蛋营养。"},
+    "dry_laver": {"ingredient_id": "mext:09003", "grams_per_unit": 1, "unit": "g", "evidence": "文部科学省09003干紫菜，泡发前克重，非鲜紫菜或琼脂。"},
+    "waxgourd": {"ingredient_id": "fdc:170069", "grams_per_unit": 1, "unit": "g", "evidence": "去皮去籽生冬瓜可食克重。"},
+    "green_beans": {"ingredient_id": "fdc:169961", "grams_per_unit": 1, "unit": "g", "evidence": "项目把泛称豆角明确选为四季豆，不当作豇豆。"},
+    "pine_roasted": {"ingredient_id": "mext:05033", "grams_per_unit": 1, "unit": "g", "evidence": "文部科学省05033烘熟松子仁，不用干生松仁数据冒充。"},
+    "cornstarch": {"ingredient_id": "fdc:169698", "grams_per_unit": 1, "unit": "g", "evidence": "原文泛称淀粉的项目选择为玉米淀粉；明确指定土豆淀粉的配方不用此规则。"}
+  },
+  "recipes": {
+    "1001": {
+      "source_sha256": "6ef54c60c7701866ba212e3e7cbc19a2d84c109e142824084d1f467dc701dc2f",
+      "servings": 1,
+      "note": "按原文一份制作；1.5个蛋向上取整为2个；原文盐范围保留，糖、葱花及步骤中的可选醋和番茄酱默认不加。",
+      "parts": [
+        {"rule": "tomato", "amount": 180, "text": "西红柿1个约180克"},
+        {"rule": "egg", "amount": 2, "text": "鸡蛋1.5个向上取整为2个"},
+        {"rule": "oil_ml", "amount": 8, "text": "食用油每个蛋4ml，共8ml"},
+        {"rule": "salt", "amount": {"minimum": 1.5, "maximum": 2}, "text": "盐1.5～2克"}
+      ],
+      "exclusions": ["可选糖、葱花、醋、番茄酱及额外熟肉默认不加。"]
+    },
+    "1002": {
+      "source_sha256": "59a8c2a875182a8a59dd253e58a7c26c66fb03448891bb025ec0189e4baab940",
+      "servings": 2,
+      "note": "补入仅在步骤中出现的10ml油和30ml水；生抽、蚝油采用项目通用替代；非品牌营养实测。",
+      "parts": [
+        {"rule": "broccoli", "amount": 200, "text": "西兰花200克"},
+        {"rule": "garlic_clove", "amount": {"minimum": 3, "maximum": 4}, "text": "大蒜3～4瓣"},
+        {"rule": "soy_ml", "amount": 10, "text": "生抽10ml"},
+        {"rule": "oyster_ml", "amount": 5, "text": "蚝油5ml"},
+        {"rule": "sugar", "amount": 2, "text": "白糖2克"},
+        {"rule": "oil_ml", "amount": 10, "text": "步骤中的食用油10ml"},
+        {"rule": "water_ml", "amount": 30, "text": "调汁饮用水30ml"}
+      ],
+      "exclusions": ["焯水用水1000ml排除。"]
+    },
+    "1003": {
+      "source_sha256": "00708225f67ba4aa10a61b7ea3885487f63bc0b9d4e6d01afa57325bb05d495f",
+      "meal_types": ["lunch", "dinner", "snack"],
+      "note": "整份配方，原文供1～2人分食；按去籽可食生南瓜300克计算。",
+      "parts": [{"rule": "pumpkin", "amount": 300, "text": "南瓜300克"}],
+      "exclusions": ["蒸锅用水1000ml排除。"]
+    },
+    "1004": {
+      "source_sha256": "0a17cd82ca74f182fdd543842535beac063179b47bfdf55135f76b8a1101f822",
+      "servings": 2, "meal_types": ["snack"], "meal_role": "snack",
+      "note": "整道菜营养，不再除以2；使用原文200克番茄和20克白糖。",
+      "parts": [{"rule": "tomato", "amount": 200, "text": "番茄共200克"}, {"rule": "sugar", "amount": 20, "text": "白砂糖20克"}]
+    },
+    "1005": {
+      "source_sha256": "2b1798821af132fdaf09cfae8381513dfcdbe2810288e1012137c93d8d82eea7",
+      "servings": 1,
+      "note": "按一份公式计算；补入步骤中的5克糖。调味汁拌入主体菜，计入；香醋改用项目白醋，酱油和蚝油用通用估算记录。",
+      "parts": [
+        {"rule": "cucumber", "amount": 200, "text": "带皮黄瓜200克"},
+        {"rule": "vinegar_ml", "amount": 11.5, "text": "醋7.5+4ml"},
+        {"rule": "soy_ml", "amount": 7.5, "text": "酱油5+2.5ml"},
+        {"rule": "garlic_clove", "amount": 3, "text": "蒜3瓣"},
+        {"rule": "salt", "amount": 0.6, "text": "盐0.4+0.2克"},
+        {"rule": "sesame_ml", "amount": 7, "text": "香油5+2ml"},
+        {"rule": "oyster_ml", "amount": 5, "text": "蚝油5ml"},
+        {"rule": "sugar", "amount": 5, "text": "步骤中的白糖5克"}
+      ]
+    },
+    "1006": {
+      "source_sha256": "82f49ea08a9ea1c7fe51f8175af142ebc3aae480b745244b15302252ecf1688c",
+      "servings": 1,
+      "note": "项目指定硫酸钙硬豆腐；生抽用通用替代；可选醋糖辣椒油默认不加，拌入的汁计入主体。",
+      "parts": [
+        {"rule": "tofu", "amount": 250, "text": "硬豆腐250克"},
+        {"rule": "scallion", "amount": 10, "text": "小葱10克"},
+        {"rule": "garlic_clove", "amount": {"minimum": 2, "maximum": 3}, "text": "大蒜2～3瓣"},
+        {"rule": "soy_ml", "amount": 15, "text": "生抽15ml"},
+        {"rule": "sesame_ml", "amount": 5, "text": "香油5ml"}
+      ],
+      "exclusions": ["焯水500ml排除；可选醋、糖和辣椒油默认不加。"]
+    },
+    "1007": {
+      "source_sha256": "d744b2afa5588f756970ee237cbe0393434eaac84d4d0f04f15c773afb9c85b2",
+      "note": "整份原文配方；料酒以含盐通用烹调用酒估算替代，未扣酒精挥发；半根葱采用5克可食默认。50ml油按原文全量计入，不改写成少油菜。",
+      "parts": [
+        {"rule": "egg", "amount": 2, "text": "鸡蛋2个"},
+        {"rule": "onion", "amount": 50, "text": "洋葱50克"},
+        {"rule": "oil_ml", "amount": 50, "text": "食用油50ml"},
+        {"rule": "salt", "amount": 2, "text": "盐2克"},
+        {"rule": "scallion", "amount": 5, "text": "葱半根按5克", "basis": "project_default", "note": "项目默认每根可食10克。"},
+        {"rule": "wine_ml", "amount": 2, "text": "料酒2ml的烹调用酒替代"}
+      ]
+    },
+    "1008": {
+      "source_sha256": "84c063778e12767e012fe968536af526e75645750b33e20df7aa9f05246c5302",
+      "servings": 2, "note": "保留两次炒制合计10～20ml油，不重复加入用量清单和步骤；计算整道菜。",
+      "parts": [
+        {"rule": "zucchini", "amount": 500, "text": "西葫芦500克"},
+        {"rule": "tomato", "amount": 100, "text": "西红柿100克"},
+        {"rule": "egg", "amount": 3, "text": "鸡蛋3个"},
+        {"rule": "oil_ml", "amount": {"minimum": 10, "maximum": 20}, "text": "两次炒制食用油共10～20ml"},
+        {"rule": "salt", "amount": 6, "text": "食盐6克"}
+      ]
+    },
+    "1009": {
+      "source_sha256": "5f9053270d84462f8006f3bb69a9132d7c3d4f46497d39f6f31cb312c70e1bf7",
+      "servings": 1, "note": "油合计15ml；补入步骤中的100ml水；不扣减菠菜焯水损失。",
+      "parts": [
+        {"rule": "spinach", "amount": 350, "text": "菠菜350克"},
+        {"rule": "egg", "amount": 2, "text": "鸡蛋2个"},
+        {"rule": "oil_ml", "amount": 15, "text": "两次炒制共15ml油"},
+        {"rule": "salt", "amount": 5, "text": "盐5克"},
+        {"rule": "water_ml", "amount": 100, "text": "炒制加入100ml水"}
+      ],
+      "exclusions": ["焯水用水不计入。"]
+    },
+    "1010": {
+      "source_sha256": "b6adaa156b2a5d821069e12fd84544e323e02f7fe305c65645dc93fb03669561",
+      "note": "采用官方生韭菜记录，非细香葱；步骤另加5ml油与清单10ml合计15ml，全量计入。",
+      "parts": [
+        {"rule": "chives", "amount": 100, "text": "韭菜100克"},
+        {"rule": "egg", "amount": 2, "text": "鸡蛋2个"},
+        {"rule": "oil_ml", "amount": 15, "text": "两次炒制共15ml油"},
+        {"rule": "salt", "amount": 2, "text": "盐2克"}
+      ]
+    },
+    "1011": {
+      "source_sha256": "6aaba881967c8fda670a70bcf54bf2047d60c597eb671b27670385f8d4b03a8a",
+      "servings": 2, "note": "按整份配菜；保留大蒜瓣数范围。",
+      "parts": [
+        {"rule": "cauliflower", "amount": 300, "text": "花菜300克"},
+        {"rule": "garlic_clove", "amount": {"minimum": 2, "maximum": 3}, "text": "蒜2～3瓣"},
+        {"rule": "salt", "amount": 3, "text": "盐3克"},
+        {"rule": "oil_ml", "amount": 15, "text": "食用油15ml"},
+        {"rule": "water_ml", "amount": 50, "text": "炒制水50ml"}
+      ],
+      "exclusions": ["焯水1000ml排除。"]
+    },
+    "1012": {
+      "source_sha256": "385b0c02d500dd38b124f6a5a0c789f3316d2db1b076f4d9c93ee344ec818848",
+      "note": "项目指定叶菜为小白菜；保留300～500克原文范围；可选蚝油不加。",
+      "parts": [
+        {"rule": "pakchoi", "amount": {"minimum": 300, "maximum": 500}, "text": "叶菜300～500克（项目选小白菜）", "basis": "project_default"},
+        {"rule": "salt", "amount": 3, "text": "步骤中的盐3克"},
+        {"rule": "oil_ml", "amount": 2, "text": "步骤中的油2ml"},
+        {"rule": "water_ml", "amount": 150, "text": "焖制水150ml"}
+      ],
+      "exclusions": ["可选蚝油默认不加。"]
+    },
+    "1013": {
+      "source_sha256": "c6bf903ae1c79e1089f32bffb79a14dd4d2bea58d1a2f90330f164b0b4f3f3cb",
+      "note": "采用去皮生土豆记录，不扣洗淀粉和焯水损失。项目陈醋改白醋，3个干辣椒改1.5克干红辣椒粉；半个青红甜椒各50克、葱10克为默认。油10～15ml保留。",
+      "parts": [
+        {"rule": "potato", "amount": 240, "text": "去皮生土豆240克"},
+        {"rule": "garlic_clove", "amount": 4, "text": "大蒜4瓣"},
+        {"rule": "green_pepper", "amount": 50, "text": "青椒半个按50克", "basis": "project_default"},
+        {"rule": "red_pepper", "amount": 50, "text": "红椒半个按50克", "basis": "project_default"},
+        {"rule": "dry_chili", "amount": 1.5, "text": "3个干辣椒改1.5克辣椒粉", "basis": "project_default"},
+        {"rule": "scallion", "amount": 10, "text": "葱1根按10克", "basis": "project_default"},
+        {"rule": "soy_ml", "amount": 5, "text": "生抽5ml"},
+        {"rule": "vinegar_ml", "amount": 10, "text": "陈醋10ml改白醋", "basis": "project_default"},
+        {"rule": "salt", "amount": 2, "text": "盐2克"},
+        {"rule": "oil_ml", "amount": {"minimum": 10, "maximum": 15}, "text": "油10～15ml"}
+      ],
+      "exclusions": ["清洗及焯水用水排除；不扣流失到弃水中的营养。"]
+    },
+    "1014": {
+      "source_sha256": "3196880e12a33d0c331c4a0634d2a83b48c59331750c034eaead2dac1bf5c2e8",
+      "servings": 1, "note": "项目将青菜指定为小白菜；保留油的范围，原文必选糖计入。",
+      "parts": [
+        {"rule": "pakchoi", "amount": 100, "text": "青菜100克（项目选小白菜）", "basis": "project_default"},
+        {"rule": "garlic_clove", "amount": 2, "text": "蒜2瓣"},
+        {"rule": "oil_ml", "amount": {"minimum": 10, "maximum": 15}, "text": "油10～15ml"},
+        {"rule": "salt", "amount": 2, "text": "盐2克"},
+        {"rule": "water_ml", "amount": 70, "text": "炒制水70ml"},
+        {"rule": "sugar", "amount": 5, "text": "糖5克"}
+      ]
+    },
+    "1015": {
+      "source_sha256": "27d5ddfccb3e7fba7636de59f89c35aecc53adfe9f6d2481501f88a63e0bcd5c",
+      "note": "以普通生芹菜记录近似原文香芹，明确品种替代；猪油全量计入。",
+      "parts": [
+        {"rule": "celery", "amount": 300, "text": "香芹300克（项目用普通芹菜近似）", "basis": "project_default"},
+        {"rule": "garlic_clove", "amount": 4, "text": "蒜4瓣"},
+        {"rule": "lard_ml", "amount": 15, "text": "猪油15ml"},
+        {"rule": "salt", "amount": 2, "text": "盐2克"}
+      ]
+    },
+    "1016": {
+      "source_sha256": "47368bd94f44883f9b2bfc8dac2b8a5378f9ec466d26001ca9383cff71e23a4b",
+      "note": "项目默认一颗去芯包菜500克，蒜苗半根改用小葱5克，明确为小葱版本。鸡精用干鸡汤粉、料酒用烹调用酒估算；重复料酒按清单5ml只计一次，生抽采用清单5ml。洗菜盐2克排除，成菜盐3克；60ml油全量计入。",
+      "parts": [
+        {"rule": "cabbage", "amount": 500, "text": "包菜1颗可食500克", "basis": "project_default"},
+        {"rule": "belly", "amount": 200, "text": "五花肉200克"},
+        {"rule": "chili", "amount": 10, "text": "小米辣2根按10克", "basis": "project_default"},
+        {"rule": "oil_ml", "amount": 60, "text": "两次炒制共60ml油"},
+        {"rule": "wine_ml", "amount": 5, "text": "料酒5ml替代，只计一次"},
+        {"rule": "soy_ml", "amount": 5, "text": "清单生抽5ml"},
+        {"rule": "vinegar_ml", "amount": 5, "text": "香醋5ml改白醋", "basis": "project_default"},
+        {"rule": "bouillon", "amount": 2, "text": "鸡精2克改干鸡汤粉", "basis": "project_default"},
+        {"rule": "ginger", "amount": 4, "text": "姜2片按4克", "basis": "project_default"},
+        {"rule": "garlic_clove", "amount": 2, "text": "大蒜2瓣"},
+        {"rule": "scallion", "amount": 5, "text": "蒜苗半根改小葱5克", "basis": "project_default"},
+        {"rule": "salt", "amount": 3, "text": "成菜盐3克"}
+      ],
+      "exclusions": ["洗菜2克盐及加工水排除。"]
+    },
+    "1017": {
+      "source_sha256": "689cd1b9ee39a857be1f3bfe7ff7feea88214e9bc4eb73e7d5ca05f32f97c885",
+      "servings": 1, "meal_types": ["breakfast", "snack"], "meal_role": "snack",
+      "note": "原文完整鸡蛋约60克，项目采用去壳可食50克；本记录仅用于营养计算，不改写烹饪方法。",
+      "parts": [{"rule": "egg", "amount": 1, "text": "鸡蛋1个"}],
+      "exclusions": ["沸水、温水和冰水为加工用水，不计入。"]
+    },
+    "1018": {
+      "source_sha256": "0c3f775486ab027d3704d5dce26af2e84e35ade2d84e75ebf8b5e71678f311aa",
+      "meal_types": ["breakfast", "lunch", "dinner"],
+      "note": "选用用量清单260ml热水；步骤中的1.5倍蛋液水量未同时套用，避免重复。",
+      "parts": [
+        {"rule": "egg", "amount": 2, "text": "鸡蛋2只"},
+        {"rule": "salt", "amount": 2, "text": "盐2克"},
+        {"rule": "water_ml", "amount": 260, "text": "热水260ml"}
+      ],
+      "exclusions": ["蒸锅用水不计入。"]
+    },
+    "1019": {
+      "source_sha256": "4eb994012d5ab06ab8b23029746514b442998e64ce8a4236d6d5caabc87fe16e",
+      "servings": 1, "meal_types": ["breakfast"], "meal_role": "staple",
+      "note": "按常规燕麦加煎蛋做法；底油为项目默认5克，椒盐可选不加；不作为已验收完整一餐。",
+      "parts": [
+        {"rule": "milk_ml", "amount": 280, "text": "牛奶280ml"},
+        {"rule": "egg", "amount": 1, "text": "鸡蛋1个"},
+        {"rule": "oats", "amount": 40, "text": "干燕麦40克"},
+        {"rule": "oil", "amount": 5, "text": "煎蛋一层底油", "basis": "project_default", "note": "项目为本配方设定5克菜籽油，未经称量。"}
+      ],
+      "exclusions": ["煮燕麦后倒掉的水200ml、可选椒盐和建议搭配的额外食品不计入。"]
+    },
+    "1020": {
+      "source_sha256": "d006d502a2ee2da36da4a6a9252180b7bb4a5fced5bbb8efc5cce42439ae70d6",
+      "meal_types": ["breakfast"], "meal_role": "staple",
+      "note": "项目采用两个全蛋；选择250ml牛奶全部拌入的版本，不再额外计算剩余牛奶；蔬菜可选不加。",
+      "parts": [
+        {"rule": "egg", "amount": 2, "text": "全蛋2个"},
+        {"rule": "oats", "amount": 50, "text": "干燕麦50克"},
+        {"rule": "milk_ml", "amount": 250, "text": "牛奶250ml全部拌入", "basis": "project_default"},
+        {"rule": "butter", "amount": 5, "text": "覆盖锅底一层黄油", "basis": "project_default", "note": "项目默认无盐黄油5克，非实测。"}
+      ],
+      "exclusions": ["步骤中可选蔬菜不加；无额外配饮牛奶。"]
+    },
+    "1021": {
+      "source_sha256": "27c400d50141e164b651848e41be79cea4f84bb12f75b99c15bd95152993d9d1",
+      "note": "项目选普通白吐司、生培根及全脂蛋黄酱估算。吐司2片切边后共50克、生培根2片共30克为默认；鸡蛋按去壳生投料，不扣煮制或煎制损失。复合食品不是指定品牌已核验。",
+      "meal_types": ["breakfast", "lunch", "dinner"],
+      "parts": [
+        {"rule": "egg", "amount": 1, "text": "鸡蛋1个"},
+        {"rule": "bread", "amount": 50, "text": "吐司2片切边后50克", "basis": "project_default"},
+        {"rule": "bacon", "amount": 30, "text": "生培根2片共30克", "basis": "project_default"},
+        {"rule": "butter", "amount": 10, "text": "黄油10克"},
+        {"rule": "mayo", "amount": 20, "text": "蛋黄酱20克"},
+        {"rule": "salt", "amount": 1, "text": "盐1克"},
+        {"rule": "black_pepper", "amount": 2, "text": "黑胡椒2克"}
+      ],
+      "exclusions": ["煮蛋用水、蛋壳和吐司切边不计入。"]
+    },
+    "1022": {
+      "source_sha256": "675bfc65305cc8da1f9d3ef50c95343d0afc97d293087ad60c2ad13e8e7d2b82",
+      "meal_types": ["breakfast", "snack"], "meal_role": "staple",
+      "note": "项目每根玉米采用150克生甜玉米可食粒重，不包含芯皮；不估计煮水盐的吸收。",
+      "parts": [{"rule": "corn", "amount": 150, "text": "带皮玉米1根", "basis": "project_default", "note": "项目指定每根150克可食玉米粒，非整根重量。"}],
+      "exclusions": ["煮玉米水及其中2克盐排除；可选糖默认不加。"]
+    },
+    "1023": {
+      "source_sha256": "de965ceae0095c73045666f1b126a1eb61dc4806f8be492cea9dfbc7ce26e27d",
+      "meal_types": ["breakfast"], "meal_role": "staple",
+      "note": "计算整锅，不要求单人份数；不另外添加粥汁的营养。",
+      "parts": [{"rule": "millet", "amount": 100, "text": "干小米100克"}, {"rule": "water", "amount": 2000, "text": "水2000克"}],
+      "exclusions": ["淘米水排除。"]
+    },
+    "1024": {
+      "source_sha256": "538a5fb1becb4d6143f01ccfc98a2685b50de71918e53fd2a1cc7f08616849f5",
+      "servings": 1, "meal_types": ["breakfast"], "meal_role": "staple",
+      "note": "保留60～110ml干米范围；项目选定米水体积比1:10，水600～1100克；可选油不加。体积关系只是本配方假设。",
+      "parts": [
+        {"rule": "rice_ml", "amount": {"minimum": 60, "maximum": 110}, "text": "干米60～110ml"},
+        {"rule": "water", "amount": {"minimum": 600, "maximum": 1100}, "text": "水按干米体积10倍", "basis": "project_default"}
+      ],
+      "exclusions": ["可选油默认不加。"]
+    },
+    "1025": {
+      "source_sha256": "27692a58fc1659aee6d67ce67bf5cfebf114b12540370ba2a2ef9950a5dd5bc5",
+      "meal_role": "soup",
+      "note": "原文盐15克照录，不把高盐配方自动改成低盐配方；鸡蛋原文给默认1个但允许1～2个，保留范围；可选味素不加。水仅计一次。",
+      "parts": [
+        {"rule": "tomato", "amount": 180, "text": "西红柿1个", "basis": "project_default", "note": "项目默认可食180克。"},
+        {"rule": "egg", "amount": {"minimum": 1, "maximum": 2}, "text": "鸡蛋1～2个"},
+        {"rule": "salt", "amount": 15, "text": "盐15克"},
+        {"rule": "scallion", "amount": 5, "text": "葱姜蒜共15克中的葱", "basis": "project_default", "note": "项目将葱姜蒜等分为各5克。"},
+        {"rule": "ginger", "amount": 5, "text": "葱姜蒜中的姜", "basis": "project_default"},
+        {"rule": "garlic", "amount": 5, "text": "葱姜蒜中的蒜", "basis": "project_default"},
+        {"rule": "oil_ml", "amount": 15, "text": "步骤中的油15ml"},
+        {"rule": "sesame_ml", "amount": 0.1, "text": "香油2滴", "basis": "project_default", "note": "项目每滴0.05ml，共0.1ml。"},
+        {"rule": "water", "amount": 500, "text": "没过食材的水", "basis": "project_default", "note": "项目为该锅设定500克水，不是原文实测。"}
+      ],
+      "exclusions": ["可选味素默认不加。"]
+    },
+    "1026": {
+      "source_sha256": "b68d4c0b7410c0e649006006ea17c8b094d31592515474780ac02d4fb39a6100",
+      "note": "保留原文金针菇400～500克、食盐15克、味精5克。水没过食材的高度无法直接换算体积，项目用500～800克水默认范围；味精采用CJ产品记录；原文高盐不自动改低。",
+      "meal_role": "soup",
+      "parts": [
+        {"rule": "enoki", "amount": {"minimum": 400, "maximum": 500}, "text": "金针菇400～500克"},
+        {"rule": "salt", "amount": 15, "text": "食盐15克"},
+        {"rule": "msg", "amount": 5, "text": "味精5克"},
+        {"rule": "water", "amount": {"minimum": 500, "maximum": 800}, "text": "煮汤水项目默认500～800克", "basis": "project_default", "note": "液面高度不能当作体积比例；此处为非实测默认。"}
+      ],
+      "exclusions": ["可选鸡蛋默认不加。"]
+    },
+    "1027": {
+      "source_sha256": "831984fffffa783d7e624c7f48c39c726bccad6cbe50955db98a3cf2e01deb97",
+      "note": "按原文整锅投料，不除以2人；选择猪油3克版本，味精采用CJ产品记录；不重复增加汤汁营养。",
+      "meal_role": "soup",
+      "parts": [
+        {"rule": "radish", "amount": 200, "text": "白萝卜200克"},
+        {"rule": "water_ml", "amount": 800, "text": "饮用水800ml"},
+        {"rule": "salt", "amount": 3, "text": "盐3克"},
+        {"rule": "white_pepper", "amount": 2, "text": "白胡椒粉2克"},
+        {"rule": "msg", "amount": 3, "text": "味精3克"},
+        {"rule": "lard", "amount": 3, "text": "猪油3克版本"}
+      ]
+    },
+    "1028": {
+      "source_sha256": "8b83438660e9d15b9658644b4b9c8d16eecf1207cf33ac7e2fd526aa3f760020",
+      "note": "干紫菜用官方干制记录，按泡发前10克计；补步骤中的1500ml水及5ml油。葱花5克、几滴香油0.1～0.3克为项目默认；可选虾仁虾皮不加。",
+      "meal_role": "soup",
+      "parts": [
+        {"rule": "dry_laver", "amount": 10, "text": "干紫菜10克"},
+        {"rule": "egg", "amount": 2, "text": "鸡蛋2个"},
+        {"rule": "salt", "amount": 2, "text": "盐2克"},
+        {"rule": "water_ml", "amount": 1500, "text": "步骤清水1.5升"},
+        {"rule": "oil_ml", "amount": 5, "text": "步骤用油5ml"},
+        {"rule": "scallion", "amount": 5, "text": "葱花项目默认5克", "basis": "project_default"},
+        {"rule": "sesame", "amount": {"minimum": 0.1, "maximum": 0.3}, "text": "几滴香油按0.1～0.3克", "basis": "project_default"}
+      ],
+      "exclusions": ["紫菜泡发用水排除；可选虾仁和虾皮默认不加。"]
+    },
+    "1029": {
+      "source_sha256": "f65532dde2c9b84f1ba5d5c9e66ad1f2f9be06ed48797c13b64ad4e1f4b5b6ad",
+      "servings": 1, "meal_types": ["breakfast", "lunch", "dinner"], "meal_role": "staple",
+      "note": "保留100～200ml干米范围；项目使用长粒白米和水240克；不推断煮熟重量。",
+      "parts": [
+        {"rule": "rice_ml", "amount": {"minimum": 100, "maximum": 200}, "text": "干米100～200ml"},
+        {"rule": "water", "amount": 240, "text": "指尖量水法", "basis": "project_default", "note": "项目固定该份配方加水240克，不声称还原指尖量水法。"}
+      ],
+      "exclusions": ["淘米水排除。"]
+    },
+    "1030": {
+      "source_sha256": "4b061d24b4e8c6a3dd3791f84de5303b3ff38ab41f8560c5226d76a3e56554e1",
+      "note": "项目将火腿肠明确换为猪肉法兰克福香肠2根共80克，冷饭500ml按300克熟饭。鸡蛋1.5向下取整为1个；盐4～6克保留，胡椒8克照录。油12ml分次使用不重复加；可选蔬菜熟肉默认不加。",
+      "meal_role": "staple",
+      "parts": [
+        {"rule": "cooked_rice", "amount": 300, "text": "500ml冷饭按300克", "basis": "project_default"},
+        {"rule": "egg", "amount": 1, "text": "1.5个蛋向下取整为1个"},
+        {"rule": "sausage", "amount": 80, "text": "2根火腿肠改法兰克福香肠共80克", "basis": "project_default"},
+        {"rule": "oil_ml", "amount": 12, "text": "两次炒制共用12ml油"},
+        {"rule": "salt", "amount": {"minimum": 4, "maximum": 6}, "text": "盐4～6克"},
+        {"rule": "black_pepper", "amount": 8, "text": "胡椒粉8克，项目选黑胡椒"},
+        {"rule": "scallion", "amount": 10, "text": "香葱1颗按10克", "basis": "project_default"},
+        {"rule": "soy_ml", "amount": 10, "text": "生抽10ml"}
+      ],
+      "exclusions": ["可选黄瓜、胡萝卜及额外熟肉默认不加。"]
+    },
+    "1031": {
+      "source_sha256": "f3084cc2ebfcc50d29dc0ca9f7c137d54b760b78d1dcaad9cd67a01dc72f75c1",
+      "note": "项目选含盐干小麦细面；保留面50～100克、鸡蛋1～2个、酱油5～8克。蚝油5克版本，不加鸡精；按步骤加糖2克。青甜椒50克、葱5克、蒜4克、臊子水200克为默认；可选香油及醋不加。原文盐5克计入，不扣煮面流失。",
+      "meal_role": "staple",
+      "parts": [
+        {"rule": "dry_noodles", "amount": {"minimum": 50, "maximum": 100}, "text": "干挂面50～100克"},
+        {"rule": "tomato", "amount": 200, "text": "番茄200克"},
+        {"rule": "egg", "amount": {"minimum": 1, "maximum": 2}, "text": "鸡蛋1～2个"},
+        {"rule": "salt", "amount": 5, "text": "清单食盐5克"},
+        {"rule": "oyster", "amount": 5, "text": "蚝油5克"},
+        {"rule": "sugar", "amount": 2, "text": "步骤白糖2克"},
+        {"rule": "soy", "amount": {"minimum": 5, "maximum": 8}, "text": "酱油5～8克"},
+        {"rule": "oil", "amount": 20, "text": "清单油20克，炒蛋底油复用"},
+        {"rule": "green_pepper", "amount": 50, "text": "步骤青椒默认50克", "basis": "project_default"},
+        {"rule": "scallion", "amount": 5, "text": "步骤小葱默认5克", "basis": "project_default"},
+        {"rule": "garlic", "amount": 4, "text": "步骤蒜末默认4克", "basis": "project_default"},
+        {"rule": "water", "amount": 200, "text": "臊子水默认200克", "basis": "project_default"}
+      ],
+      "exclusions": ["煮面加工水700ml不计入投料重量；不扣面条吸水或弃汤营养损失；可选香油、醋及另选鸡精默认不加。"]
+    },
+    "1032": {
+      "source_sha256": "e0d94d2730a24b12038e2eb5dac4d02e2eea74b9354e75727d6fad2a7db247f3",
+      "note": "整份干豆加干米配方，不按2～3人分食除算。项目3克综合香料展开为芫荽籽1、孜然0.8、黑胡椒0.4、小豆蔻0.3、肉桂0.3、丁香0.2克，非原文指定品牌或传统标准。青辣椒默认5克、月桂叶加热后捞出；豆汤只计原始投料一次。",
+      "meal_role": "staple",
+      "parts": [
+        {"rule": "kidney_beans", "amount": 200, "text": "干红芸豆200克"},
+        {"rule": "onion", "amount": 200, "text": "洋葱200克"},
+        {"rule": "tomato", "amount": 300, "text": "选番茄300克，不同时加番茄酱"},
+        {"rule": "ginger", "amount": 10, "text": "生姜10克"},
+        {"rule": "garlic", "amount": 12, "text": "原文蒜4瓣约12克，优先明确克重"},
+        {"rule": "green_pepper", "amount": 5, "text": "青辣椒1根改青甜椒5克", "basis": "project_default"},
+        {"rule": "oil_ml", "amount": 30, "text": "食用油30ml"},
+        {"rule": "turmeric", "amount": 3, "text": "姜黄粉3克"},
+        {"rule": "dry_chili", "amount": 5, "text": "红辣椒粉5克"},
+        {"rule": "coriander_seed", "amount": 5, "text": "香菜籽粉5克"},
+        {"rule": "cumin", "amount": 3, "text": "孜然粉3克"},
+        {"rule": "coriander_seed", "amount": 1, "text": "3克综合香料子配方：芫荽籽1克", "basis": "project_default"},
+        {"rule": "cumin", "amount": 0.8, "text": "3克综合香料子配方：孜然0.8克", "basis": "project_default"},
+        {"rule": "black_pepper", "amount": 0.4, "text": "3克综合香料子配方：黑胡椒0.4克", "basis": "project_default"},
+        {"rule": "cardamom", "amount": 0.3, "text": "3克综合香料子配方：小豆蔻0.3克", "basis": "project_default"},
+        {"rule": "cinnamon", "amount": 0.3, "text": "3克综合香料子配方：肉桂0.3克", "basis": "project_default"},
+        {"rule": "cloves", "amount": 0.2, "text": "3克综合香料子配方：丁香0.2克", "basis": "project_default"},
+        {"rule": "salt", "amount": 6, "text": "盐6克"},
+        {"rule": "water_ml", "amount": 1000, "text": "豆汤600ml加米饭400ml水，共1000ml"},
+        {"rule": "cilantro", "amount": 15, "text": "香菜叶15克"},
+        {"rule": "rice", "amount": 200, "text": "干大米200克"}
+      ],
+      "exclusions": ["红芸豆浸泡弃水排除；月桂叶2片选加热后捞出版本，不估算浸出营养；未选番茄酱及可选沙拉柠檬不加。"]
+    },
+    "1033": {
+      "source_sha256": "353b5c30fed110a891282bb890f5690d3a09dcb97edfdee8b67a06dd250a2c5a",
+      "note": "仅分摊拌入的15ml酱汁。基础油92克、生抽69克、老抽替代酱油23克、糖15克合计199克；项目假设捞葱后成品酱汁180～199克、密度1.05～1.2克/ml，分摊系数为15×1.05/199至15×1.2/180。下列投料按该系数展开，非成品实测。老抽用通用酿造酱油；葱段不食用，不估算浸出。",
+      "meal_role": "staple",
+      "parts": [
+        {"rule": "dry_noodles", "amount": 80, "text": "干小麦细面80克"},
+        {"rule": "oil_ml", "amount": {"minimum": 7.914573, "maximum": 10}, "text": "15ml葱油酱汁所分摊基础100ml油", "basis": "project_default", "note": "100×(15×1.05/199)至100×(15×1.2/180)毫升，保留6位小数。"},
+        {"rule": "soy_ml", "amount": {"minimum": 4.748744, "maximum": 6}, "text": "15ml葱油酱汁所分摊基础60ml生抽", "basis": "project_default", "note": "60×同一分摊系数范围。"},
+        {"rule": "dark_soy_ml", "amount": {"minimum": 1.582915, "maximum": 2}, "text": "15ml葱油酱汁所分摊基础20ml老抽替代", "basis": "project_default", "note": "20×同一分摊系数范围。"},
+        {"rule": "sugar", "amount": {"minimum": 1.187186, "maximum": 1.5}, "text": "15ml葱油酱汁所分摊基础15克糖", "basis": "project_default", "note": "15×同一分摊系数范围。"}
+      ],
+      "exclusions": ["100克葱选捞出且不加回版本，不计浸出营养；剩余酱汁不计入这一碗；煮面1000ml水排除，不扣盐分流失。"]
+    },
+    "1034": {
+      "source_sha256": "9e61031ea3b77c4686b05fb40bf54f50928c9ff807acd81d9a1dcdf3b1345c18",
+      "servings": 1,
+      "note": "姜和料酒用于煮鸡后弃去，不计营养；拌入的汁计入。项目香醋改为白醋，生抽用含小麦通用记录。",
+      "parts": [
+        {"rule": "chicken", "amount": 200, "text": "去皮去骨鸡胸肉200克"},
+        {"rule": "sesame_ml", "amount": 5, "text": "麻油5ml"},
+        {"rule": "soy_ml", "amount": 4, "text": "生抽4ml"},
+        {"rule": "vinegar_ml", "amount": 4, "text": "香醋4ml（项目改为白醋）"},
+        {"rule": "sugar", "amount": 3, "text": "白糖3克"},
+        {"rule": "salt", "amount": 2, "text": "盐2克"}
+      ],
+      "exclusions": ["煮鸡用水4升、姜20克、料酒20ml和冷却冲洗水均排除；不扣减弃汤中的食材营养损失。"]
+    },
+    "1035": {
+      "source_sha256": "8e1d7319527b7365b2d0af4f283631719e9490b1de929c1106de3ad8c1c2cc0f",
+      "note": "洋葱一颗默认200克，不采用可选额外半颗。步骤1大匙油与清单15ml视为同一投料；其余调味料全部计入。料酒用通用烹调用酒，番茄酱选番茄调味酱，非品牌配方。",
+      "parts": [
+        {"rule": "onion", "amount": 200, "text": "洋葱1颗默认200克", "basis": "project_default"},
+        {"rule": "pork", "amount": 250, "text": "猪肉250克，项目选择猪里脊"},
+        {"rule": "garlic_clove", "amount": 3, "text": "蒜3瓣"},
+        {"rule": "oil_ml", "amount": 15, "text": "炒制油15ml，只计一次"},
+        {"rule": "black_pepper", "amount": 1.25, "text": "黑胡椒1.25克"},
+        {"rule": "soy_ml", "amount": 30, "text": "酱油30ml"},
+        {"rule": "sugar", "amount": 15, "text": "糖15克"},
+        {"rule": "sesame_ml", "amount": 5, "text": "麻油5ml"},
+        {"rule": "catsup_ml", "amount": 15, "text": "番茄调味酱15ml"},
+        {"rule": "wine_ml", "amount": 15, "text": "料酒15ml的烹调用酒替代"}
+      ]
+    },
+    "1036": {
+      "source_sha256": "6312784fb25a4f1d7b144e3824180e3951890a75e6c3c34f4332dc7db35f011d",
+      "note": "采用去皮生土豆、土豆淀粉及生五花肉记录。盐按清单7克，步骤4克不另加；酱油6～10ml、油10～15ml保留；葱姜蒜优先采用原文明示克重。",
+      "parts": [
+        {"rule": "green_pepper", "amount": 200, "text": "青椒200克"},
+        {"rule": "potato", "amount": 300, "text": "去皮生土豆300克"},
+        {"rule": "belly", "amount": 200, "text": "五花肉200克"},
+        {"rule": "scallion", "amount": 10, "text": "葱原文约10克"},
+        {"rule": "ginger", "amount": 5, "text": "姜原文约5克"},
+        {"rule": "garlic", "amount": 12, "text": "蒜原文约12克"},
+        {"rule": "salt", "amount": 7, "text": "采用清单盐7克"},
+        {"rule": "soy_ml", "amount": {"minimum": 6, "maximum": 10}, "text": "酱油6～10ml"},
+        {"rule": "oil_ml", "amount": {"minimum": 10, "maximum": 15}, "text": "油10～15ml"},
+        {"rule": "potato_starch", "amount": 5, "text": "土豆淀粉5克"},
+        {"rule": "water", "amount": 15, "text": "水淀粉用水15克"}
+      ]
+    },
+    "1037": {
+      "source_sha256": "433df432c2ac472174832c7989e4fd44a874cdeaa08916d645538be2bf9a31fc",
+      "servings": 1,
+      "note": "按项目约定排除肉腌料的10克油、5克酱油及黄瓜腌制8克盐；只计40克炒制油和2克成菜盐，不估算腌料残留。",
+      "parts": [
+        {"rule": "cucumber", "amount": 100, "text": "黄瓜100克"},
+        {"rule": "pork", "amount": 50, "text": "猪瘦肉50克（项目选里脊）"},
+        {"rule": "oil", "amount": 40, "text": "炒制油40克"},
+        {"rule": "salt", "amount": 2, "text": "成菜盐2克"},
+        {"rule": "garlic_clove", "amount": 2, "text": "蒜2瓣"},
+        {"rule": "chili", "amount": 5, "text": "小米辣1根", "basis": "project_default", "note": "项目用5克生红辣椒近似。"},
+        {"rule": "soy", "amount": 5, "text": "腌肉酱油5克", "consumed": false, "note": "按约定排除腌制液营养；保留接触过敏原。"},
+        {"rule": "oil", "amount": 10, "text": "腌肉油10克", "consumed": false, "note": "按约定排除腌制液营养。"},
+        {"rule": "salt", "amount": 8, "text": "腌黄瓜盐8克", "consumed": false, "note": "按约定排除腌制部分，不计算吸附残留。"}
+      ]
+    },
+    "1038": {
+      "source_sha256": "063e9b28e531b0425f9d1697104d908ac90db2089c03a20732ef234041662788",
+      "note": "项目按清单共2个鸡蛋，1个拌肉、1个打入中间，不将步骤另一个误加成3个。料酒是拌入成菜的配料，以通用烹调用酒计；香油10～15ml保留。生肉末按源记录肥瘦比例。",
+      "parts": [
+        {"rule": "ground_pork", "amount": 300, "text": "猪肉末300克"},
+        {"rule": "egg", "amount": 2, "text": "项目采用总计2个蛋：拌肉1个、表面1个", "basis": "project_default"},
+        {"rule": "wine_ml", "amount": 10, "text": "拌入料酒10ml替代"},
+        {"rule": "soy_ml", "amount": 20, "text": "生抽20ml"},
+        {"rule": "white_pepper", "amount": 5, "text": "白胡椒粉5克"},
+        {"rule": "sesame_ml", "amount": {"minimum": 10, "maximum": 15}, "text": "芝麻油10～15ml"}
+      ],
+      "exclusions": ["蒸锅加工用水排除。"]
+    },
+    "1039": {
+      "source_sha256": "66da8a01df33280d8eebad66d613f55293cb6d1826a4b771b6071d7f1ce1b859",
+      "note": "项目两只去骨带皮鸡腿共250克、干香菇5粒共15克；炒制底油默认10克。排除腌料营养但保留酱油接触；后续生抽按步骤30ml单独计，糖15ml按堆积密度0.8换12克。香菇及其泡发水只计一次。",
+      "parts": [
+        {"rule": "chicken_thigh", "amount": 250, "text": "去骨带皮鸡腿2只共250克", "basis": "project_default"},
+        {"rule": "dried_shiitake", "amount": 15, "text": "干香菇5粒按15克", "basis": "project_default"},
+        {"rule": "ginger", "amount": 4, "text": "姜2片按4克", "basis": "project_default"},
+        {"rule": "scallion", "amount": 20, "text": "葱2颗按20克", "basis": "project_default"},
+        {"rule": "garlic_clove", "amount": 2, "text": "蒜2瓣"},
+        {"rule": "water_ml", "amount": 150, "text": "香菇泡发水150ml全量加入，不重复计"},
+        {"rule": "oil", "amount": 10, "text": "炒制底油默认10克", "basis": "project_default"},
+        {"rule": "soy_ml", "amount": 30, "text": "步骤后加生抽30ml"},
+        {"rule": "sugar", "amount": 12, "text": "15ml糖按0.8克/ml折12克", "basis": "project_default", "note": "项目白砂糖堆积密度0.8克/ml，非水密度。"},
+        {"rule": "sesame_ml", "amount": 5, "text": "出锅香油5ml"},
+        {"rule": "wine_ml", "amount": 15, "text": "腌料酒15ml", "consumed": false, "note": "按项目约定排除腌制液营养，保留映射接触信息。"},
+        {"rule": "soy_ml", "amount": 15, "text": "腌料生抽15ml", "consumed": false, "note": "排除腌料营养，保留大豆小麦接触。"},
+        {"rule": "dark_soy_ml", "amount": 15, "text": "腌料老抽15ml替代", "consumed": false, "note": "排除腌料营养，保留大豆小麦接触。"},
+        {"rule": "salt", "amount": 1.5, "text": "腌料盐1.5克", "consumed": false, "note": "按项目约定排除腌制液，不估算残留。"}
+      ],
+      "exclusions": ["鸡肉焯水用水排除；不扣焯水流失营养。"]
+    },
+    "1040": {
+      "source_sha256": "6296adcbaaeb2ecd0280c60b22c91d1c4a97b888791320942e4787b9d58f9b43",
+      "note": "选不蘸料、仅装盘虾肉版本，洋葱姜垫底后弃去，酒液留锅不计主体营养。250克带头壳小型海虾按来源50%废弃率折125克可食肉；不代表任意虾规格。独立蘸料未接触主体；蒸焖酒液接触信息保留。",
+      "parts": [
+        {"rule": "shrimp", "amount": 125, "text": "250克整虾按可食50%折125克", "basis": "project_default"},
+        {"rule": "onion", "amount": 200, "text": "垫底洋葱1头默认200克", "consumed": false, "note": "仅垫底，不随虾装盘，按项目加工配料排除。"},
+        {"rule": "ginger", "amount": 10, "text": "垫底姜1块默认10克", "consumed": false, "note": "仅垫底，出锅弃去，不估算浸出。"},
+        {"rule": "wine_ml", "amount": 20, "text": "蒸焖用料酒20ml的替代", "consumed": false, "note": "酒液留锅不作为主体食用，但保留已知接触过敏原。"}
+      ],
+      "exclusions": ["整虾头壳尾不作为可食肉；独立蘸料全部不选，不计葱蒜、酱油、芝麻、香醋、蚝油及蘸料热油。"]
+    },
+    "1041": {
+      "source_sha256": "d8965d8b868bdba8892843fabf5c58fcad6a46fe1b92da25eaec07895e471881",
+      "note": "项目把50克蒜蓉酱明确展开为蒜35克、菜籽油10克、酱油3克、白糖2克，非原文指定品牌。8只整虾假设每只20～30克，采用小型海虾50%可食率折80～120克肉。另淋20ml油及5ml生抽全量加入，不与蒜蓉酱投料合并漏算。",
+      "parts": [
+        {"rule": "shrimp", "amount": {"minimum": 80, "maximum": 120}, "text": "8只整虾折可食肉80～120克", "basis": "project_default"},
+        {"rule": "garlic", "amount": 35, "text": "50克蒜蓉酱子配方：蒜35克", "basis": "project_default"},
+        {"rule": "oil", "amount": 10, "text": "50克蒜蓉酱子配方：油10克", "basis": "project_default"},
+        {"rule": "soy", "amount": 3, "text": "50克蒜蓉酱子配方：酱油3克", "basis": "project_default"},
+        {"rule": "sugar", "amount": 2, "text": "50克蒜蓉酱子配方：糖2克", "basis": "project_default"},
+        {"rule": "oil_ml", "amount": 20, "text": "成菜额外淋油20ml"},
+        {"rule": "soy_ml", "amount": 5, "text": "成菜额外生抽5ml"}
+      ],
+      "exclusions": ["虾头壳尾和蒸锅加工水不计主体营养。"]
+    },
+    "1042": {
+      "source_sha256": "fe51b4171a90f9f8f2b194f24ac8da7e1966518ca7f437935418bf339a21ff1a",
+      "note": "项目整鱼默认600克、可食肉50%折300克，采用混合鲈鱼记录近似，非指定中国鲈鱼种。蒸鱼豉油明确改通用含小麦酿造酱油；出锅油和酱油各10～15ml保留。项目葱3根共30克、姜10克，蒸前一半弃去、蒸后一半计入；清单料酒选用于腌制后弃液。",
+      "parts": [
+        {"rule": "fish", "amount": 300, "text": "整鱼600克按可食50%折300克", "basis": "project_default"},
+        {"rule": "scallion", "amount": 15, "text": "蒸后食用葱丝15克", "basis": "project_default"},
+        {"rule": "ginger", "amount": 5, "text": "蒸后食用姜丝5克", "basis": "project_default"},
+        {"rule": "oil_ml", "amount": {"minimum": 10, "maximum": 15}, "text": "成菜淋油10～15ml"},
+        {"rule": "dark_soy_ml", "amount": {"minimum": 10, "maximum": 15}, "text": "蒸鱼豉油10～15ml改酿造酱油", "basis": "project_default"},
+        {"rule": "wine_ml", "amount": {"minimum": 10, "maximum": 15}, "text": "项目腌制用料酒10～15ml替代", "consumed": false, "note": "用于腌制后弃液，营养不计，接触信息保留。"},
+        {"rule": "salt", "amount": 10, "text": "洗鱼及腌制盐10克", "consumed": false, "note": "清单与步骤有差异，采用步骤10克作加工盐并排除，不估计残留。"}
+      ],
+      "exclusions": ["鱼头骨鳞内脏不作可食肉；蒸前姜5克、葱15克随蒸盘弃去，蒸锅水及蒸出液不重复计。"]
+    },
+    "1043": {
+      "source_sha256": "efafaaf488fb839634e9146ec98298c86a33e0507a0838cedf4aa17c115e5127",
+      "note": "原文必备清单明确香油、辣椒油、花生、葱花、香菜为可选，均默认不加；用量清单列出它们不改变可选性质。项目2个鸭皮蛋去壳共100克、1盒嫩豆腐300克；内酯豆腐采用日本充填嫩豆腐估算，香醋改白醋，不是原品牌实测。",
+      "parts": [
+        {"rule": "pidan", "amount": 100, "text": "鸭皮蛋2个可食100克", "basis": "project_default"},
+        {"rule": "soft_tofu", "amount": 300, "text": "盒装嫩豆腐1盒300克", "basis": "project_default"},
+        {"rule": "soy_ml", "amount": 15, "text": "生抽15ml"},
+        {"rule": "sugar", "amount": 2.5, "text": "白糖2.5克"},
+        {"rule": "vinegar_ml", "amount": 15, "text": "香醋15ml改白醋", "basis": "project_default"}
+      ],
+      "exclusions": ["可选香油、辣椒油、花生碎、葱花、香菜默认均不加入；蛋壳排除。"]
+    },
+    "1044": {
+      "source_sha256": "57b98c706328b39991f03f7694baff06d8ca0b5bbd2fd5921a99cec9c3493ab6",
+      "note": "按步骤调汁生抽10ml而非清单6ml；成菜盐0.5克，焯水中的盐油排除；保留生菜、蒜、蚝油和油的原始范围。",
+      "parts": [
+        {"rule": "lettuce", "amount": {"minimum": 150, "maximum": 250}, "text": "生菜200±50克"},
+        {"rule": "oyster_ml", "amount": {"minimum": 6, "maximum": 8}, "text": "蚝油6～8ml"},
+        {"rule": "garlic_clove", "amount": {"minimum": 4, "maximum": 5}, "text": "蒜4～5瓣"},
+        {"rule": "soy_ml", "amount": 10, "text": "步骤中的生抽10ml"},
+        {"rule": "salt", "amount": 0.5, "text": "调汁盐0.5克"},
+        {"rule": "sugar", "amount": 1, "text": "白糖1克"},
+        {"rule": "oil_ml", "amount": {"minimum": 5, "maximum": 8}, "text": "炒制油5～8ml"},
+        {"rule": "water_ml", "amount": {"minimum": 10, "maximum": 15}, "text": "调汁水10～15ml"}
+      ],
+      "exclusions": ["焯水1升及其2～3ml油、0.5克盐不计入；不扣减焯水损失。"]
+    },
+    "1045": {
+      "source_sha256": "7cbc1b2c95167592c2bc80307fb106f24e51b109bdbd7744fc06b219015dff77",
+      "note": "冬瓜采用去皮籽生重；鸡精改干鸡汤粉、老抽改通用酿造酱油、料酒改通用烹调用酒，淀粉选玉米淀粉。先煎后同锅剩油做浇汁，50ml油全量只计一次；葱5克、姜2克、炖水300克及调淀粉水20克为项目默认。",
+      "parts": [
+        {"rule": "waxgourd", "amount": 300, "text": "冬瓜300克"},
+        {"rule": "oil_ml", "amount": 50, "text": "煎制及浇汁共用50ml油"},
+        {"rule": "wine_ml", "amount": 2, "text": "成菜料酒2ml替代"},
+        {"rule": "cornstarch", "amount": 10, "text": "淀粉10克选玉米淀粉", "basis": "project_default"},
+        {"rule": "soy_ml", "amount": 10, "text": "生抽10ml"},
+        {"rule": "dark_soy_ml", "amount": 15, "text": "老抽15ml改酿造酱油", "basis": "project_default"},
+        {"rule": "bouillon", "amount": 3, "text": "鸡精3克改干鸡汤粉", "basis": "project_default"},
+        {"rule": "scallion", "amount": 5, "text": "葱半根按5克", "basis": "project_default"},
+        {"rule": "ginger", "amount": 2, "text": "姜末1粒按2克", "basis": "project_default"},
+        {"rule": "oyster_ml", "amount": 15, "text": "蚝油15ml"},
+        {"rule": "water", "amount": 320, "text": "炖水300克加调淀粉水20克", "basis": "project_default", "note": "液面没过冬瓜不能直接换算克重；这里为项目默认，非原文量测。"}
+      ]
+    },
+    "1046": {
+      "source_sha256": "25bd80eaf19f3e9ccc786e4af8daeea295538ed6d0aee22ca85eefd60d204ae6",
+      "note": "项目豆角明确选四季豆，老抽改通用酿造酱油；小米椒2个默认10克、葱3圈默认1克。补步骤油10～15ml与水150ml；不按2人分食除算。",
+      "parts": [
+        {"rule": "green_beans", "amount": 250, "text": "四季豆250克", "basis": "project_default"},
+        {"rule": "chili", "amount": 10, "text": "小米椒2个按10克", "basis": "project_default"},
+        {"rule": "scallion", "amount": 1, "text": "葱3圈按1克", "basis": "project_default"},
+        {"rule": "garlic_clove", "amount": 2, "text": "蒜2瓣"},
+        {"rule": "soy_ml", "amount": 6, "text": "生抽6ml"},
+        {"rule": "dark_soy_ml", "amount": 2, "text": "老抽2ml改酿造酱油", "basis": "project_default"},
+        {"rule": "oyster_ml", "amount": 6, "text": "蚝油6ml"},
+        {"rule": "salt", "amount": 6, "text": "盐6克"},
+        {"rule": "oil_ml", "amount": {"minimum": 10, "maximum": 15}, "text": "步骤用油10～15ml"},
+        {"rule": "water_ml", "amount": 150, "text": "步骤焖水150ml"}
+      ]
+    },
+    "1047": {
+      "source_sha256": "b99130478840b83495f3e20014a3feabbcf13844eaf4d2df16e774f809b9fa6c",
+      "note": "熟松子仁采用官方烘熟记录；玉米选200克生甜玉米粒自行焯煮，不用罐头汁或熟重重复计。泛称淀粉选玉米淀粉；可选胡萝卜不加，不扣焯水损失。",
+      "parts": [
+        {"rule": "corn", "amount": 200, "text": "自行焯煮的生甜玉米粒200克"},
+        {"rule": "pine_roasted", "amount": 30, "text": "熟松子仁30克"},
+        {"rule": "oil_ml", "amount": 15, "text": "油15ml"},
+        {"rule": "sugar", "amount": 10, "text": "白糖10克"},
+        {"rule": "salt", "amount": 1, "text": "盐1克"},
+        {"rule": "cornstarch", "amount": 5, "text": "淀粉5克选玉米淀粉", "basis": "project_default"},
+        {"rule": "water_ml", "amount": 20, "text": "调淀粉水20ml"}
+      ],
+      "exclusions": ["可选胡萝卜默认不加；玉米焯水加工用水排除。"]
+    },
+    "1048": {
+      "source_sha256": "e9be582d6f84daf9c638c2b3f6fe238c28eea106ff4f69a2d4c568d4aa2bf811",
+      "note": "按原文1份，豆腐0.8块向上取整1块，项目硬豆腐块250克；半个青椒50克，葱2/3根按每根10克。鸡精以干鸡汤粉替代；基础油9ml外，覆盖锅底补油项目默认3～6ml，合计12～15ml。",
+      "parts": [
+        {"rule": "tofu", "amount": 250, "text": "硬豆腐1块默认250克", "basis": "project_default"},
+        {"rule": "green_pepper", "amount": 50, "text": "青椒0.5只默认50克", "basis": "project_default"},
+        {"rule": "scallion", "amount": 6.666667, "text": "葱2/3根按每根10克", "basis": "project_default", "note": "20/3克，保留6位小数。"},
+        {"rule": "salt", "amount": 3, "text": "盐3克"},
+        {"rule": "bouillon", "amount": 1.5, "text": "鸡精1.5克改干鸡汤粉", "basis": "project_default"},
+        {"rule": "oil_ml", "amount": {"minimum": 12, "maximum": 15}, "text": "9ml基础油加默认3～6ml补油", "basis": "project_default"},
+        {"rule": "water_ml", "amount": 10, "text": "步骤水10ml"}
+      ]
+    },
+    "1049": {
+      "source_sha256": "3ffc9ae8bf9ffe5bb388fa98dd763a8a250f96042d04e05a5d4c2c1f6a04211f",
+      "servings": 1,
+      "note": "生抽用含小麦通用记录，醋选项目白醋；汁拌入菜中计入；所有可选糖油默认不加。",
+      "parts": [
+        {"rule": "enoki", "amount": 150, "text": "金针菇150克"},
+        {"rule": "scallion", "amount": 5, "text": "小葱5克"},
+        {"rule": "garlic_clove", "amount": 2, "text": "蒜2瓣"},
+        {"rule": "soy_ml", "amount": 15, "text": "生抽15ml"},
+        {"rule": "vinegar_ml", "amount": 10, "text": "醋10ml（项目选白醋）"}
+      ],
+      "exclusions": ["焯水1000ml排除；可选白糖、香油、辣椒油默认不加。"]
+    },
+    "1050": {
+      "source_sha256": "9840bcfe42c526255ed9d55170c4896cf36557bcedc990ceb9015c5c41bc0187",
+      "note": "按原文份数公式取1份整锅，不除以2～3人；土豆选去皮版本，肉选猪里脊。补步骤13ml油；液面高度不是体积，项目炖水默认300～500克，不按收汁后的高度再次计算汤营养。",
+      "parts": [
+        {"rule": "eggplant", "amount": 150, "text": "茄子150克"},
+        {"rule": "potato", "amount": 150, "text": "去皮生土豆150克"},
+        {"rule": "pork", "amount": 180, "text": "肉180克项目选猪里脊"},
+        {"rule": "green_pepper", "amount": 50, "text": "青辣椒50克项目选青甜椒", "basis": "project_default"},
+        {"rule": "soy_ml", "amount": 15, "text": "酱油15ml"},
+        {"rule": "salt", "amount": 5, "text": "盐5克"},
+        {"rule": "garlic_clove", "amount": 3, "text": "蒜3瓣"},
+        {"rule": "oil_ml", "amount": 13, "text": "步骤油13ml"},
+        {"rule": "water", "amount": {"minimum": 300, "maximum": 500}, "text": "炖水项目默认300～500克", "basis": "project_default"}
+      ]
+    }
+  }
+}

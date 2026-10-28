@@ -101,6 +101,7 @@ class NutritionMCPService:
                 query=request.query,
                 filters=MealSearchFilters(
                     meal_type=request.meal_type,
+                    meal_role=request.meal_role,
                     cuisines=request.cuisines,
                     tastes=request.tastes,
                     health_goals=request.health_goals,

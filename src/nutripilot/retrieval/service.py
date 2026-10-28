@@ -65,9 +65,7 @@ class RetrievalService:
         self.vector_index = vector_index or InMemoryVectorIndex(meal_repository, self.embedder)
         self.reranker = reranker or LexicalReranker()
         self.rrf_k = rrf_k
-        self.version = (
-            f"hybrid-rrf-v2|embed={self.embedder.version}|rerank={self.reranker.version}"
-        )
+        self.version = f"hybrid-rrf-v2|embed={self.embedder.version}|rerank={self.reranker.version}"
 
     async def search_meals(self, request: MealSearchRequest) -> MealSearchResponse:
         all_meals = await self.meal_repository.list_meals()
@@ -133,6 +131,8 @@ class RetrievalService:
     def _passes_hard_filters(meal: Meal, filters: MealSearchFilters) -> bool:
         if meal.id in set(filters.excluded_meal_ids):
             return False
+        if filters.meal_role is not None and meal.meal_role != filters.meal_role:
+            return False
         if filters.meal_type and filters.meal_type.casefold() not in meal.meal_types:
             return False
         if has_dietary_conflict(
@@ -146,10 +146,13 @@ class RetrievalService:
             return False
         if (
             filters.max_calories_kcal is not None
-            and meal.nutrition.calories_kcal > filters.max_calories_kcal
+            and meal.nutrition.bounds("calories_kcal").maximum > filters.max_calories_kcal
         ):
             return False
-        if filters.min_protein_g is not None and meal.nutrition.protein_g < filters.min_protein_g:
+        if (
+            filters.min_protein_g is not None
+            and meal.nutrition.bounds("protein_g").minimum < filters.min_protein_g
+        ):
             return False
         if filters.max_prep_minutes is not None and (
             meal.prep_minutes is None or meal.prep_minutes > filters.max_prep_minutes
@@ -216,7 +219,8 @@ class RetrievalService:
             if matched:
                 reasons.append(f"匹配口味：{'、'.join(matched)}")
         if filters.max_calories_kcal is not None:
-            reasons.append(f"约 {meal.nutrition.calories_kcal:g} 千卡")
+            bounds = meal.nutrition.bounds("calories_kcal")
+            reasons.append(f"估算 {bounds.minimum:g}～{bounds.maximum:g} 千卡")
         if filters.max_prep_minutes is not None:
             reasons.append(f"准备时间约 {meal.prep_minutes} 分钟")
         return reasons or ["与当前描述和筛选条件相关"]

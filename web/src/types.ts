@@ -34,6 +34,7 @@ export interface MealRecommendation {
   protein?: number;
   carbs?: number;
   fat?: number;
+  nutrientRanges?: Record<string, { minimum: number; maximum: number }>;
   tags?: string[];
 }
 

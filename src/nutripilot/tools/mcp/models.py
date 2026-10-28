@@ -12,6 +12,7 @@ class SearchMealsMCPArgs(BaseModel):
 
     query: str = Field(min_length=1, max_length=500)
     meal_type: str | None = None
+    meal_role: Literal["complete_meal", "dish", "staple", "soup", "snack"] | None = None
     cuisines: list[str] = Field(default_factory=list)
     tastes: list[str] = Field(default_factory=list)
     health_goals: list[str] = Field(default_factory=list)

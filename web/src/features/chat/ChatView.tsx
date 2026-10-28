@@ -112,13 +112,36 @@ function normalizeRecommendations(value: unknown): MealRecommendation[] {
       name,
       reason: firstString(source.reason, source.recommendation_reason, source.description),
       calories: firstNumber(source.calories, source.calories_kcal, nutrition.calories, nutrition.calories_kcal),
-      protein: firstNumber(source.protein, source.protein_g, nutrition.protein),
-      carbs: firstNumber(source.carbs, source.carbohydrates, source.carbs_g, nutrition.carbs),
-      fat: firstNumber(source.fat, source.fat_g, nutrition.fat),
+      protein: firstNumber(source.protein, source.protein_g, nutrition.protein, nutrition.protein_g),
+      carbs: firstNumber(source.carbs, source.carbohydrates, source.carbs_g, nutrition.carbs, nutrition.carbohydrates_g),
+      fat: firstNumber(source.fat, source.fat_g, nutrition.fat, nutrition.fat_g),
+      nutrientRanges: normalizeNutrientRanges(source.nutrient_ranges ?? nutrition.nutrient_ranges),
       tags: asArray(source.tags).filter((tag): tag is string => typeof tag === "string"),
     });
   }
   return recommendations;
+}
+
+function normalizeNutrientRanges(value: unknown): MealRecommendation["nutrientRanges"] {
+  const result: NonNullable<MealRecommendation["nutrientRanges"]> = {};
+  for (const [key, raw] of Object.entries(asRecord(value))) {
+    const bounds = asRecord(raw);
+    const minimum = firstNumber(bounds.minimum);
+    const maximum = firstNumber(bounds.maximum);
+    if (minimum !== undefined && maximum !== undefined && minimum >= 0 && maximum >= minimum) {
+      result[key] = { minimum, maximum };
+    }
+  }
+  return result;
+}
+
+function nutrientLabel(meal: MealRecommendation, field: string, fallback: number): string {
+  const range = meal.nutrientRanges?.[field];
+  const format = (value: number) => Number(value.toFixed(1)).toString();
+  if (!range) return format(fallback);
+  return range.minimum === range.maximum
+    ? format(range.minimum)
+    : `${format(range.minimum)}～${format(range.maximum)}`;
 }
 
 function normalizeCitations(value: unknown): Citation[] {
@@ -812,14 +835,14 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
                               <span>推荐 {index + 1}</span>
                               <strong>{meal.name}</strong>
                             </div>
-                            {meal.calories !== undefined ? <b>{Math.round(meal.calories)} kcal</b> : null}
+                            {meal.calories !== undefined ? <b>{nutrientLabel(meal, "calories_kcal", meal.calories)} kcal</b> : null}
                           </div>
                           {meal.reason ? <p>{meal.reason}</p> : null}
                           {(meal.protein !== undefined || meal.carbs !== undefined || meal.fat !== undefined) ? (
                             <div className="nutrition-row">
-                              {meal.protein !== undefined ? <span>蛋白质 {meal.protein}g</span> : null}
-                              {meal.carbs !== undefined ? <span>碳水 {meal.carbs}g</span> : null}
-                              {meal.fat !== undefined ? <span>脂肪 {meal.fat}g</span> : null}
+                              {meal.protein !== undefined ? <span>蛋白质 {nutrientLabel(meal, "protein_g", meal.protein)}g</span> : null}
+                              {meal.carbs !== undefined ? <span>碳水 {nutrientLabel(meal, "carbohydrates_g", meal.carbs)}g</span> : null}
+                              {meal.fat !== undefined ? <span>脂肪 {nutrientLabel(meal, "fat_g", meal.fat)}g</span> : null}
                             </div>
                           ) : null}
                           {meal.tags?.length ? <div className="tag-row">{meal.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}

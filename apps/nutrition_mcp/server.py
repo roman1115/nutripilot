@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
-from typing import Any
+from typing import Any, Literal
 
 from apps.nutrition_mcp.service import NutritionService, build_default_service
 from nutripilot.tools.errors import ToolRuntimeError
@@ -38,6 +38,7 @@ def create_mcp_server(service: NutritionService | None = None) -> Any:
     async def search_meals(
         query: str,
         meal_type: str | None = None,
+        meal_role: Literal["complete_meal", "dish", "staple", "soup", "snack"] | None = None,
         cuisines: list[str] | None = None,
         tastes: list[str] | None = None,
         health_goals: list[str] | None = None,
@@ -57,6 +58,7 @@ def create_mcp_server(service: NutritionService | None = None) -> Any:
             {
                 "query": query,
                 "meal_type": meal_type,
+                "meal_role": meal_role,
                 "cuisines": cuisines or [],
                 "tastes": tastes or [],
                 "health_goals": health_goals or [],

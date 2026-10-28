@@ -4,6 +4,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from nutripilot.domain.models import NumericRange
+
+NutrientField = Literal[
+    "calories_kcal", "protein_g", "carbohydrates_g", "fat_g", "fiber_g", "sodium_mg"
+]
+
 
 def _normalise_terms(values: list[str]) -> list[str]:
     return sorted({value.strip().casefold() for value in values if value.strip()})
@@ -20,16 +26,27 @@ class NutritionFacts(BaseModel):
     sodium_mg: float = Field(default=0, ge=0)
     serving_size: str = Field(default="1 serving", min_length=1)
     serving_weight_g: float | None = Field(default=None, gt=0)
-    source_status: Literal[
-        "unverified_estimate", "calculated_estimate", "verified"
-    ] = "unverified_estimate"
+    source_status: Literal["unverified_estimate", "calculated_estimate", "verified"] = (
+        "unverified_estimate"
+    )
     source_uri: str | None = None
     weight_basis: Literal["as_served", "ingredient_input"] = "as_served"
     ingredient_source_uris: list[str] = Field(default_factory=list)
     calculation_note: str | None = None
+    # Scalar fields retain the upper bound for older consumers, never a hidden midpoint.
+    nutrient_ranges: dict[NutrientField, NumericRange] = Field(default_factory=dict)
+    input_weight_range_g: NumericRange | None = None
+
+    def bounds(self, field: NutrientField) -> NumericRange:
+        return self.nutrient_ranges.get(
+            field, NumericRange(minimum=getattr(self, field), maximum=getattr(self, field))
+        )
 
     @model_validator(mode="after")
     def validate_verified_source(self) -> NutritionFacts:
+        for field, bounds in self.nutrient_ranges.items():
+            if getattr(self, field) != bounds.maximum:
+                raise ValueError("Scalar nutrition fields must equal their range upper bounds.")
         if self.source_status == "verified" and (
             not self.source_uri or self.serving_weight_g is None
         ):
@@ -112,6 +129,7 @@ class MealSearchFilters(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     meal_type: str | None = None
+    meal_role: Literal["complete_meal", "dish", "staple", "soup", "snack"] | None = None
     cuisines: list[str] = Field(default_factory=list)
     tastes: list[str] = Field(default_factory=list)
     health_goals: list[str] = Field(default_factory=list)

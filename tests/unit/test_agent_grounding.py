@@ -1,5 +1,5 @@
 from nutripilot.agent.grounding import ground_recommendation_facts
-from nutripilot.domain.models import FinalResponse, MealRecommendation
+from nutripilot.domain.models import FinalResponse, MealRecommendation, NumericRange
 
 
 def test_grounding_overwrites_model_authored_meal_facts() -> None:
@@ -24,7 +24,13 @@ def test_grounding_overwrites_model_authored_meal_facts() -> None:
                     {
                         "meal_id": 2,
                         "name": "鸡胸藜麦能量碗",
-                        "nutrition": {"calories_kcal": 516, "protein_g": 43},
+                        "nutrition": {
+                            "calories_kcal": 516,
+                            "protein_g": 43,
+                            "nutrient_ranges": {
+                                "calories_kcal": {"minimum": 500, "maximum": 516},
+                            },
+                        },
                         "health_goals": ["高蛋白"],
                         "score": 0.91,
                         "citation": {
@@ -43,13 +49,15 @@ def test_grounding_overwrites_model_authored_meal_facts() -> None:
     assert item.name == "鸡胸藜麦能量碗"
     assert item.calories_kcal == 516
     assert item.protein_g == 43
+    assert item.nutrient_ranges["calories_kcal"] == NumericRange(minimum=500, maximum=516)
     assert "516" in item.reason
     assert "43" in item.reason
     assert "模型生成" not in item.reason
     assert grounded.citations[0].source_id == "meal:2"
     assert "9999" not in grounded.message
     assert any("未独立核验" in warning for warning in grounded.warnings)
-    assert "估算约 516" in grounded.recommendations[0].reason
+    assert "估算约 500～516" in grounded.recommendations[0].reason
+    assert '"maximum":516.0' in grounded.model_dump_json(warnings="error")
 
 
 def test_grounding_explains_verified_preferences_without_inventing_personal_facts() -> None:

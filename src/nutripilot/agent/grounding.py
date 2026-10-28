@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from nutripilot.domain.models import Citation, FinalResponse
+from nutripilot.domain.models import Citation, FinalResponse, MealRecommendation
 
 _ESTIMATE_WARNING = (
     "营养值为未独立核验的演示估算，份量缺少统一克重；实际值会随食材、份量和烹调方式变化，"
@@ -27,13 +27,16 @@ def ground_recommendation_facts(
         nutrition = meal.get("nutrition")
         facts = nutrition if isinstance(nutrition, dict) else meal
         grounded.append(
-            recommendation.model_copy(
-                update={
+            MealRecommendation.model_validate(
+                {
+                    **recommendation.model_dump(),
                     "name": str(meal.get("name") or recommendation.name),
                     "calories_kcal": _number(facts.get("calories_kcal")),
                     "protein_g": _number(facts.get("protein_g")),
+                    "nutrient_ranges": facts.get("nutrient_ranges") or {},
                     "tags": _strings(meal.get("health_goals")),
-                    "reason": _meal_explanation(meal) + _preference_explanation(
+                    "reason": _meal_explanation(meal)
+                    + _preference_explanation(
                         meal, _latest_data(tool_results, "get_user_profile"), slots or {}
                     ),
                 }
@@ -110,13 +113,13 @@ def _preference_explanation(
             matches.append(f"与已记录的{label}偏好匹配：{'、'.join(matched)}")
     facts = meal.get("nutrition") or {}
     maximum = _number(slots.get("max_calories_kcal"))
-    calories = _number(facts.get("calories_kcal"))
+    calories = _nutrient_bound(facts, "calories_kcal", "maximum")
     if maximum is not None and calories is not None and calories <= maximum:
-        matches.append(f"每份热量不超过本轮设置的 {maximum:g} 千卡")
+        matches.append(f"该记录的营养估算上限不超过本轮设置的 {maximum:g} 千卡")
     minimum = _number(slots.get("min_protein_g"))
-    protein = _number(facts.get("protein_g"))
+    protein = _nutrient_bound(facts, "protein_g", "minimum")
     if minimum is not None and protein is not None and protein >= minimum:
-        matches.append(f"每份蛋白质达到本轮设置的至少 {minimum:g} 克")
+        matches.append(f"该记录的蛋白质估算下限达到本轮设置的至少 {minimum:g} 克")
     return "；".join(matches) + "。" if matches else ""
 
 
@@ -136,13 +139,23 @@ def _meal_explanation(meal: dict[str, Any]) -> str:
     weight = _number(facts.get("serving_weight_g"))
     if weight:
         label = "投料" if facts.get("weight_basis") == "ingredient_input" else ""
-        serving = f"{serving}（{label}{weight:g} 克）"
+        weight_range = facts.get("input_weight_range_g")
+        display_weight = _format_range(weight_range) or f"{weight:g}"
+        serving = f"{serving}（{label}{display_weight} 克）"
     calories, protein = _number(facts.get("calories_kcal")), _number(facts.get("protein_g"))
     qualifier = "估算" if _nutrition_is_unverified(meal) else ""
     if calories is not None:
-        parts.append(f"每{serving}{qualifier}约 {calories:g} 千卡")
+        parts.append(f"按{serving}{qualifier}约 {_nutrient_text(facts, 'calories_kcal')} 千卡")
     if protein is not None:
-        parts.append(f"蛋白质{qualifier}约 {protein:g} 克")
+        parts.append(f"蛋白质{qualifier}约 {_nutrient_text(facts, 'protein_g')} 克")
+    for field, name, unit in (
+        ("carbohydrates_g", "碳水", "克"),
+        ("fat_g", "脂肪", "克"),
+        ("fiber_g", "纤维", "克"),
+        ("sodium_mg", "钠", "毫克"),
+    ):
+        if _number(facts.get(field)) is not None:
+            parts.append(f"{name}{qualifier}约 {_nutrient_text(facts, field)} {unit}")
     if meal.get("meal_role", "complete_meal") != "complete_meal":
         parts.append("这是单道菜、主食或加餐，不能单独代表完整一餐")
     allergens = _strings(meal.get("allergens"))
@@ -152,6 +165,27 @@ def _meal_explanation(meal: dict[str, Any]) -> str:
         else "餐食记录未标注过敏原，不代表实际制作时无过敏风险"
     )
     return "；".join(parts) + "。"
+
+
+def _nutrient_bound(facts: dict[str, Any], field: str, side: str) -> float | None:
+    ranges = facts.get("nutrient_ranges")
+    bounds = ranges.get(field) if isinstance(ranges, dict) else None
+    return _number(bounds.get(side)) if isinstance(bounds, dict) else _number(facts.get(field))
+
+
+def _format_range(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    low, high = _number(value.get("minimum")), _number(value.get("maximum"))
+    if low is None or high is None:
+        return None
+    return f"{low:g}" if low == high else f"{low:g}～{high:g}"
+
+
+def _nutrient_text(facts: dict[str, Any], field: str) -> str:
+    ranges = facts.get("nutrient_ranges")
+    bounds = ranges.get(field) if isinstance(ranges, dict) else None
+    return _format_range(bounds) or f"{facts[field]:g}"
 
 
 def _ground_nutrition(response: FinalResponse, tool_results: list[dict[str, Any]]) -> FinalResponse:
@@ -187,9 +221,7 @@ def _nutrition_warnings(meal: dict[str, Any]) -> list[str]:
     nutrition = meal.get("nutrition")
     facts = nutrition if isinstance(nutrition, dict) else meal
     if facts.get("source_status") == "calculated_estimate":
-        return [
-            str(facts.get("calculation_note") or "营养值为按配方计算的估算，未经成菜检测。")
-        ]
+        return [str(facts.get("calculation_note") or "营养值为按配方计算的估算，未经成菜检测。")]
     return [_ESTIMATE_WARNING] if _nutrition_is_unverified(meal) else []
 
 

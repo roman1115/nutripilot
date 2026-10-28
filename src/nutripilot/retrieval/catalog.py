@@ -8,9 +8,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
-from nutripilot.retrieval.models import Meal, NutritionFacts
+from nutripilot.domain.models import NumericRange
+from nutripilot.retrieval.models import Meal, NutrientField, NutritionFacts
 
-NUTRIENT_FIELDS = (
+NUTRIENT_FIELDS: tuple[NutrientField, ...] = (
     "calories_kcal",
     "protein_g",
     "carbohydrates_g",
@@ -37,7 +38,7 @@ class DataSource(CatalogModel):
     license: str = Field(min_length=1)
     version: str = Field(min_length=1)
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    checksum_scope: Literal["archive", "license"]
+    checksum_scope: Literal["archive", "license", "document"]
 
 
 class NutrientsPer100g(CatalogModel):
@@ -61,12 +62,18 @@ class Ingredient(CatalogModel):
     nutrients_per_100g: NutrientsPer100g
     allergens: list[str] | None = None
     mapping_note: str | None = None
+    source_nutrient_values: dict[NutrientField, str] = Field(default_factory=dict)
 
 
 class RecipeIngredient(CatalogModel):
     quantity_text: str = Field(min_length=1)
     ingredient_id: str | None = None
     grams: float | None = Field(default=None, gt=0)
+    grams_range: NumericRange | None = None
+    quantity_basis: Literal[
+        "source", "source_range", "conversion", "project_default", "oil_absorption", "excluded"
+    ] = "source"
+    evidence: str | None = None
     consumed: bool = True
     note: str | None = None
 
@@ -74,6 +81,12 @@ class RecipeIngredient(CatalogModel):
     def require_exclusion_reason(self) -> RecipeIngredient:
         if not self.consumed and not self.note:
             raise ValueError("Non-consumed ingredients require an exclusion reason.")
+        if self.grams is not None and self.grams_range is not None:
+            raise ValueError("Use grams or grams_range, not both.")
+        if self.grams_range is not None and self.grams_range.minimum <= 0:
+            raise ValueError("Consumed weight ranges must be positive.")
+        if self.quantity_basis != "source" and not self.evidence:
+            raise ValueError("Estimated, converted or excluded quantities require evidence.")
         return self
 
 
@@ -92,6 +105,7 @@ class Recipe(CatalogModel):
     review_issues: list[str] = Field(default_factory=list)
     servings: int | None = Field(default=None, gt=0, le=100)
     serving_label: str | None = Field(default=None, min_length=1)
+    calculation_basis: Literal["whole_recipe", "per_serving"] = "whole_recipe"
     meal_types: list[str] = Field(default_factory=list)
     meal_role: Literal["complete_meal", "dish", "staple", "soup", "snack"] = "dish"
     preparation_note: str | None = None
@@ -123,6 +137,12 @@ class FoodCatalog(CatalogModel):
             for part in recipe.ingredients:
                 if part.ingredient_id is not None and part.ingredient_id not in by_id:
                     raise ValueError(f"Unknown ingredient in recipe {recipe.id}.")
+                if (
+                    recipe.status == "calculation_ready"
+                    and part.ingredient_id is not None
+                    and by_id[part.ingredient_id].allergens is None
+                ):
+                    raise ValueError(f"Recipe {recipe.id} has unknown contact allergens.")
             if recipe.status == "calculation_ready":
                 calculate_recipe(recipe, by_id)
         return self
@@ -139,63 +159,98 @@ class FoodCatalog(CatalogModel):
 def calculate_recipe(recipe: Recipe, ingredients: dict[str, Ingredient]) -> NutritionFacts:
     if recipe.status != "calculation_ready" or recipe.review_issues:
         raise ValueError(f"Recipe {recipe.id} still has unresolved review issues.")
-    if not recipe.servings or not recipe.serving_label or not recipe.meal_types:
-        raise ValueError(f"Recipe {recipe.id} needs explicit servings, label and meal types.")
+    if not recipe.serving_label or not recipe.meal_types:
+        raise ValueError(f"Recipe {recipe.id} needs an explicit label and meal types.")
+    if recipe.calculation_basis == "per_serving" and not recipe.servings:
+        raise ValueError(f"Recipe {recipe.id} needs explicit servings for division.")
+    divisor = recipe.servings if recipe.calculation_basis == "per_serving" else 1
+    assert divisor is not None
     totals = dict.fromkeys(NUTRIENT_FIELDS, 0.0)
+    lower_totals = dict.fromkeys(NUTRIENT_FIELDS, 0.0)
     input_weight = 0.0
+    lower_weight = 0.0
     sources: set[str] = set()
+    assumptions: list[str] = []
     for part in recipe.ingredients:
         if not part.consumed:
             continue
-        if part.ingredient_id not in ingredients or part.grams is None:
+        if part.ingredient_id not in ingredients or (
+            part.grams is None and part.grams_range is None
+        ):
             raise ValueError(f"Recipe {recipe.id} has an unresolved ingredient or weight.")
         ingredient = ingredients[part.ingredient_id]
         if ingredient.allergens is None or not ingredient.mapping_note:
             raise ValueError(f"Recipe {recipe.id} requires allergen and ingredient mapping notes.")
+        if part.grams_range is not None:
+            weight = part.grams_range
+        else:
+            assert part.grams is not None
+            weight = NumericRange(minimum=part.grams, maximum=part.grams)
         for field in NUTRIENT_FIELDS:
             value = getattr(ingredient.nutrients_per_100g, field)
             if value is None:
                 raise ValueError(f"Ingredient {ingredient.id} is missing {field}.")
-            totals[field] += float(value) * part.grams / 100
-        input_weight += part.grams
+            lower_totals[field] += float(value) * weight.minimum / 100
+            totals[field] += float(value) * weight.maximum / 100
+        lower_weight += weight.minimum
+        input_weight += weight.maximum
         sources.add(str(ingredient.source_uri))
+        if part.quantity_basis in {"conversion", "project_default", "oil_absorption"}:
+            assumptions.append(f"{part.quantity_text}：{part.evidence}")
     if not input_weight:
         raise ValueError(f"Recipe {recipe.id} has no consumed ingredients.")
     return NutritionFacts(
-        **{field: round(value / recipe.servings, 4) for field, value in totals.items()},
+        **{field: round(value / divisor, 4) for field, value in totals.items()},
+        nutrient_ranges={
+            field: NumericRange(
+                minimum=round(lower_totals[field] / divisor, 4),
+                maximum=round(totals[field] / divisor, 4),
+            )
+            for field in NUTRIENT_FIELDS
+        },
         serving_size=recipe.serving_label,
-        serving_weight_g=round(input_weight / recipe.servings, 4),
+        serving_weight_g=round(input_weight / divisor, 4),
+        input_weight_range_g=NumericRange(
+            minimum=round(lower_weight / divisor, 4),
+            maximum=round(input_weight / divisor, 4),
+        ),
         weight_basis="ingredient_input",
         source_status="calculated_estimate",
         source_uri=str(recipe.source_uri),
         ingredient_source_uris=sorted(sources),
-        calculation_note=CALCULATION_NOTE,
+        calculation_note=(
+            CALCULATION_NOTE + "按投料汇总，不重复增加煮制汤汁的营养；排除焯水、腌制液和独立蘸料，"
+            "不扣减流失到弃汤中的营养。范围为投料假设上下限，不是统计置信区间。"
+            + (f"本配方采用版本：{recipe.preparation_note}" if recipe.preparation_note else "")
+            + ("项目换算或默认用量：" + "；".join(assumptions) if assumptions else "")
+        ),
     )
 
 
 def recipe_to_meal(recipe: Recipe, ingredients: dict[str, Ingredient]) -> Meal:
     nutrition = calculate_recipe(recipe, ingredients)
-    consumed = [
+    # Excluding a marinade from nutrition must not erase its contact allergens.
+    contact = [
         ingredients[part.ingredient_id]
         for part in recipe.ingredients
-        if part.consumed and part.ingredient_id is not None
+        if part.ingredient_id is not None
     ]
     return Meal(
         id=recipe.id,
         name=recipe.name,
-        description=f"来源菜谱的{recipe.serving_label}；营养按明确投料计算，未独立检测。",
+        description=f"来源菜谱的{recipe.serving_label}；营养按投料及记录的估算规则计算，未独立检测。",
         meal_types=recipe.meal_types,
         meal_role=recipe.meal_role,
         recipe_id=recipe.id,
         cuisines=["中式"],
-        ingredients=list(dict.fromkeys(item.name for item in consumed)),
-        allergens=sorted({term for item in consumed for term in item.allergens or []}),
+        ingredients=list(dict.fromkeys(item.name for item in contact)),
+        allergens=sorted({term for item in contact for term in item.allergens or []}),
         nutrition=nutrition,
         prep_minutes=None,
         price_cny=None,
-        source="HowToCook 菜谱；USDA SR Legacy 食材数据；配方计算估算",
+        source="HowToCook 菜谱；逐食材来源成分数据；配方计算估算",
         source_uri=str(recipe.source_uri),
-        data_version="catalog-2026-10-27",
+        data_version="catalog-2026-10-28",
     )
 
 

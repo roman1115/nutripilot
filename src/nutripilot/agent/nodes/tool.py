@@ -54,6 +54,7 @@ class ToolExecutionNode:
                     arguments.update(
                         limit=20,
                         meal_type=slots.get("meal_type"),
+                        meal_role="complete_meal",
                     )
                     if arguments.get("min_protein_g") == slots.get("daily_protein_target_g"):
                         arguments.pop("min_protein_g", None)
