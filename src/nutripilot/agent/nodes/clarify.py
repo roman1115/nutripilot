@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from nutripilot.agent.state import AgentState
-from nutripilot.domain.enums import Phase
+from nutripilot.domain.enums import Intent, Phase
 from nutripilot.domain.models import FinalResponse
 from nutripilot.tracing import TraceRecorder
 
@@ -26,6 +26,11 @@ class ClarifyNode:
         missing = state.get("missing_slots", [])
         slot = missing[0] if missing else "preference"
         message = _QUESTIONS.get(slot, f"请补充 {slot} 信息。")
+        if slot == "food_name" and state.get("intent") == Intent.RECIPE_QUERY.value:
+            names = [item["name"] for item in state.get("discussed_meals", [])]
+            message = "你想看哪道菜的做法？"
+            if names:
+                message += f"刚才提到的有：{'、'.join(names)}，请告诉我菜名或第几道。"
         response = FinalResponse(
             status="needs_clarification",
             message=message,

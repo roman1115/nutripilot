@@ -8,9 +8,10 @@ from fastapi.testclient import TestClient
 
 from nutripilot.api.app import create_app
 from nutripilot.application import build_container
-from nutripilot.application.chat_service import ChatService
+from nutripilot.application.chat_service import ChatService, ThreadBusyError
 from nutripilot.application.history import ConversationMessage
 from nutripilot.config import Settings
+from nutripilot.infrastructure.chat_tasks import ChatTaskStore
 from nutripilot.infrastructure.history import InMemoryConversationStore, SQLiteConversationStore
 from nutripilot.infrastructure.run_store import SQLiteRunStore
 from nutripilot.model_gateway import FakeModelGateway
@@ -45,12 +46,12 @@ async def test_history_survives_adapter_recreation(tmp_path: Path) -> None:
     container = build_container(settings=Settings(_env_file=None, run_store_path=str(path)))
     await container.chat_service.chat(user_id=1, thread_id="saved", message="推荐午餐")
     await container.chat_service.chat(
-        user_id=1, thread_id="saved", message="鸡胸肉藜麦能量碗有多少热量？"
+        user_id=1, thread_id="saved", message="糖拌西红柿有多少热量？"
     )
     recreated = ChatService(container.graph, SQLiteConversationStore(SQLiteRunStore(path)))
     messages = await recreated.messages(user_id=1, thread_id="saved")
     assert [item.role for item in messages] == ["user", "assistant", "user", "assistant"]
-    assert "516" in messages[-1].content
+    assert "113.4" in messages[-1].content
     assert messages[1].response["recommendations"]
 
 
@@ -95,6 +96,45 @@ def test_history_api_is_user_scoped_and_restores_confirmation_messages() -> None
         messages = client.get("/api/v1/threads/plan-history/messages").json()["items"]
         assert [item["role"] for item in messages] == ["user", "assistant", "system", "assistant"]
         assert "拒绝" in messages[2]["content"]
+
+
+def test_history_api_deletes_owned_thread_and_its_checkpoint() -> None:
+    container = build_container(settings=Settings(_env_file=None))
+    with TestClient(create_app(container)) as client:
+        created = client.post(
+            "/api/v1/chat",
+            json={"user_id": 1, "thread_id": "delete-history", "message": "推荐午餐"},
+        )
+        assert created.status_code == 200
+        assert client.get("/api/v1/threads/delete-history/snapshot").status_code == 200
+
+        assert client.delete(
+            "/api/v1/threads/delete-history", headers={"X-User-ID": "2"}
+        ).status_code == 404
+        deleted = client.delete("/api/v1/threads/delete-history")
+        assert deleted.status_code == 204
+        assert client.get("/api/v1/threads").json()["items"] == []
+        assert client.get("/api/v1/threads/delete-history/messages").status_code == 404
+        assert client.get("/api/v1/threads/delete-history/snapshot").status_code == 404
+
+
+def test_active_thread_cannot_be_deleted(tmp_path: Path) -> None:
+    store = ChatTaskStore.create(f"sqlite:///{tmp_path / 'tasks.sqlite'}")
+    store.initialize()
+    store.submit(
+        user_id=1,
+        thread_id="active-thread",
+        request_key="request",
+        request_hash="hash",
+        state={"run_id": "run", "turn_id": "turn", "trace_id": "trace"},
+        kind="chat",
+        message=ConversationMessage(id="message", role="user", content="正在执行"),
+        max_queued=5,
+    )
+    with pytest.raises(ThreadBusyError):
+        store.delete_thread(1, "active-thread")
+    assert store.bundle("active-thread", 1)["messages"]
+    store.close()
 
 
 def test_access_token_identity_cannot_read_another_users_history() -> None:

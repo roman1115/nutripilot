@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from nutripilot.agent.contracts import PlanSpec
-from nutripilot.agent.planning import PlanBuilder, PlanBuildError
+from nutripilot.agent.planning import PlanBuilder
 from nutripilot.api.app import create_app
 from nutripilot.application import build_container
 from nutripilot.config import Settings
@@ -25,12 +25,14 @@ def test_catalog_api_searches_sources_and_exposes_pending_recipes(container) -> 
     with TestClient(create_app(container)) as client:
         summary = client.get("/api/v1/catalog").json()
         assert summary["ingredients"] == 7802
-        assert summary["recipes"] == 50
+        assert summary["recipes"] == 100
         assert summary["pending_recipes"] == 0
-        assert summary["calculation_ready_recipes"] == 50
+        assert summary["calculation_ready_recipes"] == 100
         assert summary["recipes_with_ranges"] > 0
         assert {source["license"] for source in summary["sources"]} == {
-            "CC0-1.0", "Unlicense", "MEXT-attribution-required",
+            "CC0-1.0",
+            "Unlicense",
+            "MEXT-attribution-required",
             "factual-extract-only; no-document-redistribution",
         }
 
@@ -44,9 +46,9 @@ def test_catalog_api_searches_sources_and_exposes_pending_recipes(container) -> 
         assert client.get("/api/v1/ingredients?offset=-1").status_code == 422
 
         ready = client.get("/api/v1/recipes", params={"status": "calculation_ready"}).json()
-        assert ready["total"] == 50
+        assert ready["total"] == 100
         page = client.get("/api/v1/recipes", params={"limit": 1, "offset": 1}).json()
-        assert len(page["items"]) == 1 and page["total"] == 50
+        assert len(page["items"]) == 1 and page["total"] == 100
         assert client.get("/api/v1/recipes?status=verified").status_code == 422
         assert client.get("/api/v1/recipes?status=pending").json()["total"] == 0
         completed = client.get("/api/v1/recipes/1007").json()
@@ -63,6 +65,10 @@ def test_catalog_api_searches_sources_and_exposes_pending_recipes(container) -> 
         assert msg["nutrients_per_100g"]["protein_g"] == 0
         assert "78.6" in msg["source_nutrient_values"]["protein_g"]
         assert client.get("/api/v1/recipes/999999").status_code == 404
+        added = client.get("/api/v1/recipes/1051").json()
+        assert added["source_calories_kcal"] == 113
+        assert added["nutrition"]["calories_kcal"] != added["source_calories_kcal"]
+        assert added["tools"] == ["筷子或牙签"]
 
 
 @pytest.mark.asyncio
@@ -72,7 +78,7 @@ async def test_calculated_recipe_reaches_agent_response_with_honest_provenance(c
     response = state["final_response"]
     assert "113.4" in response["message"]
     assert "投料220" in response["message"]
-    assert any("计算估算" in warning for warning in response["warnings"])
+    assert any("未经成菜检测" in warning for warning in response["warnings"])
     assert not any("份量缺少统一克重" in warning for warning in response["warnings"])
     assert len(response["citations"]) == 3
     assert sum(item["source_type"] == "ingredient" for item in response["citations"]) == 2
@@ -85,10 +91,24 @@ async def test_nutrition_conversation_preserves_all_nutrient_ranges(container) -
     assert "～" in message
     assert "整道菜" in message
     assert "脂肪" in message and "钠" in message
+    assert "398.8～480.2" in message
+    assert "398.828" not in message
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("name", ["韭菜炒蛋", "金针菇汤", "皮蛋豆腐", "葱油拌面"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "韭菜炒蛋",
+        "金针菇汤",
+        "皮蛋豆腐",
+        "葱油拌面",
+        "蒜蓉空心菜",
+        "可乐炒饭",
+        "红烧鲤鱼",
+        "奶油蘑菇汤",
+    ],
+)
 async def test_completed_recipe_reaches_conversation_with_preparation_notes(
     container, name
 ) -> None:
@@ -97,7 +117,7 @@ async def test_completed_recipe_reaches_conversation_with_preparation_notes(
     assert state["phase"] == Phase.COMPLETED.value
     assert name in response["message"]
     assert "整道菜" in response["message"]
-    assert any("本配方采用版本" in warning for warning in response["warnings"])
+    assert any("本配方采用版本" in (c.get("excerpt") or "") for c in response["citations"])
     assert any(citation["source_type"] == "ingredient" for citation in response["citations"])
 
 
@@ -105,8 +125,12 @@ async def test_completed_recipe_reaches_conversation_with_preparation_notes(
 async def test_completed_seafood_recipes_cannot_bypass_existing_allergen_filters(container) -> None:
     service = RetrievalService(container.data_store)
     for meal_id, allergens in (
-        (1040, ["甲壳类"]), (1041, ["甲壳类"]), (1042, ["鱼"]),
-        (1043, ["鸡蛋"]), (1039, ["大豆"]), (1021, ["麸质"]),
+        (1040, ["甲壳类"]),
+        (1041, ["甲壳类"]),
+        (1042, ["鱼"]),
+        (1043, ["鸡蛋"]),
+        (1039, ["大豆"]),
+        (1021, ["麸质"]),
     ):
         meal = await container.data_store.get_meal(meal_id)
         assert meal is not None
@@ -151,7 +175,7 @@ async def test_calculated_recipes_respect_unknown_price_time_and_avoidance_filte
         response = await service.search_meals(
             MealSearchRequest(query="糖拌西红柿", filters=filters, limit=20)
         )
-        assert all(item.meal.recipe_id is None for item in response.hits)
+        assert not response.hits
     response = await service.search_meals(
         MealSearchRequest(
             query="糖拌西红柿",
@@ -163,43 +187,42 @@ async def test_calculated_recipes_respect_unknown_price_time_and_avoidance_filte
 
 
 @pytest.mark.asyncio
-async def test_completed_catalog_keeps_weekly_plan_candidates_complete(container) -> None:
-    state = await container.chat_service.chat(
-        user_id=1, message="做一周预算友好的饮食计划"
-    )
+async def test_weekly_plan_uses_source_recipes_for_every_required_slot(container) -> None:
+    state = await container.chat_service.chat(user_id=1, message="做一周预算友好的饮食计划")
     assert state["requires_confirmation"]
     assert state["phase"] == Phase.AWAITING_CONFIRMATION.value
     searches = [r for r in state["tool_results"] if r["tool_name"] == "search_meals"]
     assert searches and searches[-1]["data"]["hits"]
-    assert all(hit["meal_role"] == "complete_meal" for hit in searches[-1]["data"]["hits"])
+    assert len(searches) == 3
+    assert all(hit["recipe_id"] >= 1000 for search in searches for hit in search["data"]["hits"])
+    items = state["pending_tool_calls"][0]["arguments"]["items"]
+    assert len(items) == 21
+    assert {item["meal_type"] for item in items} == {"breakfast", "lunch", "dinner"}
+    assert all(item["meal_id"] >= 1000 for item in items)
+    assert state["plan_quality"]["nutrition_basis"] == "whole_recipe"
 
 
 @pytest.mark.asyncio
-async def test_side_dish_or_whole_pot_cannot_be_saved_as_a_complete_meal(container) -> None:
+async def test_whole_pot_is_arranged_as_a_recipe_without_changing_its_role(container) -> None:
     meal = await container.data_store.get_meal(1023)
     assert meal is not None and meal.meal_role == "staple"
     candidate = meal.model_dump(mode="json")
     spec = PlanSpec(start_date=date(2026, 10, 27), plan_range="one_day", meal_type="breakfast")
     builder = PlanBuilder()
-    with pytest.raises(PlanBuildError, match="not enough"):
-        builder.build(spec, [candidate])
-    plan = builder.parse_request(
-        {
-            "title": "错误地把整锅粥当早餐",
-            "start_date": "2026-10-27",
-            "items": [{"meal_id": 1023, "meal_type": "breakfast", "meal_date": "2026-10-27"}],
-        }
+    plan = builder.build(spec, [candidate])
+    builder.validate_prewrite(
+        spec=spec,
+        request=plan,
+        candidates=[candidate],
+        allowed_meal_ids={1023},
+        declared_allergens=[],
+        excluded_ingredients=[],
     )
-    with pytest.raises(PlanBuildError) as error:
-        builder.validate_prewrite(
-            spec=spec,
-            request=plan,
-            candidates=[candidate],
-            allowed_meal_ids={1023},
-            declared_allergens=[],
-            excluded_ingredients=[],
-        )
-    assert error.value.code == "PLAN_MEAL_TYPE_MISMATCH"
+    quality = builder.assess(spec, plan, [candidate])
+    assert quality["nutrition_basis"] == "whole_recipe"
+    assert any("不表示该菜构成完整一餐" in text for text in quality["warnings"])
+    assert quality["totals"]["calories_kcal"] == meal.nutrition.calories_kcal
+    assert (await container.data_store.get_meal(1023)).meal_role == "staple"
 
 
 def test_catalog_routes_require_configured_access_token() -> None:

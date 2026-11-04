@@ -33,12 +33,14 @@ class RecipeMapping(CatalogModel):
     issues: list[str] = Field(default_factory=list)
     servings: int | None = Field(default=None, gt=0)
     meal_types: list[str] = Field(default_factory=lambda: ["lunch", "dinner"])
+    cuisines: list[str] = Field(default_factory=lambda: ["中式"])
     meal_role: Literal["dish", "staple", "soup", "snack"] = "dish"
     note: str = Field(min_length=1)
 
 
 class CatalogMappings(CatalogModel):
     ingredient_mappings: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    draft_aliases: dict[str, str] = Field(default_factory=dict)
     quantity_rules: dict[str, QuantityRule]
     recipes: dict[str, RecipeMapping]
 
@@ -122,6 +124,7 @@ def apply_recipe_mappings(
             serving_label="整道菜（整份配方）",
             calculation_basis="whole_recipe",
             meal_types=mapping.meal_types,
+            cuisines=mapping.cuisines,
             meal_role=mapping.meal_role,
         )
         results.append(Recipe.model_validate(patch))

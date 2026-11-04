@@ -155,9 +155,9 @@ def test_catalog_rejects_unknown_references_and_duplicate_ids(
 def test_checked_in_catalog_counts_missing_values_and_pending_gates() -> None:
     catalog = load_food_catalog(DATA_DIR)
     assert len(catalog.ingredients) == 7802
-    assert len(catalog.recipes) == 50
+    assert len(catalog.recipes) == 100
     assert sum(item.status == "pending" for item in catalog.recipes) == 0
-    assert len(catalog.calculated_meals()) == 50
+    assert len(catalog.calculated_meals()) == 100
     assert any(item.nutrients_per_100g.fiber_g is None for item in catalog.ingredients)
     assert all(item.source_sha256 for item in catalog.recipes)
     tomato = next(item for item in catalog.ingredients if item.id == "fdc:170457")
@@ -171,11 +171,13 @@ def test_checked_in_catalog_counts_missing_values_and_pending_gates() -> None:
 
 
 @pytest.mark.asyncio
-async def test_only_calculation_ready_recipes_join_legacy_meals() -> None:
+async def test_only_source_recipes_are_active_and_legacy_records_remain_archived() -> None:
     store = load_seed_store(DATA_DIR)
     meals = await store.list_meals()
-    assert {meal.id for meal in meals if meal.recipe_id is None} == set(range(1, 19))
-    assert len([meal for meal in meals if meal.recipe_id is not None]) == 50
+    assert len(meals) == 100
+    archived = [meal for meal in await store.all_meals() if not meal.is_active]
+    assert {meal.id for meal in archived} == set(range(1, 19))
+    assert len([meal for meal in meals if meal.recipe_id is not None]) == 100
     assert all(
         item.id not in {meal.id for meal in meals}
         for item in store.catalog.recipes
@@ -390,3 +392,70 @@ def test_new_batch_edible_weights_optional_choices_and_marinade_contacts() -> No
         if p.ingredient_id == "fdc:169070"
     )
     assert "本配方采用版本" in (chicken.nutrition.calculation_note or "")
+
+
+def test_second_batch_step_conflicts_edible_weights_and_sauces() -> None:
+    catalog = load_food_catalog(DATA_DIR)
+    recipes = {item.id: item for item in catalog.recipes}
+
+    def weights(recipe_id: int, ingredient_id: str) -> list[float | None]:
+        return [
+            p.grams for p in recipes[recipe_id].ingredients
+            if p.consumed and p.ingredient_id == ingredient_id
+        ]
+
+    assert weights(1062, "fdc:168878") == [240]  # Source rice conflict resolved to cooked rice.
+    assert not weights(1062, "fdc:169756")
+    assert weights(1065, "fdc:171287") == [150]
+    assert weights(1065, "fdc:174277") == [17.25, 14.375]
+    assert weights(1083, "fdc:169230") == [60]
+    assert weights(1083, "fdc:174277") == [34.5]
+    assert weights(1097, "fdc:173468") == [3]
+    assert weights(1097, "fdc:173647") == [350]
+    assert weights(1094, "fdc:169640") == [28]
+    assert weights(1094, "fdc:169655") == [12]
+    assert weights(1094, "fdc:174277") == [46, 11.5]
+    assert weights(1094, "fdc:169070") == [20]
+    assert weights(1094, "fdc:173647") == [100]
+
+
+def test_second_batch_fryer_oil_and_marinade_allergens() -> None:
+    catalog = load_food_catalog(DATA_DIR)
+    recipes = {item.id: item for item in catalog.recipes}
+    ingredients = {item.id: item for item in catalog.ingredients}
+    fish = recipes[1082]
+    absorbed = next(p for p in fish.ingredients if p.quantity_basis == "oil_absorption")
+    assert absorbed.grams_range == NumericRange(minimum=25, maximum=50)
+    oil = [p for p in fish.ingredients if p.consumed and p.ingredient_id == "fdc:172336"]
+    assert len(oil) == 2
+    assert next(p for p in oil if p is not absorbed).grams == 10
+    nutrition = calculate_recipe(fish, ingredients)
+    assert nutrition.bounds("fat_g").maximum - nutrition.bounds("fat_g").minimum == (
+        pytest.approx(25)
+    )
+    assert nutrition.bounds("calories_kcal").maximum - (
+        nutrition.bounds("calories_kcal").minimum
+    ) == pytest.approx(221)
+    assert any(not p.consumed and "炸锅" in p.quantity_text for p in fish.ingredients)
+    assert "花生" in recipe_to_meal(recipes[1084], ingredients).allergens
+    beef = recipes[1070]
+    assert all(
+        not p.consumed for p in beef.ingredients if p.ingredient_id == "fdc:174277"
+    )
+    assert {"大豆", "麸质"}.issubset(recipe_to_meal(beef, ingredients).allergens)
+
+
+def test_imported_cuisines_are_explicit_and_do_not_copy_source_calorie_estimates() -> None:
+    catalog = load_food_catalog(DATA_DIR)
+    recipes = {item.id: item for item in catalog.recipes}
+    meals = {item.id: item for item in catalog.calculated_meals()}
+    assert meals[1056].cuisines == ["美式"]
+    assert meals[1069].cuisines == ["意式"]
+    assert meals[1096].cuisines == ["印度"]
+    assert meals[1094].cuisines == ["日式"]
+    assert meals[1091].cuisines == ["中式"]
+    recipe = recipes[1051]
+    ingredients = {item.id: item for item in catalog.ingredients}
+    original = calculate_recipe(recipe, ingredients)
+    recipe.source_calories_kcal = 999999
+    assert calculate_recipe(recipe, ingredients) == original

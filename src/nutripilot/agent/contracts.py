@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from nutripilot.domain.enums import Intent
-from nutripilot.domain.models import FinalResponse
+from nutripilot.domain.models import IngredientGroup, IngredientTerm
 from nutripilot.tools.models import ToolCall
 
 
@@ -30,10 +30,16 @@ class IntentSlots(BaseModel):
     allergens: list[str] = Field(default_factory=list)
     dislikes: list[str] = Field(default_factory=list)
     excluded_ingredients: list[str] = Field(default_factory=list)
+    required_ingredients: list[IngredientTerm] = Field(default_factory=list, max_length=10)
+    ingredient_any_groups: list[IngredientGroup] = Field(default_factory=list, max_length=10)
+    ingredient_action: Literal["replace", "append", "keep", "clear"] | None = None
     max_calories_kcal: float | None = Field(default=None, gt=0)
     min_protein_g: float | None = Field(default=None, ge=0)
     max_price_cny: float | None = Field(default=None, ge=0)
     max_prep_minutes: int | None = Field(default=None, ge=0, le=1440)
+    clear_constraints: list[
+        Literal["max_calories_kcal", "min_protein_g", "max_price_cny", "max_prep_minutes"]
+    ] = Field(default_factory=list, max_length=4)
     daily_calorie_target: float | None = Field(default=None, gt=0, le=10_000)
     daily_protein_target_g: float | None = Field(default=None, ge=0, le=1_000)
 
@@ -75,7 +81,6 @@ class PlanSpec(BaseModel):
     start_date: date = Field(default_factory=date.today)
     daily_calorie_target: float | None = Field(default=None, gt=0, le=10_000)
     daily_protein_target_g: float | None = Field(default=None, ge=0, le=1_000)
-    enforce_targets: bool = False
 
     @property
     def day_count(self) -> int:
@@ -112,17 +117,75 @@ class PlanSpec(BaseModel):
             daily_protein_target_g=slots.get("daily_protein_target_g")
             if slots.get("daily_protein_target_g") is not None
             else (profile or {}).get("daily_protein_target_g"),
-            enforce_targets=any(
-                slots.get(key) is not None
-                for key in ("daily_calorie_target", "daily_protein_target_g")
-            ),
         )
+
+
+class RecommendationChoice(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    meal_id: int = Field(gt=0)
+    name: str = Field(min_length=1, max_length=120)
+    reason: str = Field(default="", max_length=300)
+
+
+class RecommendationDraft(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    status: Literal["completed", "degraded"] = "completed"
+    message: str = Field(min_length=1, max_length=6000)
+    recommendations: list[RecommendationChoice] = Field(default_factory=list, max_length=3)
+    source_ids: list[str] = Field(default_factory=list, max_length=12)
 
 
 class RecommendationOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    response: FinalResponse
+    response: RecommendationDraft
+
+
+class AnswerEvidenceReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    record_id: str = Field(min_length=1, max_length=100)
+    quote: str = Field(min_length=1, max_length=1200)
+
+
+class AnswerConditionReview(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source: AnswerEvidenceReference
+    answer_quote: str = Field(max_length=1200)
+
+
+class AnswerObjectCount(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    quote: str = Field(min_length=1, max_length=300)
+    scope: Literal["recommendations", "display"]
+    meal_ids: list[int] = Field(default_factory=list, max_length=100)
+    minimum: int = Field(ge=0, le=1000)
+    maximum: int | None = Field(ge=0, le=1000)
+
+
+class AnswerUnitReview(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    unit_id: str = Field(min_length=1, max_length=100)
+    kind: Literal["source_fact", "general_advice", "ranking", "health_effect", "conversation"]
+    object_counts: list[AnswerObjectCount] = Field(max_length=10)
+    conditions: list[AnswerConditionReview] = Field(max_length=12)
+    conditions_preserved: bool
+    evidence: list[AnswerEvidenceReference] = Field(max_length=8)
+    explanation: str = Field(min_length=1, max_length=240)
+    supported: bool
+
+
+class AnswerReview(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    checks: list[AnswerUnitReview] = Field(max_length=80)
+    issues: list[str] = Field(default_factory=list, max_length=8)
+    supported: bool
 
 
 class EvaluationOutput(BaseModel):

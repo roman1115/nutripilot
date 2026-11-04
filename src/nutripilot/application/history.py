@@ -22,6 +22,7 @@ class ConversationSummary(BaseModel):
     title: str
     updated_at: datetime
     message_count: int
+    run_status: str | None = None
 
 
 class ConversationStore(Protocol):

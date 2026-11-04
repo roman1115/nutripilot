@@ -17,6 +17,18 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4_000)
     user_id: int = Field(default=1, gt=0)
     thread_id: str | None = None
+    request_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class RunRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4_000, pattern=r"\S")
+    request_id: str = Field(min_length=1, max_length=100)
+
+
+class RunConfirmationRequest(BaseModel):
+    approved: bool
+    confirmation_id: str = Field(min_length=1, max_length=200)
+    request_id: str = Field(min_length=1, max_length=100)
 
 
 class ConfirmationRequest(BaseModel):
@@ -37,6 +49,7 @@ class PendingAction(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    run: dict[str, Any] | None = None
     thread_id: str
     turn_id: str
     trace_id: str
@@ -74,12 +87,19 @@ class ChatResponse(BaseModel):
                             "meal_name": meal.get("name", f"餐食 {item.get('meal_id')}"),
                             "calories": nutrition.get("calories_kcal"),
                             "protein_g": nutrition.get("protein_g"),
+                            "nutrition": nutrition,
+                            "recipe_id": meal.get("recipe_id"),
+                            "meal_role": meal.get("meal_role"),
                         }
                     )
             pending_action = PendingAction(
                 id=call_id,
-                title="确认数据写入",
-                description="请核对以下内容；只有确认后 Agent 才会执行持久化写入。",
+                title="确认菜品安排" if operation == "create_meal_plan" else "确认数据写入",
+                description=(
+                    "请核对日期、餐次与菜品，确认后保存。营养为整道菜估算，不代表个人摄入。"
+                    if operation == "create_meal_plan"
+                    else "请核对以下内容，确认后保存。"
+                ),
                 operation=operation,
                 payload=arguments,
                 idempotency_key=call_id,

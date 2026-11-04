@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from apps.nutrition_mcp.service import NutritionMCPService
 
@@ -42,6 +42,9 @@ from nutripilot.tools.mcp.transport import MCPTransport
 from nutripilot.tracing import InMemoryTraceRecorder, TraceRecorder
 from nutripilot.tracing.recorder import SQLiteTraceRecorder
 
+if TYPE_CHECKING:
+    from nutripilot.application.chat_runs import ChatRunService
+
 
 @dataclass(slots=True)
 class ApplicationContainer:
@@ -57,6 +60,9 @@ class ApplicationContainer:
     resource_stack: AsyncExitStack | None = None
     runtime_mode: str = "demo"
     run_store: SQLiteRunStore | None = None
+    chat_runs: ChatRunService | None = None
+    chat_worker_task: Any | None = None
+    chat_worker: Any | None = None
 
 
 def build_container(
@@ -66,6 +72,7 @@ def build_container(
     tool_executor: ToolExecutor | None = None,
     data_store: InMemoryDataStore | None = None,
     settings: Settings | None = None,
+    interrupt_evaluations: bool = True,
 ) -> ApplicationContainer:
     selected_settings = settings or get_settings()
     selected_gateway = gateway or _build_gateway(selected_settings)
@@ -73,7 +80,7 @@ def build_container(
     if not run_path and selected_settings.uses_external_infrastructure:
         run_path = str(project_root() / ".runtime" / "observability.sqlite3")
     run_store = SQLiteRunStore(run_path) if run_path else None
-    if run_store:
+    if run_store and interrupt_evaluations:
         run_store.interrupt_running_reports()
     selected_recorder = recorder or (
         SQLiteTraceRecorder(run_store) if run_store else InMemoryTraceRecorder()
@@ -101,7 +108,9 @@ def build_container(
         tool_executor=selected_executor,
         graph=graph,
         chat_service=chat_service,
-        evaluation_service=EvaluationService(EvalRunner(chat_service), run_store),
+        evaluation_service=EvaluationService(
+            EvalRunner(chat_service, meal_repository=data_store), run_store
+        ),
         food_catalog=selected_store.catalog,
         runtime_mode=selected_settings.app_mode,
         run_store=run_store,
@@ -140,6 +149,7 @@ def _build_tool_executor(store: InMemoryDataStore, settings: Settings) -> ToolEx
                     embedder=_build_embedder(settings),
                     reranker=_build_reranker(settings),
                 ),
+                catalog=store.catalog,
             )
             transport = InProcessMCPTransport(nutrition_service)
         adapter = MCPToolAdapter(

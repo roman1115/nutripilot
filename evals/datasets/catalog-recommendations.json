@@ -1,0 +1,147 @@
+{
+  "version": "catalog-recommendations-v1-2026-10-29",
+  "cases": [
+    {
+      "id": "catalog-dish-without-meal-type",
+      "user_id": 910029,
+      "user_message": "推荐一道清淡的菜",
+      "expected_intent": "MEAL_RECOMMENDATION",
+      "expected_slots": {"tastes": ["清淡"]},
+      "expected_tools": ["get_user_profile", "get_user_feedback", "search_meals"],
+      "optional_tools": ["get_weather_context"],
+      "expected_phase": "COMPLETED"
+    },
+    {
+      "id": "catalog-named-fish",
+      "user_id": 910029,
+      "user_message": "午餐推荐红烧鲤鱼",
+      "expected_intent": "MEAL_RECOMMENDATION",
+      "expected_slots": {"meal_type": "lunch"},
+      "expected_tools": ["get_user_profile", "get_user_feedback", "search_meals"],
+      "optional_tools": ["get_weather_context"],
+      "expected_phase": "COMPLETED",
+      "expected_response_contains": ["红烧鲤鱼"],
+      "forbidden_response_terms": ["每人", "人均"]
+    },
+    {
+      "id": "catalog-named-vegetable",
+      "user_id": 910029,
+      "user_message": "午餐推荐西葫芦炒鸡蛋",
+      "expected_intent": "MEAL_RECOMMENDATION",
+      "expected_tools": ["get_user_profile", "get_user_feedback", "search_meals"],
+      "optional_tools": ["get_weather_context"],
+      "expected_phase": "COMPLETED",
+      "expected_response_contains": ["西葫芦炒鸡蛋"],
+      "forbidden_response_terms": ["每人", "人均"]
+    },
+    {
+      "id": "catalog-ingredient-description",
+      "user_id": 910029,
+      "user_message": "午餐想吃番茄和鸡蛋做的菜",
+      "expected_intent": "MEAL_RECOMMENDATION",
+      "expected_tools": ["get_user_profile", "get_user_feedback", "search_meals"],
+      "optional_tools": ["get_weather_context"],
+      "expected_phase": "COMPLETED"
+    },
+    {
+      "id": "catalog-whole-recipe-calorie-limit",
+      "user_id": 910029,
+      "user_message": "午餐推荐一道菜，不超过400千卡",
+      "expected_intent": "MEAL_RECOMMENDATION",
+      "expected_slots": {"max_calories_kcal": 400},
+      "expected_tools": ["get_user_profile", "get_user_feedback", "search_meals"],
+      "optional_tools": ["get_weather_context"],
+      "expected_phase": "COMPLETED"
+    },
+    {
+      "id": "catalog-budget-excludes-unknown-price",
+      "user_id": 910029,
+      "user_message": "午餐推荐一道菜，预算不超过20元",
+      "expected_intent": "MEAL_RECOMMENDATION",
+      "expected_slots": {"max_price_cny": 20},
+      "expected_tools": ["get_user_profile", "get_user_feedback", "search_meals"],
+      "optional_tools": ["get_weather_context"],
+      "expected_phase": "COMPLETED"
+    },
+    {
+      "id": "catalog-time-excludes-unknown-duration",
+      "user_id": 910029,
+      "user_message": "午餐推荐一道菜，10分钟内做好",
+      "expected_intent": "MEAL_RECOMMENDATION",
+      "expected_slots": {"max_prep_minutes": 10},
+      "expected_tools": ["get_user_profile", "get_user_feedback", "search_meals"],
+      "optional_tools": ["get_weather_context"],
+      "expected_phase": "COMPLETED"
+    },
+    {
+      "id": "catalog-allergy",
+      "user_id": 910029,
+      "user_message": "午餐推荐一道菜，我对鸡蛋过敏",
+      "expected_intent": "MEAL_RECOMMENDATION",
+      "expected_slots": {"allergens": ["鸡蛋"]},
+      "expected_tools": ["get_user_profile", "get_user_feedback", "search_meals"],
+      "optional_tools": ["get_weather_context"],
+      "expected_phase": "COMPLETED",
+      "forbidden_response_terms": ["你对鱼过敏", "你对花生过敏"]
+    },
+    {
+      "id": "catalog-no-feasible-record",
+      "user_id": 910029,
+      "user_message": "午餐推荐一道菜，不超过1千卡",
+      "expected_intent": "MEAL_RECOMMENDATION",
+      "expected_slots": {"max_calories_kcal": 1},
+      "expected_tools": ["get_user_profile", "get_user_feedback", "search_meals"],
+      "optional_tools": ["get_weather_context"],
+      "expected_phase": "COMPLETED",
+      "expected_response_contains": ["没有找到"]
+    },
+    {
+      "id": "catalog-replace-previous-batch",
+      "user_id": 910029,
+      "user_message": "午餐推荐西葫芦炒鸡蛋",
+      "follow_up_messages": ["换一批"],
+      "expected_intent": "MEAL_ADJUSTMENT",
+      "expected_tools": ["get_user_profile", "get_user_feedback", "search_meals"],
+      "optional_tools": ["get_weather_context"],
+      "expected_phase": "COMPLETED"
+    },
+    {
+      "id": "catalog-nutrition-sugar-tomato",
+      "user_id": 910029,
+      "user_message": "查询糖拌西红柿的营养",
+      "expected_intent": "NUTRITION_QUERY",
+      "expected_tools": ["get_nutrition"],
+      "expected_phase": "COMPLETED",
+      "expected_response_contains": ["糖拌西红柿", "整道菜", "113.4"],
+      "forbidden_response_terms": ["每人", "人均", "56.7"]
+    },
+    {
+      "id": "catalog-nutrition-range",
+      "user_id": 910029,
+      "user_message": "查询西葫芦炒鸡蛋的营养",
+      "expected_intent": "NUTRITION_QUERY",
+      "expected_tools": ["get_nutrition"],
+      "expected_phase": "COMPLETED",
+      "expected_response_contains": ["西葫芦炒鸡蛋", "整道菜", "～", "投料"]
+    },
+    {
+      "id": "catalog-nutrition-second-batch",
+      "user_id": 910029,
+      "user_message": "查询红烧鲤鱼的营养",
+      "expected_intent": "NUTRITION_QUERY",
+      "expected_tools": ["get_nutrition"],
+      "expected_phase": "COMPLETED",
+      "expected_response_contains": ["红烧鲤鱼", "整道菜", "～", "投料"],
+      "forbidden_response_terms": ["每人", "人均"]
+    },
+    {
+      "id": "catalog-unknown-name",
+      "user_id": 910029,
+      "user_message": "查询月球营养超级碗的营养",
+      "expected_intent": "NUTRITION_QUERY",
+      "expected_tools": ["get_nutrition"],
+      "expected_phase": "CLARIFY",
+      "expected_response_contains": ["没有找到"]
+    }
+  ]
+}

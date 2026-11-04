@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from typing import Any, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from anyio import CancelScope
+
+from nutripilot.agent.agents.base import compact_tool_results
 from nutripilot.agent.graph import AgentGraph
 from nutripilot.agent.slots import today_in_timezone
 from nutripilot.agent.state import AgentState, new_agent_state
@@ -17,7 +21,8 @@ from nutripilot.application.history import (
     ConversationStore,
     ConversationSummary,
 )
-from nutripilot.domain.enums import Phase
+from nutripilot.domain.enums import Intent, Phase
+from nutripilot.memory.context import compact_messages
 
 
 class ThreadNotFoundError(LookupError):
@@ -81,7 +86,8 @@ class ChatService:
             try:
                 result = await self.graph.ainvoke(state, config)
             except asyncio.CancelledError:
-                await self._save_checkpoint(config)
+                with CancelScope(shield=True):
+                    await self._save_checkpoint(config)
                 raise
             await self._save_response(result)
             return result
@@ -103,7 +109,8 @@ class ChatService:
                 ):
                     yield event
             except asyncio.CancelledError:
-                await self._save_checkpoint(self._config(thread_id))
+                with CancelScope(shield=True):
+                    await self._save_checkpoint(self._config(thread_id))
                 raise
 
     async def _stream_turn(
@@ -148,6 +155,9 @@ class ChatService:
         user_id: int,
         message: str,
         thread_id: str | None,
+        turn_id: str | None = None,
+        trace_id: str | None = None,
+        persist: bool = True,
     ) -> tuple[AgentState, dict[str, Any]]:
         thread_id = thread_id or str(uuid4())
         config = self._config(thread_id)
@@ -158,9 +168,11 @@ class ChatService:
             message=message,
             user_id=user_id,
             thread_id=thread_id,
+            turn_id=turn_id,
+            trace_id=trace_id,
             current_date=today_in_timezone(self.timezone_name),
         )
-        if self.history:
+        if self.history and persist:
             await asyncio.to_thread(
                 self.history.append,
                 user_id,
@@ -169,8 +181,95 @@ class ChatService:
             )
         if previous:
             state["slots"] = dict(previous.get("slots", {}))
-            state["conversation_summary"] = previous.get("conversation_summary")
-            state["candidate_ids"] = list(previous.get("candidate_ids", []))
+            response = previous.get("final_response") or {}
+            recent = [
+                *previous.get("recent_messages", []),
+                {"role": "user", "content": previous.get("user_message", "")[:2000]},
+                {"role": "assistant", "content": str(response.get("message", ""))[:3000]},
+            ][-8:]
+            state["recent_messages"] = recent
+            state["conversation_summary"] = compact_messages(recent)
+            state["discussed_meals"] = [
+                {"name": item["name"], "meal_id": item["meal_id"],
+                 "reason": str(item.get("reason", ""))[:300]}
+                for item in response.get("recommendations", [])
+            ] or list(previous.get("discussed_meals", []))
+            for result in reversed(previous.get("tool_results", [])):
+                if (
+                    result.get("tool_name") in {"get_recipe", "get_nutrition"}
+                    and result.get("status") == "success"
+                    and previous.get("intent") in {
+                        Intent.RECIPE_QUERY.value, Intent.NUTRITION_QUERY.value,
+                    }
+                ):
+                    data = result.get("data") or {}
+                    state["discussed_meals"] = [
+                        {"name": data["name"], "meal_id": data["meal_id"]}
+                    ]
+                    break
+            # Historical evidence explains displayed dishes; it never becomes a new search.
+            carried_evidence = (
+                previous.get("conversation_evidence", [])
+                if previous.get("intent") in {
+                    Intent.FOOD_QUESTION.value, Intent.CONVERSATION.value,
+                } else []
+            )
+            evidence = [
+                result for result in compact_tool_results([
+                    *carried_evidence, *previous.get("tool_results", []),
+                ])
+                if result.get("status") == "success" and result.get("tool_name") in {
+                    "search_meals", "get_recipe", "get_nutrition", "get_user_profile",
+                    "get_weather_context", "query_dietary_guidelines",
+                }
+            ]
+            if evidence:
+                displayed = {item["meal_id"] for item in state["discussed_meals"]}
+                for result in evidence:
+                    if result.get("tool_name") == "search_meals":
+                        result["data"]["hits"] = [
+                            meal for meal in result["data"]["hits"]
+                            if (meal.get("meal_id") or meal.get("id")) in displayed
+                        ]
+                state["conversation_evidence"] = evidence[-6:]
+            else:
+                state["conversation_evidence"] = list(previous.get("conversation_evidence", []))
+            bounded: list[dict[str, Any]] = []
+            size = 0
+            for result in reversed(state["conversation_evidence"]):
+                result_size = len(json.dumps(result, ensure_ascii=False))
+                if size + result_size <= 16000:
+                    bounded.insert(0, result)
+                    size += result_size
+            state["conversation_evidence"] = bounded
+            state["previous_candidate_ids"] = list(previous.get("candidate_ids", []))
+            if previous.get("intent") == Intent.MEAL_PLAN.value and any(
+                term in message for term in ("换一批", "换菜", "换一下", "重新安排", "重新制定")
+            ):
+                state["replacing_plan"] = True
+                plan_calls = [
+                    call
+                    for call in previous.get("pending_tool_calls", [])
+                    if call.get("name") == "create_meal_plan"
+                ]
+                plan_data = (
+                    plan_calls[0].get("arguments", {})
+                    if plan_calls
+                    else next(
+                        (
+                            result.get("data") or {}
+                            for result in reversed(previous.get("tool_results", []))
+                            if result.get("tool_name") == "create_meal_plan"
+                            and result.get("status") == "success"
+                        ),
+                        {},
+                    )
+                )
+                if plan_data:
+                    state["slots"]["start_date"] = plan_data["start_date"]
+                    state["previous_candidate_ids"] = list(
+                        {item["meal_id"] for item in plan_data.get("items", [])}
+                    )
             if previous.get("phase") == Phase.CLARIFY.value:
                 state["clarification_intent"] = previous.get("intent")
                 state["conversation_summary"] = (
@@ -237,7 +336,8 @@ class ChatService:
         try:
             result = await self.graph.ainvoke(update, config)
         except asyncio.CancelledError:
-            await self._save_checkpoint(config, suffix="confirmation")
+            with CancelScope(shield=True):
+                await self._save_checkpoint(config, suffix="confirmation")
             raise
         await self._save_response(result, suffix="confirmation")
         return result

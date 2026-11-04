@@ -37,6 +37,7 @@ def create_mcp_server(service: NutritionService | None = None) -> Any:
     )
     async def search_meals(
         query: str,
+        food_name: str | None = None,
         meal_type: str | None = None,
         meal_role: Literal["complete_meal", "dish", "staple", "soup", "snack"] | None = None,
         cuisines: list[str] | None = None,
@@ -45,6 +46,8 @@ def create_mcp_server(service: NutritionService | None = None) -> Any:
         dietary_tags: list[str] | None = None,
         excluded_allergens: list[str] | None = None,
         excluded_ingredients: list[str] | None = None,
+        required_ingredients: list[str] | None = None,
+        ingredient_any_groups: list[list[str]] | None = None,
         excluded_meal_ids: list[int] | None = None,
         max_calories_kcal: float | None = None,
         min_protein_g: float | None = None,
@@ -57,6 +60,7 @@ def create_mcp_server(service: NutritionService | None = None) -> Any:
             "search_meals",
             {
                 "query": query,
+                "food_name": food_name,
                 "meal_type": meal_type,
                 "meal_role": meal_role,
                 "cuisines": cuisines or [],
@@ -65,6 +69,8 @@ def create_mcp_server(service: NutritionService | None = None) -> Any:
                 "dietary_tags": dietary_tags or [],
                 "excluded_allergens": excluded_allergens or [],
                 "excluded_ingredients": excluded_ingredients or [],
+                "required_ingredients": required_ingredients or [],
+                "ingredient_any_groups": ingredient_any_groups or [],
                 "excluded_meal_ids": excluded_meal_ids or [],
                 "max_calories_kcal": max_calories_kcal,
                 "min_protein_g": min_protein_g,
@@ -80,6 +86,13 @@ def create_mcp_server(service: NutritionService | None = None) -> Any:
     )
     async def get_nutrition(meal_id: int | None = None, name: str | None = None) -> dict[str, Any]:
         return await _safe_call(service, "get_nutrition", {"meal_id": meal_id, "name": name})
+
+    @server.tool(
+        name="get_recipe",
+        description="Read original ingredients, quantities and steps from a sourced recipe.",
+    )
+    async def get_recipe(meal_id: int | None = None, name: str | None = None) -> dict[str, Any]:
+        return await _safe_call(service, "get_recipe", {"meal_id": meal_id, "name": name})
 
     @server.tool(
         name="query_dietary_guidelines",

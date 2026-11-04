@@ -27,6 +27,11 @@ NUTRIENTS = {
     "1079": ("fiber_g", "G"),
     "1093": ("sodium_mg", "MG"),
 }
+TOOLS = {
+    "水果刀", "面包机", "空气炸锅", "电饭煲", "电饭锅", "电锅", "微波炉", "烤箱",
+    "耐热碗", "平底煎锅", "厨房用夹", "密封袋", "刷子", "锅", "筷子或牙签",
+    "保鲜膜或微波炉专用盖", "炒锅（带盖）", "蒸箱",
+}
 
 
 def _rows(archive: zipfile.ZipFile, filename: str) -> csv.DictReader[str]:
@@ -86,9 +91,13 @@ def _section(text: str, heading: str) -> str:
     return match[1].strip()
 
 
-def import_recipes(directory: Path, commit: str, paths: list[str]) -> list[dict[str, Any]]:
+def import_recipes(
+    directory: Path, commit: str, paths: list[str], *, start_id: int = 1001
+) -> list[dict[str, Any]]:
+    if len(paths) != len(set(paths)):
+        raise ValueError("Duplicate source recipe paths are not allowed.")
     recipes = []
-    for index, path in enumerate(paths, start=1001):
+    for index, path in enumerate(paths, start=start_id):
         if not path.startswith("dishes/") or not path.endswith(".md") or ".." in Path(path).parts:
             raise ValueError("Recipe paths must stay inside the source dishes directory.")
         raw = subprocess.run(
@@ -98,6 +107,18 @@ def import_recipes(directory: Path, commit: str, paths: list[str]) -> list[dict[
         ).stdout
         text = raw.decode("utf-8")
         quantities = _section(text, "计算")
+        raw_ingredients = _section(text, "必备原料和工具")
+        tools = [
+            line.strip()
+            for line in re.findall(r"^\s*[-*+]\s+(.+)$", raw_ingredients, re.MULTILINE)
+            if line.strip() in TOOLS
+        ]
+        calories = re.search(r"^预估卡路里[：:]\s*(.+)$", text, re.MULTILINE)
+        calories_text = calories[1].strip() if calories else None
+        calorie_value = (
+            re.fullmatch(r"(\d+(?:\.\d+)?)\s*(?:大卡|千卡|kcal)", calories_text, re.I)
+            if calories_text else None
+        )
         recipes.append(
             {
                 "id": index,
@@ -108,13 +129,16 @@ def import_recipes(directory: Path, commit: str, paths: list[str]) -> list[dict[
                 ),
                 "source_path": path,
                 "source_sha256": hashlib.sha256(raw).hexdigest(),
-                "raw_ingredients": _section(text, "必备原料和工具"),
+                "raw_ingredients": raw_ingredients,
                 "raw_quantities": quantities,
                 "instructions": _section(text, "操作"),
+                "tools": tools,
+                "source_calories_text": calories_text,
+                "source_calories_kcal": float(calorie_value[1]) if calorie_value else None,
                 "ingredients": [
                     {"quantity_text": line}
                     for line in (
-                        re.findall(r"^\s*[-*]\s+(.+)$", quantities, re.MULTILINE) or [quantities]
+                        re.findall(r"^\s*[-*+]\s+(.+)$", quantities, re.MULTILINE) or [quantities]
                     )
                 ],
                 "status": "pending",
@@ -173,8 +197,22 @@ def build_catalog(
             "ingredients": import_ingredients(
                 usda,
                 selection["usda_sha256"],
-                {**selection["ingredient_mappings"], **mappings.ingredient_mappings},
-            ) + [item.model_dump(mode="json") for item in supplement.ingredients],
+                {
+                    key: value
+                    for key, value in {
+                        **selection["ingredient_mappings"], **mappings.ingredient_mappings
+                    }.items()
+                    if key not in {item.id for item in supplement.ingredients}
+                },
+            ) + [
+                {
+                    **item.model_dump(mode="json"),
+                    "aliases": mappings.ingredient_mappings.get(item.id, {}).get(
+                        "aliases", item.aliases
+                    ),
+                }
+                for item in supplement.ingredients
+            ],
             "recipes": [recipe.model_dump(mode="json") for recipe in prepared],
         }
     )
@@ -219,7 +257,7 @@ def main() -> None:
     report = [
         "# 菜谱批量整理记录",
         "",
-        "本文件由导入脚本生成，记录全部50道原始菜谱的整理结果。",
+        f"本文件由导入脚本生成，记录全部{len(catalog.recipes)}道原始菜谱的整理结果。",
         "通过仅表示可按记录的投料与假设估算，不表示实测或专业审核。",
         "",
         "| ID | 菜谱 | 状态 | 整理说明或异常原因 |",

@@ -6,8 +6,11 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -20,7 +23,10 @@ async def verify(args: argparse.Namespace) -> dict[str, object]:
         health.raise_for_status()
         runtime = health.json()
         assert runtime["model_provider"] == "openai"
+        assert str(runtime.get("model_name", "")).startswith("qwen")
         assert runtime["embedding_provider"] == runtime["rerank_provider"] == "bge"
+        assert runtime["storage"] == "postgresql"
+        assert runtime["mcp_transport"] == "streamable-http"
         dataset = json.loads(args.dataset.read_text(encoding="utf-8"))
         response = await client.post(
             "/api/v1/evaluations/run",
@@ -59,17 +65,38 @@ async def verify(args: argparse.Namespace) -> dict[str, object]:
                     "deterministic_validation": any(
                         event["event_type"] == "intent.scope_validated" for event in events
                     ),
-                    "model_calls": sum(
-                        event["event_type"] == "model.completed" for event in events
-                    ),
-                    "fallbacks": sum(
-                        "fallback" in event["event_type"]
-                        or bool(event.get("payload", {}).get("used_fallback_model"))
-                        for event in events
-                    ),
+                    **_model_evidence(events, expected_model=runtime["model_name"]),
                 }
             )
         return {"runtime": runtime, "report": report, "evidence": evidence}
+
+
+def _model_evidence(events: list[dict[str, Any]], *, expected_model: str) -> dict[str, Any]:
+    calls = [event for event in events if event["event_type"] == "model.completed"]
+    return {
+        "model_calls": len(calls),
+        "invalid_model_calls": sum(
+            event.get("payload", {}).get("model") != expected_model
+            or int(event.get("input_tokens", 0)) <= 0
+            or int(event.get("output_tokens", 0)) <= 0
+            for event in calls
+        ),
+        "input_tokens": sum(int(event.get("input_tokens", 0)) for event in events),
+        "output_tokens": sum(int(event.get("output_tokens", 0)) for event in events),
+        "fallbacks": sum(
+            "fallback" in event["event_type"]
+            or bool(event.get("payload", {}).get("used_fallback_model"))
+            for event in events
+        ),
+        "model_errors": sorted(
+            {
+                event["payload"]["error_code"]
+                for event in events
+                if event["event_type"] == "model.fallback"
+                and event.get("payload", {}).get("error_code")
+            }
+        ),
+    }
 
 
 def main() -> int:
@@ -83,6 +110,19 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path(".runtime/real-regressions.json"))
     parser.add_argument("--timeout", type=float, default=420)
     args = parser.parse_args()
+    probe = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).with_name("verify_showcase.py")),
+            "--probe-only",
+            "--output",
+            str(args.output.with_name(f"{args.output.stem}-probe.json")),
+        ],
+        check=False,
+        timeout=150,
+    )
+    if probe.returncode:
+        return probe.returncode
     result = asyncio.run(verify(args))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -112,6 +152,7 @@ def main() -> int:
             and report["passed_cases"] == report["total_cases"]
             and all(
                 item["fallbacks"] == 0
+                and item["invalid_model_calls"] == 0
                 and (
                     item["model_calls"] > 0
                     or (not item["requires_model"] and item["deterministic_validation"])

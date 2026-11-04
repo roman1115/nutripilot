@@ -1,3 +1,45 @@
+import type { MealPlanItem, MealRecommendation } from "../types";
+
+export function normalizeNutrientRanges(value: unknown): MealRecommendation["nutrientRanges"] {
+  const result: NonNullable<MealRecommendation["nutrientRanges"]> = {};
+  for (const [key, raw] of Object.entries(asRecord(value))) {
+    const bounds = asRecord(raw);
+    const minimum = firstNumber(bounds.minimum);
+    const maximum = firstNumber(bounds.maximum);
+    if (minimum !== undefined && maximum !== undefined && minimum >= 0 && maximum >= minimum) {
+      result[key] = { minimum, maximum };
+    }
+  }
+  return result;
+}
+
+export function nutrientLabel(
+  meal: Pick<MealRecommendation, "nutrientRanges">,
+  field: string,
+  fallback?: number,
+): string {
+  const range = meal.nutrientRanges?.[field];
+  const format = (value: number) => Number(value.toFixed(1)).toString();
+  if (!range) return fallback === undefined ? "未知" : format(fallback);
+  return range.minimum === range.maximum
+    ? format(range.minimum)
+    : `${format(range.minimum)}～${format(range.maximum)}`;
+}
+
+export function planNutrientTotal(items: MealPlanItem[], field: "calories_kcal" | "protein_g"): string {
+  let minimum = 0;
+  let maximum = 0;
+  for (const item of items) {
+    const value = field === "calories_kcal" ? item.calories : item.protein;
+    const range = item.nutrientRanges?.[field];
+    if (!range && value === undefined) return "未知";
+    minimum += range?.minimum ?? value!;
+    maximum += range?.maximum ?? value!;
+  }
+  if (!items.length) return "未知";
+  return nutrientLabel({ nutrientRanges: { [field]: { minimum, maximum } } }, field);
+}
+
 export function formatDate(value?: string): string {
   if (!value) return "--";
   const date = new Date(value);

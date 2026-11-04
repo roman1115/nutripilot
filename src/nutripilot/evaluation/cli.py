@@ -39,7 +39,11 @@ async def _evaluate(dataset: Path) -> EvalReport:
     container = build_container()
     await start_container(container)
     try:
-        return await EvalRunner(container.chat_service).run(cases, dataset_version=dataset_version)
+        return await EvalRunner(
+            container.chat_service, container.chat_runs, meal_repository=container.data_store
+        ).run(
+            cases, dataset_version=dataset_version
+        )
     finally:
         await stop_container(container)
 

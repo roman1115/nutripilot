@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -21,12 +22,15 @@ from nutripilot.api.schemas import (
     ConfirmationRequest,
     EvaluationRequest,
     ProfileUpdateRequest,
+    RunConfirmationRequest,
+    RunRequest,
 )
 from nutripilot.application import (
     ApplicationContainer,
     EvaluationNotFoundError,
     build_container,
 )
+from nutripilot.application.chat_runs import ChatRunService
 from nutripilot.application.chat_service import (
     InvalidConfirmationStateError,
     ThreadBusyError,
@@ -35,6 +39,7 @@ from nutripilot.application.chat_service import (
 from nutripilot.application.evaluation_service import EvaluationBusyError
 from nutripilot.application.runtime import start_container, stop_container
 from nutripilot.evaluation import EvalReport, load_dataset
+from nutripilot.infrastructure.chat_tasks import QueueFullError, RequestConflictError
 from nutripilot.paths import project_root
 from nutripilot.retrieval.catalog import calculate_recipe
 from nutripilot.tools.errors import ToolRuntimeError
@@ -80,15 +85,117 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
         if identity is not None and identity != user_id:
             raise HTTPException(status_code=403, detail="User identity mismatch")
 
+    def runs(container: ApplicationContainer = Depends(get_container)) -> ChatRunService:
+        if container.chat_runs is None:
+            raise HTTPException(status_code=503, detail="对话任务服务尚未就绪。")
+        return container.chat_runs
+
+    @app.exception_handler(RequestConflictError)
+    async def request_conflict(request: Request, exc: RequestConflictError) -> Any:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(QueueFullError)
+    async def queue_full(request: Request, exc: QueueFullError) -> Any:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=429, content={"detail": str(exc)})
+
+    @app.post("/api/v1/threads/{thread_id}/runs", status_code=202, tags=["chat"])
+    async def submit_run(
+        thread_id: str, payload: RunRequest,
+        user_id: int = Depends(get_user_id), service: ChatRunService = Depends(runs),
+    ) -> dict[str, Any]:
+        try:
+            return await service.submit(
+                user_id=user_id, thread_id=thread_id, message=payload.message,
+                request_key=payload.request_id,
+            )
+        except ThreadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Thread not found") from exc
+        except ThreadBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/v1/threads/{thread_id}/confirm", status_code=202, tags=["chat"])
+    async def submit_confirmation(
+        thread_id: str, payload: RunConfirmationRequest,
+        user_id: int = Depends(get_user_id), service: ChatRunService = Depends(runs),
+    ) -> dict[str, Any]:
+        try:
+            return await service.submit(
+                user_id=user_id, thread_id=thread_id, approved=payload.approved,
+                confirmation_id=payload.confirmation_id, request_key=payload.request_id,
+            )
+        except ThreadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Thread not found") from exc
+        except (ThreadBusyError, InvalidConfirmationStateError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/v1/runs/{run_id}", tags=["chat"])
+    async def get_run(
+        run_id: str, user_id: int = Depends(get_user_id),
+        service: ChatRunService = Depends(runs),
+    ) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(service.store.get, run_id, user_id)
+        except ThreadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Run not found") from exc
+
+    @app.post("/api/v1/runs/{run_id}/cancel", tags=["chat"])
+    async def cancel_run(
+        run_id: str, user_id: int = Depends(get_user_id),
+        service: ChatRunService = Depends(runs),
+    ) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(service.store.cancel, run_id, user_id)
+        except ThreadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Run not found") from exc
+
+    @app.get("/api/v1/runs/{run_id}/events", tags=["chat"])
+    async def run_events(
+        run_id: str, after: int = Query(default=0, ge=0),
+        last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+        user_id: int = Depends(get_user_id), service: ChatRunService = Depends(runs),
+    ) -> StreamingResponse:
+        try:
+            await asyncio.to_thread(service.store.get, run_id, user_id)
+        except ThreadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Run not found") from exc
+        if last_event_id is not None:
+            try:
+                after = max(after, int(last_event_id))
+                if after < 0:
+                    raise ValueError
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail="Invalid event cursor") from exc
+
+        async def events() -> AsyncIterator[str]:
+            async for event in service.subscribe(run_id, user_id, after):
+                if event["type"] == "heartbeat":
+                    yield ": heartbeat\n\n"
+                else:
+                    yield f"id: {event['id']}\n" + _sse(event["type"], event["data"])
+
+        return StreamingResponse(events(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+        })
+
     @app.get("/health/live", tags=["health"])
     async def live() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/health/ready", tags=["health"])
     async def ready() -> dict[str, Any]:
-        active = app.state.container.settings
+        container = app.state.container
+        active = container.settings
+        worker_ready = (
+            await asyncio.to_thread(container.chat_runs.store.worker_ready)
+            if container.chat_runs else False
+        )
         return {
-            "status": "ready",
+            "status": "ready" if worker_ready else "worker_unavailable",
+            "chat_worker_ready": worker_ready,
+            "chat_concurrency": active.chat_concurrency,
+            "chat_user_concurrency": active.chat_user_concurrency,
             "auth_required": bool(active.api_access_tokens),
             "app_mode": active.app_mode,
             "model_provider": active.model_provider,
@@ -111,11 +218,17 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     ) -> ChatResponse:
         ensure_owner(request, payload.user_id)
         try:
-            state = await container.chat_service.chat(
-                user_id=payload.user_id,
-                message=payload.message,
-                thread_id=payload.thread_id,
-            )
+            if container.chat_runs:
+                run = await container.chat_runs.submit(
+                    user_id=payload.user_id, message=payload.message,
+                    thread_id=payload.thread_id or str(uuid4()),
+                    request_key=payload.request_id or str(uuid4()),
+                )
+                state = await container.chat_runs.wait(run, payload.user_id)
+            else:
+                state = await container.chat_service.chat(
+                    user_id=payload.user_id, message=payload.message, thread_id=payload.thread_id,
+                )
         except ThreadNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Thread not found") from exc
         except ThreadBusyError as exc:
@@ -232,6 +345,28 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     ) -> StreamingResponse:
         ensure_owner(request, payload.user_id)
 
+        if container.chat_runs:
+            try:
+                run = await container.chat_runs.submit(
+                    user_id=payload.user_id, message=payload.message,
+                    thread_id=payload.thread_id or str(uuid4()),
+                    request_key=payload.request_id or str(uuid4()),
+                )
+            except ThreadNotFoundError as exc:
+                raise HTTPException(status_code=404, detail="Thread not found") from exc
+            except ThreadBusyError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+            async def durable_events() -> AsyncIterator[str]:
+                assert container.chat_runs is not None
+                async for event in container.chat_runs.subscribe(run["id"], payload.user_id):
+                    if event["type"] == "heartbeat":
+                        yield ": heartbeat\n\n"
+                    else:
+                        yield f"id: {event['id']}\n" + _sse(event["type"], event["data"])
+
+            return StreamingResponse(durable_events(), media_type="text/event-stream")
+
         async def events() -> AsyncIterator[str]:
             try:
                 async for event_type, data in container.chat_service.stream(
@@ -263,12 +398,24 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     ) -> ChatResponse:
         ensure_owner(request, payload.user_id)
         try:
-            state = await container.chat_service.confirm(
-                thread_id=thread_id,
-                user_id=payload.user_id,
-                approved=payload.approved,
-                confirmation_id=payload.confirmation_id,
-            )
+            if container.chat_runs:
+                previous = await container.chat_service.get_thread(
+                    user_id=payload.user_id, thread_id=thread_id
+                )
+                calls = previous.get("pending_tool_calls", [])
+                confirmation_id = payload.confirmation_id or (
+                    str(calls[0]["call_id"]) if calls else None
+                )
+                run = await container.chat_runs.submit(
+                    user_id=payload.user_id, thread_id=thread_id, approved=payload.approved,
+                    confirmation_id=confirmation_id, request_key=str(uuid4()),
+                )
+                state = await container.chat_runs.wait(run, payload.user_id)
+            else:
+                state = await container.chat_service.confirm(
+                    thread_id=thread_id, user_id=payload.user_id,
+                    approved=payload.approved, confirmation_id=payload.confirmation_id,
+                )
         except ThreadNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Thread not found") from exc
         except InvalidConfirmationStateError as exc:
@@ -283,6 +430,16 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
         user_id: int = Depends(get_user_id),
         container: ApplicationContainer = Depends(get_container),
     ) -> dict[str, bool]:
+        if container.chat_runs:
+            try:
+                run = await asyncio.to_thread(
+                    container.chat_runs.store.thread_run, thread_id, user_id
+                )
+                if run and run["status"] in ("queued", "running", "cancelling"):
+                    await asyncio.to_thread(container.chat_runs.store.cancel, run["id"], user_id)
+                    return {"cancelled": True}
+            except ThreadNotFoundError:
+                return {"cancelled": False}
         return {"cancelled": container.chat_service.cancel(thread_id=thread_id, user_id=user_id)}
 
     @app.get("/api/v1/threads", tags=["chat"])
@@ -298,6 +455,18 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
         )
         return {"items": [item.model_dump(mode="json") for item in items]}
 
+    @app.delete("/api/v1/threads/{thread_id}", status_code=204, tags=["chat"])
+    async def delete_thread(
+        thread_id: str, user_id: int = Depends(get_user_id),
+        service: ChatRunService = Depends(runs),
+    ) -> None:
+        try:
+            await service.delete_thread(user_id, thread_id)
+        except ThreadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Thread not found") from exc
+        except ThreadBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get("/api/v1/threads/{thread_id}/messages", tags=["chat"])
     async def thread_messages(
         thread_id: str,
@@ -307,12 +476,37 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
         offset: int = Query(default=0, ge=0),
     ) -> dict[str, Any]:
         try:
-            items = await container.chat_service.messages(
-                user_id=user_id, thread_id=thread_id, limit=limit, offset=offset
-            )
+            if container.chat_runs:
+                items = await asyncio.to_thread(
+                    container.chat_runs.store.messages, user_id, thread_id, limit, offset
+                )
+            else:
+                items = await container.chat_service.messages(
+                    user_id=user_id, thread_id=thread_id, limit=limit, offset=offset
+                )
         except ThreadNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Thread not found") from exc
         return {"items": [item.model_dump(mode="json") for item in items]}
+
+    @app.get("/api/v1/threads/{thread_id}/snapshot", tags=["chat"])
+    async def thread_snapshot(
+        thread_id: str, user_id: int = Depends(get_user_id),
+        service: ChatRunService = Depends(runs),
+    ) -> dict[str, Any]:
+        try:
+            bundle = await asyncio.to_thread(service.store.bundle, thread_id, user_id)
+            result = bundle["result"]
+            if result is None and bundle["run"] is None:
+                try:
+                    state = await service.chat.get_thread(thread_id=thread_id, user_id=user_id)
+                    result = ChatResponse.from_state(state).model_dump(mode="json")
+                except ThreadNotFoundError:
+                    pass
+            return {
+                **(result or {}), "run": bundle["run"], "messages": bundle["messages"],
+            }
+        except ThreadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Thread not found") from exc
 
     @app.get("/api/v1/threads/{thread_id}", response_model=ChatResponse, tags=["chat"])
     async def thread(
@@ -322,6 +516,23 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
         user_id: int = Query(default=1, gt=0),
     ) -> ChatResponse:
         ensure_owner(request, user_id)
+        if container.chat_runs:
+            try:
+                run = await asyncio.to_thread(
+                    container.chat_runs.store.thread_run, thread_id, user_id
+                )
+                snapshot = await asyncio.to_thread(
+                    container.chat_runs.store.snapshot, thread_id, user_id
+                )
+                if snapshot is not None:
+                    return ChatResponse.model_validate(snapshot | {"run": run})
+                if run:
+                    return ChatResponse(
+                        thread_id=thread_id, turn_id=run["turn_id"], trace_id=run["trace_id"],
+                        phase="RECEIVED", run=run,
+                    )
+            except ThreadNotFoundError:
+                pass
         try:
             state = await container.chat_service.get_thread(thread_id=thread_id, user_id=user_id)
         except ThreadNotFoundError as exc:
@@ -382,6 +593,10 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
                         "meal_name": meal.name if meal else f"餐食 {item.meal_id}",
                         "calories": meal.nutrition.calories_kcal if meal else None,
                         "protein_g": meal.nutrition.protein_g if meal else None,
+                        "nutrition": meal.nutrition.model_dump(mode="json") if meal else None,
+                        "recipe_id": meal.recipe_id if meal else None,
+                        "meal_role": meal.meal_role if meal else None,
+                        "is_active": meal.is_active if meal else False,
                         "note": item.note,
                     }
                 )

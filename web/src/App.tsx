@@ -117,16 +117,7 @@ export default function App() {
         return <EvaluationView connection={connection} runtime={runtime} />;
       case "chat":
       default:
-        return (
-          <ChatView
-            connection={connection}
-            onTraceDiscovered={addTraceId}
-            onOpenTrace={(traceId) => {
-              addTraceId(traceId);
-              setView("traces");
-            }}
-          />
-        );
+        return null;
     }
   }, [addTraceId, connection, runtime, traceIds, view]);
 
@@ -198,7 +189,9 @@ export default function App() {
             </div>
             <div>
               <strong>
-                {connection === "checking" ? "正在检查" : connection === "online" ? "服务已就绪" : "服务未连接"}
+                {connection === "checking" ? "正在检查"
+                  : connection === "online" ? runtime?.status === "worker_unavailable" ? "等待任务执行器" : "服务已就绪"
+                  : "服务未连接"}
               </strong>
               <span>{runtime?.modelProvider === "fake" ? "演示模式" : "日常饮食助手"}</span>
             </div>
@@ -237,7 +230,8 @@ export default function App() {
           >
             <span />
             {connection === "online"
-              ? runtime?.modelProvider === "fake" ? "演示模式" : "已连接"
+              ? runtime?.status === "worker_unavailable" ? "等待执行器"
+                : runtime?.modelProvider === "fake" ? "演示模式" : "已连接"
               : connection === "checking" ? "检查中" : "离线"}
           </div>
         </header>
@@ -270,7 +264,20 @@ export default function App() {
                 </button>
               </form>
             </section>
-          ) : runtime ? currentView : null}
+          ) : runtime ? (
+            <>
+              <ChatView
+                active={view === "chat"}
+                connection={connection}
+                onTraceDiscovered={addTraceId}
+                onOpenTrace={(traceId) => {
+                  addTraceId(traceId);
+                  setView("traces");
+                }}
+              />
+              {currentView}
+            </>
+          ) : null}
         </main>
       </div>
 

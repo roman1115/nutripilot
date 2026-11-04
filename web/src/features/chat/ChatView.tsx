@@ -1,4 +1,4 @@
-import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, Fragment, KeyboardEvent, useEffect, useRef, useState } from "react";
 import {
   Activity,
   Salad,
@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   Search,
+  Trash2,
   BrainCircuit,
   Check,
   CheckCircle2,
@@ -27,11 +28,14 @@ import {
 } from "lucide-react";
 import { ErrorNotice } from "../../components/Common";
 import {
-  ApiError, cancelChat, confirmChat, getConversationMessages, getConversations,
-  getThread, getTrace, streamChat,
+  ApiError, cancelRun, deleteConversation, getChatSnapshot, getConversations, getThread,
+  getTrace, streamChat, subscribeRun, submitConfirmation,
   normalizePlanItem,
 } from "../../lib/api";
-import { asArray, asRecord, firstNumber, firstString, formatDuration } from "../../lib/format";
+import {
+  asArray, asRecord, firstNumber, firstString, formatDuration,
+  normalizeNutrientRanges, nutrientLabel,
+} from "../../lib/format";
 import type {
   ChatMessage,
   ChatStreamEvent,
@@ -45,9 +49,9 @@ import type {
 } from "../../types";
 
 const promptSuggestions = [
-  { title: "今天吃点清爽的", detail: "清淡晚餐", prompt: "晚餐想吃清淡一点，预算 40 元以内",
+  { title: "今天吃点清爽的", detail: "清淡晚餐", prompt: "晚餐推荐一道清淡的菜",
     image: "/images/fresh-bowl.jpg", alt: "新鲜蔬菜与谷物组成的餐碗" },
-  { title: "把一天安排妥当", detail: "一日餐单", prompt: "帮我制定一个高蛋白的一日饮食计划",
+  { title: "安排明天的菜", detail: "一日菜品安排", prompt: "帮我制定明天的一日三餐菜品餐单",
     image: "/images/daily-table.jpg", alt: "桌面上摆放的谷物、水果和蔬菜" },
   { title: "午餐也好好吃", detail: "高蛋白午餐", prompt: "推荐一份高蛋白的午餐",
     image: "/images/simple-meal.jpg", alt: "一份搭配蔬菜的日常餐碗" },
@@ -68,6 +72,7 @@ const componentLabels: Record<string, string> = {
   tool_executor: "执行工具",
   search_meals: "检索候选餐食",
   get_nutrition: "查询营养数据",
+  get_recipe: "查询菜谱做法",
   get_user_profile: "读取用户画像",
   get_weather_context: "读取天气场景",
   create_meal_plan: "写入饮食计划",
@@ -80,7 +85,9 @@ function makeId(prefix: string): string {
 }
 
 function getInitialThreadId(): string {
-  const stored = localStorage.getItem("nutripilot.threadId");
+  const stored = new URL(window.location.href).searchParams.get("thread")
+    || sessionStorage.getItem("nutripilot.threadId")
+    || localStorage.getItem("nutripilot.threadId");
   if (stored) return stored;
   const created = crypto.randomUUID();
   localStorage.setItem("nutripilot.threadId", created);
@@ -110,38 +117,15 @@ function normalizeRecommendations(value: unknown): MealRecommendation[] {
     recommendations.push({
       mealId: (source.meal_id as string | number | undefined) ?? (source.id as string | number | undefined),
       name,
-      reason: firstString(source.reason, source.recommendation_reason, source.description),
       calories: firstNumber(source.calories, source.calories_kcal, nutrition.calories, nutrition.calories_kcal),
       protein: firstNumber(source.protein, source.protein_g, nutrition.protein, nutrition.protein_g),
-      carbs: firstNumber(source.carbs, source.carbohydrates, source.carbs_g, nutrition.carbs, nutrition.carbohydrates_g),
+      carbs: firstNumber(source.carbs, source.carbohydrates, source.carbohydrates_g, source.carbs_g, nutrition.carbs, nutrition.carbohydrates_g),
       fat: firstNumber(source.fat, source.fat_g, nutrition.fat, nutrition.fat_g),
       nutrientRanges: normalizeNutrientRanges(source.nutrient_ranges ?? nutrition.nutrient_ranges),
       tags: asArray(source.tags).filter((tag): tag is string => typeof tag === "string"),
     });
   }
   return recommendations;
-}
-
-function normalizeNutrientRanges(value: unknown): MealRecommendation["nutrientRanges"] {
-  const result: NonNullable<MealRecommendation["nutrientRanges"]> = {};
-  for (const [key, raw] of Object.entries(asRecord(value))) {
-    const bounds = asRecord(raw);
-    const minimum = firstNumber(bounds.minimum);
-    const maximum = firstNumber(bounds.maximum);
-    if (minimum !== undefined && maximum !== undefined && minimum >= 0 && maximum >= minimum) {
-      result[key] = { minimum, maximum };
-    }
-  }
-  return result;
-}
-
-function nutrientLabel(meal: MealRecommendation, field: string, fallback: number): string {
-  const range = meal.nutrientRanges?.[field];
-  const format = (value: number) => Number(value.toFixed(1)).toString();
-  if (!range) return format(fallback);
-  return range.minimum === range.maximum
-    ? format(range.minimum)
-    : `${format(range.minimum)}～${format(range.maximum)}`;
 }
 
 function normalizeCitations(value: unknown): Citation[] {
@@ -153,7 +137,9 @@ function normalizeCitations(value: unknown): Citation[] {
     citations.push({
       id: (source.id as string | number | undefined) ?? (source.source_id as string | number | undefined),
       title,
-      source: firstString(source.source, source.source_type, source.publisher),
+      source: firstString(source.source, source.publisher) ?? ({
+        recipe: "来源菜谱", meal: "菜品记录", ingredient: "食材营养数据",
+      } as Record<string, string>)[String(source.source_type)],
       excerpt: firstString(source.excerpt, source.content, source.text),
       score: firstNumber(source.score, source.relevance_score),
       url: firstString(source.url, source.uri),
@@ -210,16 +196,44 @@ function activityIcon(activity: ToolActivity) {
 }
 
 interface ChatViewProps {
+  active: boolean;
   connection: ConnectionState;
   onTraceDiscovered: (traceId: string) => void;
   onOpenTrace: (traceId: string) => void;
 }
 
-export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatViewProps) {
+export function ChatView({ active, connection, onTraceDiscovered, onOpenTrace }: ChatViewProps) {
   const [threadId, setThreadId] = useState(getInitialThreadId);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("thread", threadId);
+    window.history.replaceState({}, "", url);
+    sessionStorage.setItem("nutripilot.threadId", threadId);
+  }, [threadId]);
+  const select = (id: string) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("thread", id);
+    window.history.pushState({}, "", url);
+    sessionStorage.setItem("nutripilot.threadId", id);
+    setThreadId(id);
+  };
+  useEffect(() => {
+    const navigate = () => setThreadId(getInitialThreadId());
+    window.addEventListener("popstate", navigate);
+    return () => window.removeEventListener("popstate", navigate);
+  }, []);
+  return <ChatSession key={threadId} threadId={threadId} select={select}
+    active={active} connection={connection}
+    onTraceDiscovered={onTraceDiscovered} onOpenTrace={onOpenTrace} />;
+}
+
+function ChatSession({
+  threadId, select, active, connection, onTraceDiscovered, onOpenTrace,
+}: ChatViewProps & { threadId: string; select: (id: string) => void }) {
+  const draftKey = `nutripilot.draft.${sessionStorage.getItem("nutripilot.userId") || "1"}.${threadId}`;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [activities, setActivities] = useState<ToolActivity[]>([]);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(() => sessionStorage.getItem(draftKey) || "");
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
@@ -232,12 +246,24 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyOffset, setHistoryOffset] = useState(0);
   const [historyMore, setHistoryMore] = useState(false);
+  const [deletingThreadId, setDeletingThreadId] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(false);
   const [planWarnings, setPlanWarnings] = useState<string[]>([]);
   const restoredThreadRef = useRef<string | null>(null);
   const [activePhase, setActivePhase] = useState("等待请求");
   const abortRef = useRef<AbortController | null>(null);
+  const currentRunRef = useRef<string | null>(null);
+  const observedRunRef = useRef("");
+  const [restoreVersion, setRestoreVersion] = useState(0);
+  const mountedRef = useRef(true);
+  const requestRef = useRef<{ content: string; id: string } | null>(null);
+  const confirmationRequestRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (draft) sessionStorage.setItem(draftKey, draft);
+    else sessionStorage.removeItem(draftKey);
+  }, [draft, draftKey]);
 
   useEffect(() => {
     const desktop = window.matchMedia("(min-width: 1100px)");
@@ -251,34 +277,37 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
   }, [pendingConfirmation]);
 
   useEffect(() => {
-    if (!activityOpen) return;
+    if (!active || !activityOpen) return;
     const close = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") setActivityOpen(false);
     };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
-  }, [activityOpen]);
+  }, [active, activityOpen]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages]);
-
-  useEffect(() => () => {
-    if (abortRef.current) {
-      void cancelChat(threadId).catch(() => undefined);
-      abortRef.current.abort();
-    }
-  }, [threadId]);
+    if (active) messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [active, messages]);
 
   useEffect(() => {
-    if (connection !== "online" || isSending || restoredThreadRef.current === threadId) return;
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!active || connection !== "online" || isSending || restoredThreadRef.current === threadId) return;
     let cancelled = false;
     let finished = false;
     restoredThreadRef.current = threadId;
     setRestoring(true);
-    void Promise.all([getThread(threadId), getConversationMessages(threadId)])
-      .then(async ([result, history]) => {
+    void getChatSnapshot(threadId)
+      .then(async (result) => {
         if (cancelled) return;
+        const history = asArray(result.messages).map(asRecord);
+        setError(null);
         const finalResponse = asRecord(result.final_response);
         const pendingAction = asRecord(result.pending_action);
         const traceId = firstString(result.trace_id);
@@ -317,9 +346,28 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
             traceId,
           });
         }
-        if (restored.length) setMessages(restored);
+        const run = asRecord(result.run);
+        observedRunRef.current = `${String(run.id || "")}:${String(run.status || "")}`;
+        const running = ["queued", "running", "cancelling"].includes(String(run.status));
+        const assistantId = `${String(run.turn_id)}:${run.kind === "confirmation" ? "confirmation" : "response"}`;
+        if (running && !restored.some((item) => item.id === assistantId)) {
+          restored.push({
+            id: assistantId, role: "assistant", content: "", isStreaming: true,
+            createdAt: new Date().toISOString(),
+          });
+        }
+        setMessages(restored);
+        if (running) {
+          currentRunRef.current = String(run.id);
+          setPendingConfirmation(null);
+          setIsSending(true);
+          setActivePhase(run.status === "queued" ? "排队中" : "正在恢复生成");
+          const controller = new AbortController();
+          abortRef.current = controller;
+          void followRun(String(run.id), assistantId, controller);
+        }
         setPlanWarnings(normalizeStringList(asRecord(result.plan_quality).warnings));
-        if (result.requires_confirmation === true && Object.keys(pendingAction).length) {
+        if (!running && result.requires_confirmation === true && Object.keys(pendingAction).length) {
           setPendingConfirmation({
             id: firstString(pendingAction.id),
             title: firstString(pendingAction.title) || "确认数据写入",
@@ -334,7 +382,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
               crypto.randomUUID(),
           });
           setActivePhase("已恢复 · 等待人工确认");
-        } else if (restored.length) {
+        } else if (!running && restored.length) {
           setActivePhase("已恢复上次会话");
         }
         if (traceId) {
@@ -349,6 +397,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
       })
       .catch((caught) => {
         if (!(caught instanceof ApiError && caught.status === 404) && !cancelled) {
+          restoredThreadRef.current = null;
           setError(caught instanceof Error ? caught.message : "无法恢复上次会话");
         }
       })
@@ -360,14 +409,41 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
       cancelled = true;
       if (!finished) restoredThreadRef.current = null;
     };
-  }, [connection, isSending, onTraceDiscovered, threadId]);
+  }, [active, connection, onTraceDiscovered, threadId, restoreVersion]);
 
   useEffect(() => {
-    if (!historyOpen || connection !== "online") return;
+    if (!active || connection !== "online" || isSending || confirmationBusy) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const result = await getThread(threadId);
+        if (cancelled || abortRef.current) return;
+        const run = asRecord(result.run);
+        const version = `${String(run.id || "")}:${String(run.status || "")}`;
+        if (version !== observedRunRef.current) {
+          observedRunRef.current = version;
+          restoredThreadRef.current = null;
+          setRestoreVersion((current) => current + 1);
+        }
+      } catch {
+        // Polling resumes after reconnect; the existing conversation remains visible.
+      }
+    };
+    const timer = window.setInterval(() => void refresh(), 5000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [active, connection, isSending, confirmationBusy, threadId]);
+
+  useEffect(() => {
+    if (!active || !historyOpen || connection !== "online") return;
     let cancelled = false;
     setHistoryLoading(true);
     setHistoryError(null);
-    const timer = window.setTimeout(() => {
+    const load = () => {
       void getConversations(historyQuery.trim()).then((items) => {
         if (cancelled) return;
         setConversations(items);
@@ -376,9 +452,15 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
       }).catch((caught) => {
         if (!cancelled) setHistoryError(caught instanceof Error ? caught.message : "历史会话读取失败");
       }).finally(() => { if (!cancelled) setHistoryLoading(false); });
-    }, 250);
-    return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [connection, historyOpen, historyQuery, isSending]);
+    };
+    const timer = window.setTimeout(load, 250);
+    const polling = window.setInterval(load, 5000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      window.clearInterval(polling);
+    };
+  }, [active, connection, historyOpen, historyQuery, isSending]);
 
   const loadMoreHistory = async () => {
     setHistoryLoading(true);
@@ -414,19 +496,24 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
   };
 
   const ingestEvent = (event: ChatStreamEvent, assistantId: string) => {
+    if (!mountedRef.current) return;
     const source = eventPayload(event);
     const type = event.type.toLowerCase().replace(/[\s-]+/g, "_");
     const metadata = asRecord(source.metadata ?? source.meta);
+    if (type === "accepted") {
+      currentRunRef.current = String(source.id);
+      observedRunRef.current = `${String(source.id)}:${String(source.status)}`;
+      setActivePhase(source.status === "queued" ? "排队中" : "正在生成");
+    }
     const traceId = firstString(source.trace_id, metadata.trace_id);
     if (traceId) {
       onTraceDiscovered(traceId);
       updateAssistant(assistantId, (message) => ({ ...message, traceId }));
     }
     const returnedThreadId = firstString(source.thread_id, metadata.thread_id);
-    if (returnedThreadId && returnedThreadId !== threadId) {
-      setThreadId(returnedThreadId);
-      localStorage.setItem("nutripilot.threadId", returnedThreadId);
-    }
+    if (returnedThreadId && returnedThreadId !== threadId) return;
+    if (type === "connection") setActivePhase("连接中断，正在重连");
+    if (source.phase === "QUEUED") setActivePhase("排队中");
 
     const component = firstString(
       source.tool_name,
@@ -524,13 +611,40 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
     if (isFailure && !isActivity) {
       setError(firstString(source.message, source.detail, source.error, source.error_message) || "Agent 执行失败");
     }
-    if (isFinal || type === "done") setActivePhase("本轮已完成");
+    if (isFinal || type === "done") {
+      if (source.run_status && currentRunRef.current) {
+        observedRunRef.current = `${currentRunRef.current}:${String(source.run_status)}`;
+      }
+      setActivePhase(source.requires_confirmation === true ? "等待人工确认"
+        : source.run_status === "cancelled" ? "已停止"
+        : source.run_status === "failed" ? "执行失败" : "本轮已完成");
+    }
+  };
+
+  const followRun = async (runId: string, assistantId: string, controller: AbortController) => {
+    try {
+      await subscribeRun(runId, (event) => ingestEvent(event, assistantId), controller.signal);
+      if (!mountedRef.current) return;
+      updateAssistant(assistantId, (message) => ({ ...message, isStreaming: false }));
+    } catch (caught) {
+      if (!controller.signal.aborted && mountedRef.current) {
+        setError(caught instanceof Error ? caught.message : "无法恢复任务连接");
+      }
+    } finally {
+      if (mountedRef.current && abortRef.current === controller) {
+        setIsSending(false);
+        abortRef.current = null;
+      }
+    }
   };
 
   const sendMessage = async (content: string) => {
     const trimmed = content.trim();
     if (!trimmed || isSending || restoring || confirmationBusy) return;
     restoredThreadRef.current = threadId;
+    if (!requestRef.current || requestRef.current.content !== trimmed) {
+      requestRef.current = { content: trimmed, id: crypto.randomUUID() };
+    }
     const userMessage: ChatMessage = {
       id: makeId("user"),
       role: "user",
@@ -552,6 +666,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
     setPendingConfirmation(null);
     setPlanWarnings([]);
     setIsSending(true);
+    currentRunRef.current = null;
     setActivePhase("Supervisor 接收请求");
     abortRef.current = new AbortController();
     let confirmationRequested = false;
@@ -559,8 +674,9 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
 
     try {
       await streamChat(
-        { threadId, message: trimmed },
+        { threadId, message: trimmed, requestId: requestRef.current.id },
         (event) => {
+          if (!mountedRef.current) return;
           const type = event.type.toLowerCase();
           const payload = eventPayload(event);
           const metadata = asRecord(payload.metadata ?? payload.meta);
@@ -572,6 +688,8 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
         },
         abortRef.current.signal,
       );
+      if (!mountedRef.current) return;
+      requestRef.current = null;
       updateAssistant(assistantId, (message) => ({
         ...message,
         content:
@@ -590,8 +708,10 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
           // The conversation result remains usable when observability storage is unavailable.
         }
       }
-      setActivePhase((phase) => (confirmationRequested || phase === "等待人工确认" ? "等待人工确认" : "本轮已完成"));
+      setActivePhase((phase) => (confirmationRequested || phase === "等待人工确认"
+        ? "等待人工确认" : ["已停止", "执行失败"].includes(phase) ? phase : "本轮已完成"));
     } catch (caught) {
+      if (!mountedRef.current) return;
       if (caught instanceof DOMException && caught.name === "AbortError") {
         updateAssistant(assistantId, (message) => ({
           ...message,
@@ -608,10 +728,14 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
           isStreaming: false,
         }));
         setActivePhase("请求失败");
+        restoredThreadRef.current = null;
+        setRestoreVersion((current) => current + 1);
       }
     } finally {
-      setIsSending(false);
-      abortRef.current = null;
+      if (mountedRef.current) {
+        setIsSending(false);
+        abortRef.current = null;
+      }
     }
   };
 
@@ -628,16 +752,18 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
   };
 
   const handleConfirmation = async (approved: boolean) => {
-    if (!pendingConfirmation) return;
+    if (!pendingConfirmation?.id || isSending || confirmationBusy) return;
     setConfirmationBusy(true);
     setError(null);
     try {
-      const result = await confirmChat(
-        threadId,
-        approved,
-        pendingConfirmation.id,
-        pendingConfirmation.idempotencyKey,
+      confirmationRequestRef.current ||= crypto.randomUUID();
+      const run = await submitConfirmation(
+        threadId, approved, pendingConfirmation.id, confirmationRequestRef.current,
       );
+      if (!mountedRef.current) return;
+      confirmationRequestRef.current = null;
+      currentRunRef.current = String(run.id);
+      observedRunRef.current = `${String(run.id)}:${String(run.status)}`;
       setMessages((current) => [
         ...current,
         {
@@ -647,42 +773,16 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
           createdAt: new Date().toISOString(),
         },
       ]);
-      const resultContent = extractResponseContent(result);
-      const finalResponse = asRecord(result.final_response);
-      const recommendations = normalizeRecommendations(finalResponse.recommendations);
-      const citations = normalizeCitations(finalResponse.citations);
-      const warnings = normalizeStringList(finalResponse.warnings);
-      const suggestedActions = normalizeStringList(finalResponse.suggested_actions);
-      const resultTraceId = firstString(result.trace_id);
-      if (resultTraceId) onTraceDiscovered(resultTraceId);
-      if (resultContent) {
-        setMessages((current) => [
-          ...current,
-          {
-            id: makeId("assistant"),
-            role: "assistant",
-            content: resultContent,
-            createdAt: new Date().toISOString(),
-            recommendations,
-            citations,
-            warnings,
-            suggestedActions,
-            traceId: resultTraceId,
-          },
-        ]);
-      }
-      if (resultTraceId) {
-        try {
-          const trace = await getTrace(resultTraceId);
-          const tracedActivities = activitiesFromTrace(trace);
-          if (tracedActivities.length) setActivities(tracedActivities);
-        } catch {
-          // Confirmation succeeds independently from Trace retrieval.
-        }
-      }
+      const assistantId = `${String(run.turn_id)}:confirmation`;
+      setMessages((current) => [...current, {
+        id: assistantId, role: "assistant", content: "", isStreaming: true,
+        createdAt: new Date().toISOString(),
+      }]);
       setPendingConfirmation(null);
-      setActivityOpen(false);
-      setActivePhase(approved ? "操作已确认" : "操作已取消");
+      setIsSending(true);
+      const controller = new AbortController();
+      abortRef.current = controller;
+      await followRun(String(run.id), assistantId, controller);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "确认请求失败");
     } finally {
@@ -692,42 +792,41 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
 
   const stopGeneration = async () => {
     try {
-      await cancelChat(threadId);
-      abortRef.current?.abort();
+      if (!currentRunRef.current) return;
+      await cancelRun(currentRunRef.current);
+      setActivePhase("正在停止");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "无法停止服务端请求，请重试");
     }
   };
 
   const startNewThread = () => {
-    if (isSending || confirmationBusy || restoring) return;
     const next = crypto.randomUUID();
-    localStorage.setItem("nutripilot.threadId", next);
-    setThreadId(next);
-    setMessages([]);
-    setActivities([]);
-    setPendingConfirmation(null);
-    setError(null);
-    setActivePhase("等待请求");
-    if (!window.matchMedia("(min-width: 1100px)").matches) setHistoryOpen(false);
-    setPlanWarnings([]);
+    select(next);
   };
 
   const selectThread = (id: string) => {
-    if (isSending || confirmationBusy || restoring) return;
     if (id === threadId) {
       if (!window.matchMedia("(min-width: 1100px)").matches) setHistoryOpen(false);
       return;
     }
-    localStorage.setItem("nutripilot.threadId", id);
-    setThreadId(id);
-    setMessages([]);
-    setActivities([]);
-    setPendingConfirmation(null);
-    setPlanWarnings([]);
-    setError(null);
-    setDraft("");
-    if (!window.matchMedia("(min-width: 1100px)").matches) setHistoryOpen(false);
+    select(id);
+  };
+
+  const deleteThread = async (item: ConversationSummary) => {
+    if (deletingThreadId || ["queued", "running", "cancelling"].includes(item.runStatus || "")) return;
+    if (!window.confirm(`确定删除“${item.title}”吗？此操作无法撤销。`)) return;
+    setDeletingThreadId(item.threadId);
+    setHistoryError(null);
+    try {
+      await deleteConversation(item.threadId);
+      setConversations((current) => current.filter((conversation) => conversation.threadId !== item.threadId));
+      if (item.threadId === threadId) startNewThread();
+    } catch (caught) {
+      setHistoryError(caught instanceof Error ? caught.message : "删除会话失败");
+    } finally {
+      setDeletingThreadId(null);
+    }
   };
 
   const retryLast = () => {
@@ -736,7 +835,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
   };
 
   return (
-    <div className={`chat-layout${historyOpen ? " has-history" : ""}`}>
+    <div className={`chat-layout${historyOpen ? " has-history" : ""}`} hidden={!active}>
           {historyOpen ? <>
             <button className="history-scrim" type="button" aria-label="收起历史会话" onClick={() => setHistoryOpen(false)} />
             <section className="conversation-history" aria-label="历史会话列表">
@@ -753,13 +852,27 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
               {historyError ? <ErrorNotice message={historyError} /> : null}
               <div className="conversation-items">
               {conversations.map((item) => (
-                <button key={item.threadId} type="button" className="conversation-item"
-                  aria-current={item.threadId === threadId ? "true" : undefined}
-                  disabled={isSending || confirmationBusy || restoring}
-                  onClick={() => selectThread(item.threadId)}>
-                  <strong>{item.title}</strong>
-                  <span>{new Date(item.updatedAt).toLocaleDateString("zh-CN", { month: "long", day: "numeric" })} · {item.messageCount} 条消息</span>
-                </button>
+                <div key={item.threadId} className={`conversation-row${item.threadId === threadId ? " is-current" : ""}`}>
+                  <button type="button" className="conversation-item"
+                    aria-current={item.threadId === threadId ? "true" : undefined}
+                    onClick={() => selectThread(item.threadId)}>
+                    <strong>{item.title}</strong>
+                    <span>{new Date(item.updatedAt).toLocaleDateString("zh-CN", { month: "long", day: "numeric" })} · {item.messageCount} 条消息
+                      {item.runStatus === "queued" ? " · 排队中"
+                        : item.runStatus === "running" ? " · 生成中"
+                        : item.runStatus === "cancelling" ? " · 正在停止"
+                        : item.runStatus === "awaiting_confirmation" ? " · 待确认" : ""}
+                    </span>
+                  </button>
+                  <button className="icon-button conversation-delete" type="button"
+                    title="删除会话" aria-label={`删除会话：${item.title}`}
+                    disabled={Boolean(deletingThreadId) || ["queued", "running", "cancelling"].includes(item.runStatus || "")}
+                    onClick={() => void deleteThread(item)}>
+                    {deletingThreadId === item.threadId
+                      ? <LoaderCircle className="spin" size={16} />
+                      : <Trash2 size={16} />}
+                  </button>
+                </div>
               ))}
               {!conversations.length && !historyLoading ? <div className="history-empty">
                 <History size={24} strokeWidth={1.5} aria-hidden="true" />
@@ -787,8 +900,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
               <Activity size={18} />
               {pendingConfirmation ? <span className="pending-dot" /> : null}
             </button>
-            <button className="button button-secondary button-compact" type="button" onClick={startNewThread}
-              disabled={isSending || confirmationBusy || restoring}>
+            <button className="button button-secondary button-compact" type="button" onClick={startNewThread}>
               <Plus size={16} />新对话
             </button>
           </div>
@@ -823,7 +935,18 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
                     <strong>{message.role === "user" ? "你" : message.role === "assistant" ? "NutriPilot" : "系统"}</strong>
                     {message.isStreaming ? <span><LoaderCircle className="spin" size={13} />生成中</span> : null}
                   </div>
-                  <div className="message-content">{message.content || <span className="stream-placeholder">正在分析请求…</span>}</div>
+                  <div className={`message-content${message.role === "assistant" ? " message-content-prose" : ""}`}>
+                    {message.content ? (
+                      message.role === "assistant"
+                        ? message.content.split(/\n{2,}/).map((paragraph, index) => (
+                          <Fragment key={index}>
+                            {index > 0 ? "\n\n" : null}
+                            <p>{paragraph}</p>
+                          </Fragment>
+                        ))
+                        : message.content
+                    ) : <span className="stream-placeholder">正在分析请求…</span>}
+                  </div>
 
                   {message.recommendations?.length ? (
                     <div className="recommendation-list">
@@ -835,9 +958,9 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
                               <span>推荐 {index + 1}</span>
                               <strong>{meal.name}</strong>
                             </div>
-                            {meal.calories !== undefined ? <b>{nutrientLabel(meal, "calories_kcal", meal.calories)} kcal</b> : null}
+                            {meal.calories !== undefined ? <b title="整道菜的估算热量">{nutrientLabel(meal, "calories_kcal", meal.calories)} kcal</b> : null}
                           </div>
-                          {meal.reason ? <p>{meal.reason}</p> : null}
+                          <span className="meal-result-basis">整道菜 · 营养估算</span>
                           {(meal.protein !== undefined || meal.carbs !== undefined || meal.fat !== undefined) ? (
                             <div className="nutrition-row">
                               {meal.protein !== undefined ? <span>蛋白质 {nutrientLabel(meal, "protein_g", meal.protein)}g</span> : null}
@@ -845,7 +968,6 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
                               {meal.fat !== undefined ? <span>脂肪 {nutrientLabel(meal, "fat_g", meal.fat)}g</span> : null}
                             </div>
                           ) : null}
-                          {meal.tags?.length ? <div className="tag-row">{meal.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
                         </div>
                       ))}
                     </div>
@@ -856,7 +978,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
                       <summary className="section-inline-label"><Quote size={14} />回答依据
                         <span>{message.citations.length} 条来源</span><ChevronDown size={14} /></summary>
                       {message.citations.map((citation, index) => (
-                        <div className="citation-item" key={String(citation.id ?? `${citation.title}-${index}`)}>
+                        <div className="citation-item" key={`${citation.id ?? citation.title}-${index}`}>
                           <div>
                             <strong>{citation.title}</strong>
                             {citation.source ? <span>{citation.source}</span> : null}
@@ -934,7 +1056,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
               disabled={connection === "offline" || restoring || confirmationBusy}
             />
             {isSending ? (
-              <button className="composer-send is-stop" type="button" onClick={() => void stopGeneration()} aria-label="停止生成">
+              <button className="composer-send is-stop" type="button" disabled={!currentRunRef.current} onClick={() => void stopGeneration()} aria-label="停止生成">
                 <Square size={16} fill="currentColor" />
               </button>
             ) : (
@@ -977,15 +1099,13 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
             <p>{pendingConfirmation.description}</p>
             {pendingConfirmation.mealPreview?.length ? (
               <div className="confirmation-meals">
-                <p>每日热量目标：{String(asRecord(pendingConfirmation.payload?.quality).daily_calorie_target ?? "未设置")}
-                  {" kcal（匹配容差 ±10%）"}
-                  <br />每日蛋白质最低目标：{String(asRecord(pendingConfirmation.payload?.quality).daily_protein_target_g ?? "未设置")} g
-                </p>
+                <p>所选整菜营养合计，不代表个人摄入量，不评定每日营养目标。</p>
                 {asArray(asRecord(pendingConfirmation.payload?.quality).daily_totals).map((value) => {
                   const day = asRecord(value);
-                  return <p key={String(day.date)}>{String(day.date)}：
-                    {" "}{String(day.calories_kcal ?? "未知")} kcal
-                    {" · "}{String(day.protein_g ?? "未知")} g 蛋白质</p>;
+                  const totals = { nutrientRanges: normalizeNutrientRanges(day.nutrient_ranges) };
+                  return <p key={String(day.date)}>{String(day.date)} 整菜合计：
+                    {" "}{nutrientLabel(totals, "calories_kcal", firstNumber(day.calories_kcal))} kcal
+                    {" · "}{nutrientLabel(totals, "protein_g", firstNumber(day.protein_g))} g 蛋白质</p>;
                 })}
                 <details className="plan-preview">
                   <summary>餐单明细（{pendingConfirmation.mealPreview.length} 餐）</summary>
@@ -993,7 +1113,9 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
                     <li key={`${meal.date}-${meal.mealType}-${index}`}>
                       <span>{meal.date} · {({ breakfast: "早餐", lunch: "午餐", dinner: "晚餐", snack: "加餐" } as Record<string, string>)[meal.mealType || ""] || "餐食"}</span>
                       <strong>{meal.mealName}</strong>
-                      <span>{meal.calories ?? "未知"} kcal · 蛋白质 {meal.protein ?? "未知"} g</span>
+                      <span>{meal.servingSize || "整道菜"} · {nutrientLabel(meal, "calories_kcal", meal.calories)} kcal
+                        {" · 蛋白质 "}{nutrientLabel(meal, "protein_g", meal.protein)} g</span>
+                      {meal.sourceUri ? <a href={meal.sourceUri} target="_blank" rel="noreferrer">菜谱来源</a> : null}
                     </li>
                   ))}</ol>
                 </details>
@@ -1013,6 +1135,13 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
                 {confirmationBusy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
                 确认执行
               </button>
+              {pendingConfirmation.operation === "create_meal_plan" ? (
+                <button className="button button-secondary" type="button"
+                  onClick={() => void sendMessage("换一批菜品，重新制定餐单")}
+                  disabled={confirmationBusy || isSending}>
+                  <RotateCcw size={15} />换一批菜品
+                </button>
+              ) : null}
               <button className="button button-secondary" type="button" onClick={() => void handleConfirmation(false)} disabled={confirmationBusy}>
                 <X size={15} />拒绝
               </button>

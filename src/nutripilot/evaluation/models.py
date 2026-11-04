@@ -11,7 +11,19 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 from nutripilot.domain.enums import Intent
 
 
-class EvalCase(BaseModel):
+class RecommendationExpectation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_slots: dict[str, Any] = Field(default_factory=dict)
+    min_recommendations: int | None = Field(default=None, ge=0, le=3)
+    max_recommendations: int | None = Field(default=None, ge=0, le=3)
+    expected_required_ingredients: list[str] = Field(default_factory=list)
+    expected_ingredient_any_groups: list[list[str]] = Field(default_factory=list)
+    expected_excluded_ingredients: list[str] = Field(default_factory=list)
+    check_reason_evidence: bool = False
+
+
+class EvalCase(RecommendationExpectation):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     case_id: str = Field(alias="id")
@@ -33,7 +45,8 @@ class EvalCase(BaseModel):
     follow_up_messages: list[str] = Field(default_factory=list, max_length=10)
     expected_error_code: str | None = None
     expected_plan_item_count: int | None = Field(default=None, ge=1, le=28)
-    expected_daily_targets_met: bool | None = None
+    expected_plan_nutrition_basis: str | None = None
+    turn_expectations: list[RecommendationExpectation] = Field(default_factory=list, max_length=11)
 
 
 class EvalResult(BaseModel):

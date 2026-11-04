@@ -70,6 +70,9 @@ def test_readiness_reports_the_actual_demo_runtime_components() -> None:
 
     assert body == {
         "status": "ready",
+        "chat_worker_ready": True,
+        "chat_concurrency": 4,
+        "chat_user_concurrency": 3,
         "auth_required": False,
         "app_mode": "demo",
         "model_provider": "fake",

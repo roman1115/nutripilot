@@ -44,7 +44,8 @@ try {
                 $health.embedding_provider -eq "bge" -and
                 $health.rerank_provider -eq "bge" -and
                 $health.storage -eq "postgresql" -and
-                $health.mcp_transport -eq "streamable-http"
+                $health.mcp_transport -eq "streamable-http" -and
+                $health.chat_worker_ready -eq $true
             ) {
                 & (Join-Path $projectRoot ".venv\Scripts\python.exe") scripts\verify_showcase.py
                 Write-Host "NutriPilot real-model showcase is ready at http://localhost:5173"

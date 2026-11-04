@@ -30,7 +30,18 @@ def snapshot(client: httpx.Client, user_id: int) -> dict[str, Any]:
     response = client.get("/api/v1/meal-plans")
     response.raise_for_status()
     plans = response.json()
-    return {"threads": threads, "messages": messages, "states": states, "plans": plans}
+    assert plans, "No saved meal plans to verify"
+    response = client.get("/api/v1/profile")
+    response.raise_for_status()
+    profile = response.json()
+    assert profile["user_id"] == user_id, "The authenticated user does not match --user-id"
+    return {
+        "threads": threads,
+        "messages": messages,
+        "states": states,
+        "plans": plans,
+        "profile": profile,
+    }
 
 
 def digest(value: Any) -> str:

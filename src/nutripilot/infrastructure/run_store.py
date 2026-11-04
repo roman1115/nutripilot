@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -16,8 +17,11 @@ class SQLiteRunStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
-            connection.executescript("""
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                with self._connect() as connection:
+                    connection.executescript("""
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS trace_events (
                     trace_id TEXT NOT NULL,
@@ -29,7 +33,13 @@ class SQLiteRunStore:
                     run_id TEXT PRIMARY KEY,
                     payload TEXT NOT NULL
                 );
-            """)
+                    """)
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                    raise
+                # API and Worker can initialise the shared trace file simultaneously.
+                time.sleep(0.05)
         self.path.chmod(0o600)
 
     @contextmanager

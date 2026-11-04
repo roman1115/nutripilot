@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from nutripilot.domain.execution import ExecutionOwnershipLost, execution_fence
 from nutripilot.tools.errors import ToolRuntimeError
 from nutripilot.tools.models import (
     ToolAccess,
@@ -124,9 +125,15 @@ class ToolExecutor:
                 remaining = tool_deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError
-                raw = await asyncio.wait_for(
-                    definition.handler(arguments, context), timeout=remaining
-                )
+                if definition.access is ToolAccess.WRITE:
+                    async with execution_fence():
+                        raw = await asyncio.wait_for(
+                            definition.handler(arguments, context), timeout=remaining
+                        )
+                else:
+                    raw = await asyncio.wait_for(
+                        definition.handler(arguments, context), timeout=remaining
+                    )
                 result = self._normalise_success(call, definition, raw, retries)
                 break
             except asyncio.TimeoutError:  # noqa: UP041 - supports the local Python 3.10 verifier
@@ -144,6 +151,8 @@ class ToolExecutor:
                     status=ToolStatus.CANCELLED,
                 )
                 await self._trace(call, context, definition, result)
+                raise
+            except ExecutionOwnershipLost:
                 raise
             except Exception:
                 error = ToolRuntimeError(

@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from nutripilot.agent.contracts import PlanSpec
-from nutripilot.agent.planning import PlanBuilder, PlanBuildError
+from nutripilot.agent.planning import PlanBuilder
 from nutripilot.agent.slots import extract_plan_scope
 from nutripilot.application import build_container
 from nutripilot.config import Settings
@@ -21,6 +21,7 @@ def candidates() -> list[dict[str, Any]]:
             "meal_types": [meal_type],
             "ingredients": ["测试食材"],
             "allergens": [],
+            "meal_role": "dish",
             "nutrition": {"calories_kcal": calories, "protein_g": protein},
         }
         for index, meal_type, calories, protein in [
@@ -34,19 +35,19 @@ def candidates() -> list[dict[str, Any]]:
     ]
 
 
-def test_plan_uses_nutrition_targets_without_multiplying_servings() -> None:
+def test_plan_reports_whole_recipes_without_personal_target_judgments() -> None:
     spec = PlanSpec(
         plan_range="one_week",
         daily_calorie_target=1500,
         daily_protein_target_g=90,
-        enforce_targets=True,
     )
     builder = PlanBuilder()
     plan = builder.build(spec, candidates())
     quality = builder.assess(spec, plan, candidates())
-    assert all(day["target_met"] is True for day in quality["daily_totals"])
-    assert all(1350 <= day["calories_kcal"] <= 1650 for day in quality["daily_totals"])
-    assert all(day["protein_g"] >= 90 for day in quality["daily_totals"])
+    assert quality["nutrition_basis"] == "whole_recipe"
+    assert all("target_met" not in day for day in quality["daily_totals"])
+    assert "daily_calorie_target" not in quality
+    assert any("不代表个人摄入量" in warning for warning in quality["warnings"])
     assert all(item.model_dump().get("servings") is None for item in plan.items)
 
 
@@ -69,11 +70,19 @@ def test_plan_avoids_same_meal_in_two_slots_on_the_same_day() -> None:
     assert len({item.meal_id for item in plan.items}) == 3
 
 
-def test_explicit_unreachable_target_fails_closed() -> None:
-    spec = PlanSpec(daily_calorie_target=5000, enforce_targets=True)
-    with pytest.raises(PlanBuildError) as error:
-        PlanBuilder().build(spec, candidates())
-    assert error.value.code == "PLAN_NUTRITION_TARGET_UNREACHABLE"
+def test_plan_reserves_the_only_dinner_candidate_when_lunch_has_an_alternative() -> None:
+    meals = candidates()[:4]
+    meals[2]["meal_types"] = ["lunch", "dinner"]
+    plan = PlanBuilder().build(PlanSpec(plan_range="one_day"), meals)
+    assert len({item.meal_id for item in plan.items}) == 3
+    assert next(item.meal_id for item in plan.items if item.meal_type == "lunch") == 4
+
+
+def test_personal_target_does_not_change_the_selected_whole_recipes() -> None:
+    builder = PlanBuilder()
+    assert builder.build(PlanSpec(daily_calorie_target=5000), candidates()) == builder.build(
+        PlanSpec(), candidates()
+    )
 
 
 def test_profile_target_shortfall_is_visible_but_not_silently_fabricated() -> None:
@@ -81,51 +90,69 @@ def test_profile_target_shortfall_is_visible_but_not_silently_fabricated() -> No
     builder = PlanBuilder()
     plan = builder.build(spec, candidates())
     quality = builder.assess(spec, plan, candidates())
-    assert any("未达到" in warning for warning in quality["warnings"])
-    assert all(day["target_met"] is False for day in quality["daily_totals"])
+    assert any("每日目标不用于" in warning for warning in quality["warnings"])
+    assert all("target_met" not in day for day in quality["daily_totals"])
 
 
 def test_single_meal_plan_does_not_claim_full_day_target_met() -> None:
     spec = PlanSpec(
         meal_type="dinner",
         daily_calorie_target=2000,
-        enforce_targets=True,
     )
     builder = PlanBuilder()
     quality = builder.assess(spec, builder.build(spec, candidates()), candidates())
     assert quality["scope"] == "selected_meals"
-    assert all(day["target_met"] is None for day in quality["daily_totals"])
-    assert any("仅包含指定餐次" in warning for warning in quality["warnings"])
+    assert all("target_met" not in day for day in quality["daily_totals"])
+    assert any("不评定个人每日" in warning for warning in quality["warnings"])
 
 
-def test_prewrite_rejects_plan_below_explicit_protein_target() -> None:
+def test_prewrite_does_not_claim_to_meet_personal_protein_target() -> None:
     builder = PlanBuilder()
     plan = builder.build(PlanSpec(plan_range="one_day"), candidates())
-    with pytest.raises(PlanBuildError) as error:
-        builder.validate_prewrite(
-            spec=PlanSpec(
-                plan_range="one_day",
-                daily_protein_target_g=300,
-                enforce_targets=True,
-            ),
-            request=plan,
-            candidates=candidates(),
-            allowed_meal_ids=set(range(1, 7)),
-            declared_allergens=[],
-            excluded_ingredients=[],
-        )
-    assert error.value.code == "PLAN_NUTRITION_TARGET_UNMET"
+    builder.validate_prewrite(
+        spec=PlanSpec(
+            plan_range="one_day",
+            daily_protein_target_g=300,
+        ),
+        request=plan,
+        candidates=candidates(),
+        allowed_meal_ids=set(range(1, 7)),
+        declared_allergens=[],
+        excluded_ingredients=[],
+    )
 
 
-def test_missing_nutrition_cannot_pass_explicit_target_check() -> None:
+def test_missing_nutrition_stays_unknown_instead_of_becoming_zero() -> None:
     meals = candidates()
     for meal in meals:
         meal.pop("nutrition")
-    with pytest.raises(PlanBuildError):
-        PlanBuilder().build(
-            PlanSpec(daily_calorie_target=1500, enforce_targets=True),
-            meals,
-        )
+    builder = PlanBuilder()
+    spec = PlanSpec(plan_range="one_day", daily_calorie_target=1500)
+    quality = builder.assess(spec, builder.build(spec, meals), meals)
+    assert quality["totals"]["calories_kcal"] is None
+    assert quality["totals"]["protein_g"] is None
+    assert not quality["totals"]["nutrient_ranges"]
+    assert any("保留未知" in warning for warning in quality["warnings"])
+
+
+def test_plan_sums_nutrient_ranges_without_replacing_them_with_midpoints() -> None:
+    meals = candidates()
+    for meal in meals:
+        facts = meal["nutrition"]
+        facts["nutrient_ranges"] = {
+            "calories_kcal": {
+                "minimum": facts["calories_kcal"] - 100,
+                "maximum": facts["calories_kcal"],
+            }
+        }
+    builder = PlanBuilder()
+    spec = PlanSpec(plan_range="one_day")
+    quality = builder.assess(spec, builder.build(spec, meals), meals)
+    total = quality["totals"]
+    assert total["nutrient_ranges"]["calories_kcal"] == {"minimum": 1200, "maximum": 1500}
+    assert total["calories_kcal"] == 1500
+    assert total["fiber_g"] is None
+    assert quality["daily_totals"][0]["nutrient_ranges"] == total["nutrient_ranges"]
 
 
 def test_daily_targets_are_extracted_separately_from_single_meal_filters() -> None:
@@ -139,26 +166,24 @@ def test_daily_targets_are_extracted_separately_from_single_meal_filters() -> No
 
 
 def test_relative_plan_date_uses_the_supplied_user_local_date() -> None:
-    slots, missing = extract_plan_scope(
-        "明天制定一周晚餐计划", current_date=date(2026, 10, 26)
-    )
+    slots, missing = extract_plan_scope("明天制定一周晚餐计划", current_date=date(2026, 10, 26))
 
     assert not missing
     assert slots["start_date"] == "2026-10-27"
 
 
 @pytest.mark.asyncio
-async def test_graph_blocks_unreachable_daily_target_without_pending_write() -> None:
+async def test_graph_discloses_whole_recipe_basis_for_personal_target_requests() -> None:
     container = build_container(settings=Settings(_env_file=None))
     state = await container.chat_service.chat(
         user_id=22,
         message="制定一日三餐饮食计划，每日5000千卡，每天蛋白质至少100克",
     )
-    assert state["phase"] == "FAILED"
-    assert state["error"]["code"] == "PLAN_NUTRITION_TARGET_UNREACHABLE"
-    assert not state["requires_confirmation"]
+    assert state["phase"] == "AWAITING_CONFIRMATION"
+    assert state["requires_confirmation"]
+    assert state["plan_quality"]["nutrition_basis"] == "whole_recipe"
+    assert any("每日目标不用于" in text for text in state["plan_quality"]["warnings"])
     assert not await container.data_store.list_plans(22)
-    assert "无法同时满足" in state["final_response"]["message"]
 
 
 @pytest.mark.asyncio
@@ -215,7 +240,7 @@ async def test_graph_plan_discloses_profile_target_shortfall_before_confirmation
     state = await container.chat_service.chat(user_id=22, message="制定一周三餐饮食计划")
     assert state["phase"] == "AWAITING_CONFIRMATION"
     assert state["plan_quality"]["meal_count"] == 21
-    assert any("未达到" in warning for warning in state["plan_quality"]["warnings"])
+    assert any("每日目标不用于" in warning for warning in state["plan_quality"]["warnings"])
     items = state["pending_tool_calls"][0]["arguments"]["items"]
     assert len(items) == 21
     for day in {item["meal_date"] for item in items}:
@@ -325,4 +350,4 @@ async def test_explicit_three_meal_plan_clears_the_previous_turns_single_meal_sl
     )
     assert plan["phase"] == "AWAITING_CONFIRMATION"
     assert len(plan["pending_tool_calls"][0]["arguments"]["items"]) == 3
-    assert plan["plan_quality"]["scope"] == "full_day"
+    assert plan["plan_quality"]["scope"] == "all_meal_slots"

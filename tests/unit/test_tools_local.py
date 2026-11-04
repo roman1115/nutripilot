@@ -35,7 +35,7 @@ async def test_local_profile_and_plan_tools_round_trip() -> None:
                 {
                     "meal_date": date.today().isoformat(),
                     "meal_type": "lunch",
-                    "meal_id": 2,
+                    "meal_id": 1004,
                 }
             ],
         },

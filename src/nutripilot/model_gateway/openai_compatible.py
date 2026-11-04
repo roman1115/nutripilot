@@ -8,6 +8,7 @@ from typing import Any
 
 from openai import (
     APIConnectionError,
+    APIStatusError,
     APITimeoutError,
     AsyncOpenAI,
     InternalServerError,
@@ -15,6 +16,7 @@ from openai import (
 )
 from pydantic import ValidationError
 
+from nutripilot.domain.execution import ExecutionOwnershipLost, current_execution
 from nutripilot.model_gateway.base import (
     GatewayResult,
     ModelGatewayError,
@@ -82,6 +84,18 @@ class OpenAICompatibleModelGateway:
                                 "schema": response_model.model_json_schema(),
                             }
                         )
+                    execution = current_execution.get()
+                    reserved = 0
+                    if budget and execution and execution.reserve:
+                        estimated = len(json.dumps({
+                            "prompt": system_prompt, "payload": payload,
+                            "schema": response_model.model_json_schema(),
+                        }, ensure_ascii=False, default=str).encode()) // 2
+                        reserved = min(
+                            budget.remaining_tokens,
+                            estimated + int(completion_options.get("max_tokens", 4096)),
+                        )
+                        await execution.reserve(reserved)
                     completion = await self.client.chat.completions.create(
                         model=model,
                         messages=[
@@ -118,6 +132,8 @@ class OpenAICompatibleModelGateway:
                     total_output_tokens += output_tokens
                     if budget:
                         budget.add_usage(input_tokens, output_tokens)
+                    if reserved and usage is not None and execution and execution.settle:
+                        await execution.settle(reserved, input_tokens + output_tokens)
                     content = completion.choices[0].message.content
                     if not content:
                         raise ModelGatewayError(
@@ -136,7 +152,7 @@ class OpenAICompatibleModelGateway:
                         attempts=total_attempts,
                         used_fallback=model_index > 0,
                     )
-                except ExecutionLimitExceeded:
+                except (ExecutionLimitExceeded, ExecutionOwnershipLost):
                     raise
                 except (json.JSONDecodeError, ValidationError) as exc:
                     schema_feedback = (
@@ -186,4 +202,19 @@ def _classify_error(exc: Exception) -> ModelGatewayError:
         )
     if isinstance(exc, InternalServerError):
         return ModelGatewayError("MODEL_SERVER_ERROR", "The model provider failed.", retryable=True)
+    if isinstance(exc, APIStatusError):
+        body = exc.body if isinstance(exc.body, dict) else {}
+        error = body.get("error", body)
+        if (
+            isinstance(error, dict)
+            and (error.get("code") or error.get("type")) == "AllocationQuota.FreeTierOnly"
+        ):
+            return ModelGatewayError(
+                "MODEL_QUOTA_EXHAUSTED",
+                "模型免费额度已耗尽，请在提供方控制台确认可用额度和计费设置。",
+            )
+        if exc.status_code == 401:
+            return ModelGatewayError("MODEL_AUTHENTICATION_FAILED", "模型访问凭据无效。")
+        if exc.status_code == 403:
+            return ModelGatewayError("MODEL_PERMISSION_DENIED", "当前账号无权调用该模型。")
     return ModelGatewayError("MODEL_REQUEST_REJECTED", "The model request was rejected.")

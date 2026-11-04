@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
-from nutripilot.domain.models import NumericRange
+from nutripilot.domain.models import IngredientIdentity, NumericRange
 from nutripilot.retrieval.models import Meal, NutrientField, NutritionFacts
 
 NUTRIENT_FIELDS: tuple[NutrientField, ...] = (
@@ -100,6 +100,9 @@ class Recipe(CatalogModel):
     raw_ingredients: str = Field(min_length=1)
     raw_quantities: str = Field(min_length=1)
     instructions: str = Field(min_length=1)
+    tools: list[str] = Field(default_factory=list)
+    source_calories_text: str | None = None
+    source_calories_kcal: float | None = Field(default=None, ge=0)
     ingredients: list[RecipeIngredient] = Field(min_length=1)
     status: Literal["pending", "calculation_ready"] = "pending"
     review_issues: list[str] = Field(default_factory=list)
@@ -107,6 +110,7 @@ class Recipe(CatalogModel):
     serving_label: str | None = Field(default=None, min_length=1)
     calculation_basis: Literal["whole_recipe", "per_serving"] = "whole_recipe"
     meal_types: list[str] = Field(default_factory=list)
+    cuisines: list[str] = Field(default_factory=lambda: ["中式"])
     meal_role: Literal["complete_meal", "dish", "staple", "soup", "snack"] = "dish"
     preparation_note: str | None = None
 
@@ -242,15 +246,24 @@ def recipe_to_meal(recipe: Recipe, ingredients: dict[str, Ingredient]) -> Meal:
         meal_types=recipe.meal_types,
         meal_role=recipe.meal_role,
         recipe_id=recipe.id,
-        cuisines=["中式"],
+        cuisines=recipe.cuisines,
         ingredients=list(dict.fromkeys(item.name for item in contact)),
+        ingredient_records=[
+            IngredientIdentity(
+                ingredient_id=item.id, name=item.name, aliases=item.aliases,
+                consumed=any(
+                    part.consumed and part.ingredient_id == item.id for part in recipe.ingredients
+                ),
+            )
+            for item in {item.id: item for item in contact}.values()
+        ],
         allergens=sorted({term for item in contact for term in item.allergens or []}),
         nutrition=nutrition,
         prep_minutes=None,
         price_cny=None,
         source="HowToCook 菜谱；逐食材来源成分数据；配方计算估算",
         source_uri=str(recipe.source_uri),
-        data_version="catalog-2026-10-28",
+        data_version="catalog-2026-10-29",
     )
 
 

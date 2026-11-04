@@ -29,7 +29,6 @@ export interface Citation {
 export interface MealRecommendation {
   mealId?: string | number;
   name: string;
-  reason?: string;
   calories?: number;
   protein?: number;
   carbs?: number;
@@ -72,6 +71,7 @@ export interface PendingConfirmation {
 }
 
 export interface ChatStreamEvent {
+  id?: number;
   type: string;
   data: Record<string, unknown>;
   rawEvent?: string;
@@ -100,6 +100,10 @@ export interface MealPlanItem {
   mealName: string;
   calories?: number;
   protein?: number;
+  nutrientRanges?: Record<string, { minimum: number; maximum: number }>;
+  servingSize?: string;
+  sourceUri?: string;
+  archived?: boolean;
   status?: string;
 }
 
@@ -108,6 +112,7 @@ export interface ConversationSummary {
   title: string;
   updatedAt: string;
   messageCount: number;
+  runStatus?: string;
 }
 
 export interface MealPlan {
@@ -119,6 +124,7 @@ export interface MealPlan {
   createdAt?: string;
   totalCalories?: number;
   qualityWarnings: string[];
+  nutritionBasis?: string;
   items: MealPlanItem[];
 }
 

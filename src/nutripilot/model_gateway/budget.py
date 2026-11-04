@@ -10,6 +10,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
+from nutripilot.domain.execution import current_execution
 from nutripilot.model_gateway.base import GatewayResult, ModelGateway, ModelOutputT
 
 
@@ -83,6 +84,16 @@ class BudgetedModelGateway:
         budget = current_budget()
         if budget:
             budget.check()
+        execution = current_execution.get()
+        reserved = 0
+        if (
+            budget
+            and execution
+            and execution.reserve
+            and not getattr(self.delegate, "accounts_usage", False)
+        ):
+            reserved = min(budget.remaining_tokens, 4096 + len(json.dumps(payload)) // 2)
+            await execution.reserve(reserved)
         result = await self.delegate.generate_structured(
             worker=worker,
             system_prompt=system_prompt,
@@ -92,4 +103,8 @@ class BudgetedModelGateway:
         )
         if budget and not getattr(self.delegate, "accounts_usage", False):
             budget.add_usage(result.usage.input_tokens, result.usage.output_tokens)
+            if reserved and execution and execution.settle:
+                await execution.settle(
+                    reserved, result.usage.input_tokens + result.usage.output_tokens
+                )
         return result

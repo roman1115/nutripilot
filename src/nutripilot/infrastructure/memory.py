@@ -43,6 +43,10 @@ class InMemoryDataStore:
         self._lock = asyncio.Lock()
 
     async def list_meals(self) -> list[Meal]:
+        return [meal for meal in await self.all_meals() if meal.is_active]
+
+    async def all_meals(self) -> list[Meal]:
+        """Include archived records for seeding and historical references."""
         return [self._meals[key] for key in sorted(self._meals)]
 
     async def get_meal(self, meal_id: int) -> Meal | None:
@@ -87,6 +91,15 @@ class InMemoryDataStore:
                     "MEAL_NOT_FOUND",
                     "One or more selected meals no longer exist.",
                     details={"meal_ids": unknown_ids},
+                )
+            retired_ids = sorted(
+                {item.meal_id for item in request.items if not self._meals[item.meal_id].is_active}
+            )
+            if retired_ids:
+                raise ToolRuntimeError(
+                    "MEAL_RETIRED",
+                    "已退役的餐食只能查看历史，不能加入新餐单。",
+                    details={"meal_ids": retired_ids},
                 )
             plan_id = str(uuid.uuid4())
             plan = MealPlan(
@@ -209,7 +222,9 @@ def load_seed_store(data_directory: str | Path) -> InMemoryDataStore:
             raise ValueError("Seed meals must explicitly declare ingredients and allergens")
         if not isinstance(item.get("nutrition"), dict) or not item["nutrition"].get("serving_size"):
             raise ValueError("Seed nutrition must include a serving size")
-    meals = [Meal.model_validate(item) for item in raw_meals]
+    meals = [
+        Meal.model_validate(item).model_copy(update={"is_active": False}) for item in raw_meals
+    ]
     catalog_paths = [data_path / f"{name}.json" for name in ("sources", "ingredients", "recipes")]
     catalog = load_food_catalog(data_path) if any(path.exists() for path in catalog_paths) else None
     if catalog is not None:
@@ -235,9 +250,7 @@ def load_seed_store(data_directory: str | Path) -> InMemoryDataStore:
         if profile_file.exists()
         else []
     )
-    return InMemoryDataStore(
-        meals=meals, guidelines=guidelines, profiles=profiles, catalog=catalog
-    )
+    return InMemoryDataStore(meals=meals, guidelines=guidelines, profiles=profiles, catalog=catalog)
 
 
 def _load_json_array(path: Path) -> list[dict[str, Any]]:

@@ -6,11 +6,18 @@ import time
 from datetime import date
 from typing import Any
 
-from nutripilot.agent.agents.base import fallback_update, record_worker_event
+from pydantic import ValidationError
+
+from nutripilot.agent.agents.base import (
+    compact_tool_results,
+    fallback_update,
+    record_worker_event,
+)
 from nutripilot.agent.contracts import PlannerOutput, PlanSpec
 from nutripilot.agent.planning import PlanBuilder, PlanBuildError, candidate_meals_from_results
 from nutripilot.agent.state import AgentState
 from nutripilot.domain.enums import Intent, Phase
+from nutripilot.domain.execution import ExecutionOwnershipLost
 from nutripilot.model_gateway import ModelGateway, ModelUsage
 from nutripilot.model_gateway.budget import ExecutionLimitExceeded
 from nutripilot.safety import merge_dietary_terms
@@ -38,19 +45,40 @@ _TOOLS_BY_INTENT: dict[str, set[str]] = {
         "create_meal_plan",
     },
     Intent.NUTRITION_QUERY.value: {"get_nutrition", "query_dietary_guidelines"},
+    Intent.RECIPE_QUERY.value: {"get_recipe"},
+    Intent.FOOD_QUESTION.value: {"get_recipe", "get_nutrition", "query_dietary_guidelines"},
     Intent.PROFILE_UPDATE.value: {"update_user_profile"},
 }
 
 
 class PlannerAgent:
     name = "PlannerAgent"
-    prompt_version = "planner-v2"
+    prompt_version = "planner-v14"
     system_prompt = (
         "你是工具规划 Worker。根据结构化状态选择白名单工具；一次只生成必要调用，"
         "不得虚构工具，不得决定图路由或绕过写操作确认。对于推荐、调整或计划，"
-        "必须先读取用户画像和历史反馈，再检索餐食。计划检索 limit=20，"
-        "三餐计划不得把检索 meal_type 限定为某一餐。"
+        "必须先读取用户画像和历史反馈，再检索菜谱。餐单按日期和餐次安排整道菜，"
+        "不推算人数或个人份量，不判断个人每日营养目标达成；单道菜不代表完整一餐。"
+        "计划检索只需一次 search_meals 调用，由工具边界分别覆盖所需餐次。"
+        "普通推荐或换菜在本轮成功检索到候选后应返回 complete=true，避免重复检索。"
+        "换一批应选择本轮新候选，不必继续寻找已被排除的上一批菜名。"
         "若提供 verified_plan，创建计划必须原样采用它，禁止编造份量与营养数值。"
+        "RECIPE_QUERY 必须用 get_recipe 查询 food_name，不能用推荐或营养查询代替做法。"
+        "search_meals 必须传递本轮 required_ingredients，必含食材不得替换为相近食材；"
+        "可以少于三道，没有匹配不能用其它食材的菜凑数。"
+        "同时原样传递ingredient_any_groups，每组任选一项，组间全部满足。"
+        "即使仅靠结构化食材条件检索，query也应填用户本轮原话，不得留空。"
+        "slots中的数值限制为本轮最终条件，值为null表示已取消，不得从旧消息重新添加；"
+        "有新数值时使用新值，不能继续沿用旧值。"
+        "food_name 为点名对象，必须传给 search_meals，不得用其他菜代替。"
+        "用户明确根据天气选菜时必须查询天气；其他推荐天气可选。"
+        "FOOD_QUESTION先判断conversation_evidence能否支持本轮解释或比较，足够则complete=true。"
+        "一般烹饪原理可直接解释，不强制查菜谱。具体配方细节缺失时用get_recipe，"
+        "具体营养缺失时用get_nutrition，一般营养资料可query_dietary_guidelines。"
+        "比较菜品制作方式时，不能从菜名猜步骤；先get_recipe补齐被比较菜的原始配方。"
+        "没有说明比较维度的菜品比较，优先补齐前两道原始配方后再回答。"
+        "不为解释、比较或技巧问答检索新推荐，不允许写入资料或餐单；"
+        "未知对象不要猜菜名，由回答阶段追问。重复查询无必要，资料足够就结束。"
     )
     reads = frozenset({"intent", "slots", "tool_results", "candidate_ids"})
     writes = frozenset({"execution_plan", "pending_tool_calls"})
@@ -78,10 +106,16 @@ class PlannerAgent:
             "user_message": state["user_message"],
             "current_date": state["current_date"],
             "available_tools": self.registry.planner_schemas(allowed_tools),
+            "conversation_summary": state.get("conversation_summary"),
+            "conversation_evidence": state.get("conversation_evidence", []),
+            "discussed_meals": state.get("discussed_meals", []),
         }
         if (
             intent == Intent.MEAL_PLAN.value
-            and candidate_meals_from_results(state.get("tool_results", []))
+            and any(
+                result.get("tool_name") == "search_meals" and result.get("status") == "success"
+                for result in state.get("tool_results", [])
+            )
             and not any(
                 result.get("tool_name") == "create_meal_plan"
                 for result in state.get("tool_results", [])
@@ -98,6 +132,7 @@ class PlannerAgent:
                     "error": {"code": exc.code, "message": exc.safe_message, "retryable": False},
                 }
             payload["verified_plan"] = plan.model_dump(mode="json")
+        result = None
         try:
             result = await self.gateway.generate_structured(
                 worker="planner",
@@ -107,6 +142,12 @@ class PlannerAgent:
                 prompt_version=self.prompt_version,
             )
             output = result.output
+            for call in output.tool_calls:
+                query = call.arguments.get("query")
+                if call.name == "search_meals" and (
+                    query is None or (isinstance(query, str) and not query.strip())
+                ):
+                    call.arguments["query"] = state["user_message"].strip()[:500] or "菜品推荐"
             self._validate_tool_plan(output, allowed_tools)
             record_worker_event(
                 self.recorder,
@@ -126,11 +167,11 @@ class PlannerAgent:
                 output_tokens=result.usage.output_tokens,
             )
             return self._update(state, output)
-        except ExecutionLimitExceeded:
+        except (ExecutionLimitExceeded, ExecutionOwnershipLost):
             raise
         except Exception as exc:
             output = _fallback_plan(state)
-            usage = getattr(exc, "usage", ModelUsage())
+            usage = result.usage if result is not None else getattr(exc, "usage", ModelUsage())
             record_worker_event(
                 self.recorder,
                 state,
@@ -140,6 +181,10 @@ class PlannerAgent:
                     "error_type": type(exc).__name__,
                     "error_code": getattr(exc, "code", "MODEL_OR_SCHEMA_ERROR"),
                     "tools": [c.name for c in output.tool_calls],
+                    "validation_errors": [
+                        {"field": list(error["loc"]), "type": error["type"]}
+                        for error in exc.errors(include_input=False)[:10]
+                    ] if isinstance(exc, ValidationError) else [],
                 },
                 duration_ms=(time.monotonic() - started) * 1000,
                 input_tokens=usage.input_tokens,
@@ -164,6 +209,89 @@ class PlannerAgent:
 
     def _update(self, state: AgentState, output: PlannerOutput) -> dict[str, Any]:
         if (
+            state.get("intent") == Intent.FOOD_QUESTION.value
+            and not state.get("discussed_meals")
+        ):
+            calls = [
+                call for call in output.tool_calls
+                if not (
+                    call.name in {"get_recipe", "get_nutrition"}
+                    and any(call.arguments.get(key) in {
+                        "那道菜", "这道菜", "这个", "那个", "它",
+                    } for key in ("name", "food_name"))
+                )
+            ]
+            if len(calls) != len(output.tool_calls):
+                output = output.model_copy(update={"complete": not calls, "tool_calls": calls})
+        if (
+            state.get("intent") == Intent.FOOD_QUESTION.value
+            and len(state.get("discussed_meals", [])) >= 2
+            and "前两" in state["user_message"]
+            and any(term in state["user_message"] for term in ("比较", "区别", "对比", "不同"))
+            and not any(term in state["user_message"] for term in (
+                "营养", "热量", "蛋白", "脂肪", "碳水", "钠",
+            ))
+            and not output.tool_calls
+            and not any(
+                result.get("tool_name") == "get_recipe"
+                for result in state.get("tool_results", [])
+            )
+        ):
+            known = {
+                (result.get("data") or {}).get("meal_id")
+                for result in state.get("conversation_evidence", [])
+                if result.get("tool_name") == "get_recipe" and result.get("status") == "success"
+            }
+            calls = [
+                ToolCall(
+                    call_id=f"{state['turn_id']}:comparison:recipe:{meal['meal_id']}",
+                    name="get_recipe", arguments={"meal_id": meal["meal_id"]},
+                )
+                for meal in state.get("discussed_meals", [])[:2]
+                if meal["meal_id"] not in known
+            ]
+            if calls:
+                output = output.model_copy(update={"complete": False, "tool_calls": calls})
+        if state.get("intent") in {
+            Intent.MEAL_RECOMMENDATION.value,
+            Intent.MEAL_ADJUSTMENT.value,
+            Intent.MEAL_PLAN.value,
+        }:
+            succeeded = {
+                result.get("tool_name") for result in state.get("tool_results", [])
+                if result.get("status") == "success"
+            }
+            if "search_meals" not in succeeded:
+                if not output.tool_calls or any(
+                    call.name == "create_meal_plan" for call in output.tool_calls
+                ):
+                    output = _fallback_plan(state)
+                calls = list(output.tool_calls)
+                if any(call.name == "search_meals" for call in calls):
+                    # Order dependencies before search even when the planner skips or reverses them.
+                    dependencies = ["get_user_profile", "get_user_feedback"]
+                    if any(term in state["user_message"] for term in (
+                        "天气", "下雨", "炎热", "寒冷", "降温", "天热", "天冷",
+                    )):
+                        dependencies.append("get_weather_context")
+                    calls = [
+                        *(
+                            ToolCall(
+                                call_id=f"{state['turn_id']}:required:{name}",
+                                name=name,
+                                arguments=(
+                                    {"location": state.get("slots", {}).get("location", "北京")}
+                                    if name == "get_weather_context" else {}
+                                ),
+                            )
+                            for name in dependencies if name not in succeeded
+                        ),
+                        *(call for call in calls if call.name not in dependencies),
+                    ]
+                    output = output.model_copy(update={"complete": False, "tool_calls": calls})
+        if state.get("intent") == Intent.RECIPE_QUERY.value and not state.get("tool_results"):
+            output = _fallback_plan(state)
+        if (
             state.get("intent") == Intent.MEAL_PLAN.value
             and not output.tool_calls
             and candidate_meals_from_results(state.get("tool_results", []))
@@ -187,7 +315,7 @@ class PlannerAgent:
                     ],
                 }
             )
-        calls = [call.model_dump(mode="json") for call in output.tool_calls]
+        serialized_calls = [call.model_dump(mode="json") for call in output.tool_calls]
         return {
             "phase": Phase.PLANNING.value,
             "execution_plan": [
@@ -197,7 +325,7 @@ class PlannerAgent:
                     "tools": [call.name for call in output.tool_calls],
                 },
             ],
-            "pending_tool_calls": calls,
+            "pending_tool_calls": serialized_calls,
             "prompt_versions": {
                 **state.get("prompt_versions", {}),
                 self.name: self.prompt_version,
@@ -206,7 +334,10 @@ class PlannerAgent:
 
 
 def _fallback_plan(state: AgentState) -> PlannerOutput:
-    called = {str(result.get("tool_name")) for result in state.get("tool_results", [])}
+    called = {
+        str(result.get("tool_name")) for result in state.get("tool_results", [])
+        if result.get("status") == "success"
+    }
     intent = state.get("intent")
     call: ToolCall | None = None
     if intent in {
@@ -233,6 +364,10 @@ def _fallback_plan(state: AgentState) -> PlannerOutput:
                 arguments={
                     "query": state["user_message"],
                     "meal_type": state.get("slots", {}).get("meal_type"),
+                    "required_ingredients": state.get("slots", {}).get("required_ingredients", []),
+                    "ingredient_any_groups": state.get("slots", {}).get(
+                        "ingredient_any_groups", []
+                    ),
                     "excluded_allergens": state.get("slots", {}).get("allergens", []),
                     "excluded_ingredients": merge_dietary_terms(
                         state.get("slots", {}).get("excluded_ingredients"),
@@ -248,6 +383,12 @@ def _fallback_plan(state: AgentState) -> PlannerOutput:
             call_id=f"{state['turn_id']}:fallback:get_nutrition",
             name="get_nutrition",
             arguments={"food_name": state.get("slots", {}).get("food_name", "")},
+        )
+    elif intent == Intent.RECIPE_QUERY.value and "get_recipe" not in called:
+        call = ToolCall(
+            call_id=f"{state['turn_id']}:get_recipe",
+            name="get_recipe",
+            arguments={"name": state.get("slots", {}).get("food_name", "")},
         )
     return PlannerOutput(
         complete=call is None,
@@ -284,40 +425,3 @@ def _plan_spec(state: AgentState) -> PlanSpec:
         start_date=date.fromisoformat(state["current_date"]),
         profile=profile,
     )
-
-
-def compact_tool_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Preserve planning facts without repeatedly sending full retrieval documents."""
-
-    compact = []
-    for result in results:
-        item = {key: result[key] for key in ("tool_name", "status", "error") if key in result}
-        data = result.get("data")
-        if isinstance(data, dict) and result.get("tool_name") == "search_meals":
-            item["data"] = {
-                "hits": [
-                    {
-                        key: meal[key]
-                        for key in (
-                            "id",
-                            "meal_id",
-                            "name",
-                            "meal_types",
-                            "meal_role",
-                            "recipe_id",
-                            "ingredients",
-                            "allergens",
-                            "nutrition",
-                        )
-                        if key in meal
-                    }
-                    for hit in data.get("hits", [])
-                    if isinstance(hit, dict) and isinstance(meal := hit.get("meal", hit), dict)
-                ]
-            }
-        elif isinstance(data, dict) and result.get("tool_name") == "get_user_feedback":
-            item["data"] = {"excluded_meal_ids": data.get("excluded_meal_ids", [])}
-        else:
-            item["data"] = data
-        compact.append(item)
-    return compact

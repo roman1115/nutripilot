@@ -29,7 +29,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("MODEL_API_KEY", "DASHSCOPE_API_KEY"),
     )
     model_fallback_name: str | None = None
-    model_timeout_seconds: float = Field(default=25, gt=0, le=120)
+    model_timeout_seconds: float = Field(default=45, gt=0, le=120)
     model_max_retries: int = Field(default=2, ge=0, le=5)
     embedding_provider: Literal["hashing", "bge"] = "hashing"
     embedding_model: str = "BAAI/bge-m3"
@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     agent_deadline_seconds: float = Field(default=90, gt=0, le=600)
     agent_token_budget: int = Field(default=24000, ge=1, le=1_000_000)
     run_store_path: str | None = None
+    chat_queue: str = Field(default="default", min_length=1, max_length=100)
+    chat_concurrency: int = Field(default=4, ge=1, le=32)
+    chat_user_concurrency: int = Field(default=3, ge=1, le=32)
+    chat_max_queued: int = Field(default=20, ge=1, le=100)
+    chat_max_attempts: int = Field(default=2, ge=1, le=3)
     api_access_tokens: dict[str, int] = Field(default_factory=dict)
     api_rate_limit_per_minute: int = Field(default=60, ge=1, le=10000)
     database_url: str = "postgresql+asyncpg://nutripilot:nutripilot@localhost:5432/nutripilot"

@@ -2,13 +2,15 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
+from openai import APIStatusError
 from pydantic import ValidationError
 
 from nutripilot.agent.contracts import IntentOutput
 from nutripilot.config import Settings
 from nutripilot.domain.enums import Intent
-from nutripilot.model_gateway import OpenAICompatibleModelGateway
+from nutripilot.model_gateway import ModelGatewayError, OpenAICompatibleModelGateway
 
 
 class FakeCompletions:
@@ -52,6 +54,9 @@ def test_settings_default_to_credential_free_fake_mode() -> None:
     assert settings.app_mode == "demo"
     assert settings.model_provider == "fake"
     assert settings.uses_fake_model is True
+    assert settings.model_timeout_seconds == 45
+    assert settings.agent_deadline_seconds == 90
+    assert settings.agent_token_budget == 24000
 
 
 def test_settings_require_key_for_real_provider() -> None:
@@ -106,3 +111,38 @@ async def test_openai_gateway_switches_to_fallback_after_retryable_failure() -> 
     assert result.model == "backup"
     assert result.used_fallback is True
     assert client.chat.completions.models == ["primary", "backup"]
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "expected"),
+    [
+        (403, {"code": "AllocationQuota.FreeTierOnly"}, "MODEL_QUOTA_EXHAUSTED"),
+        (403, {"error": {"type": "AllocationQuota.FreeTierOnly"}}, "MODEL_QUOTA_EXHAUSTED"),
+        (401, {"error": {"code": "invalid_api_key"}}, "MODEL_AUTHENTICATION_FAILED"),
+        (403, {"code": "AccessDenied"}, "MODEL_PERMISSION_DENIED"),
+        (400, "invalid request", "MODEL_REQUEST_REJECTED"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_provider_rejections_are_safe_terminal_errors(status, body, expected) -> None:
+    error = APIStatusError(
+        "raw provider detail containing secret-value",
+        response=httpx.Response(status, request=httpx.Request("POST", "https://provider.invalid")),
+        body=body,
+    )
+    client = fake_client([error])
+    gateway = OpenAICompatibleModelGateway(
+        api_key="test", model="primary", fallback_model="backup", max_retries=2, client=client
+    )
+    with pytest.raises(ModelGatewayError) as caught:
+        await gateway.generate_structured(
+            worker="intent",
+            system_prompt="test",
+            payload={},
+            response_model=IntentOutput,
+            prompt_version="test",
+        )
+    assert caught.value.code == expected
+    assert not caught.value.retryable
+    assert client.chat.completions.models == ["primary"]
+    assert "secret-value" not in str(caught.value)

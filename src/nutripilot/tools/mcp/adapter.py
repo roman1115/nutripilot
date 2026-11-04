@@ -21,7 +21,7 @@ class MCPToolAdapter:
         *,
         discovery_ttl_seconds: float = 300.0,
         call_timeout_seconds: float = 6.0,
-        max_payload_bytes: int = 64_000,
+        max_payload_bytes: int = 128_000,
         allowlist: set[str] | None = None,
     ) -> None:
         self.transport = transport

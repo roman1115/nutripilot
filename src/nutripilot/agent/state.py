@@ -10,6 +10,7 @@ from nutripilot.domain.enums import Phase
 
 
 class AgentState(TypedDict, total=False):
+    run_id: str
     trace_id: str
     thread_id: str
     turn_id: str
@@ -22,11 +23,17 @@ class AgentState(TypedDict, total=False):
     slots: dict[str, Any]
     missing_slots: list[str]
     conversation_summary: str | None
+    discussed_meals: list[dict[str, Any]]
+    recent_messages: list[dict[str, str]]
+    conversation_evidence: list[dict[str, Any]]
+    approved_answer: dict[str, Any] | None
     clarification_intent: str | None
     execution_plan: list[dict[str, Any]]
     pending_tool_calls: list[dict[str, Any]]
     tool_results: list[dict[str, Any]]
     candidate_ids: list[int]
+    previous_candidate_ids: list[int]
+    replacing_plan: bool
     citations: list[dict[str, Any]]
     dietary_constraints: dict[str, list[str]]
     risk_flags: list[str]
@@ -68,10 +75,17 @@ def new_agent_state(
         slots={},
         missing_slots=[],
         conversation_summary=None,
+        discussed_meals=[],
+        recent_messages=[],
+        conversation_evidence=[],
+        approved_answer=None,
+        clarification_intent=None,
         execution_plan=[],
         pending_tool_calls=[],
         tool_results=[],
         candidate_ids=[],
+        previous_candidate_ids=[],
+        replacing_plan=False,
         citations=[],
         dietary_constraints={"allergens": [], "excluded_ingredients": []},
         risk_flags=[],

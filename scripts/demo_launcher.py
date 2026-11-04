@@ -1,4 +1,4 @@
-"""Start the local demo or real Qwen/BGE stack on Windows, macOS, and Linux."""
+"""Start the memory demo, persistent demo, or real Qwen/BGE stack."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import time
 import urllib.request
 from contextlib import suppress
 from pathlib import Path
+from typing import cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_DIR = PROJECT_ROOT / ".runtime"
@@ -34,7 +35,7 @@ def _wait(
         try:
             with urllib.request.urlopen(uri, timeout=2) as response:
                 if response.status < 500:
-                    return response.read()
+                    return cast("bytes", response.read())
         except OSError:
             time.sleep(0.5)
     raise TimeoutError(f"Timed out waiting for {uri}")
@@ -108,11 +109,22 @@ def _configure_real(args: argparse.Namespace) -> None:
         )
         if not (model / "config.json").is_file() or not weights_present:
             raise SystemExit(f"Missing local BGE model files in {model}")
-    _check_port(args.mcp_port)
-    if args.mcp_port in {args.api_port, args.web_port}:
-        raise SystemExit("API, web and MCP ports must be different")
+    probe = subprocess.run(
+        [
+            str(PYTHON),
+            str(PROJECT_ROOT / "scripts" / "verify_showcase.py"),
+            "--probe-only",
+            "--output",
+            str(RUNTIME_DIR / "real-model-probe.json"),
+        ],
+        cwd=PROJECT_ROOT,
+        env=os.environ.copy(),
+        check=False,
+        timeout=settings.model_timeout_seconds + 10,
+    )
+    if probe.returncode:
+        raise SystemExit("Real model access check failed; see .runtime/real-model-probe.json")
     os.environ.update(
-        APP_MODE="docker",
         MODEL_PROVIDER="openai",
         MODEL_API_KEY=settings.model_api_key or "",
         MODEL_NAME=settings.model_name,
@@ -124,19 +136,32 @@ def _configure_real(args: argparse.Namespace) -> None:
         RERANK_PROVIDER="bge",
         RERANK_MODEL=str(reranker),
         RERANK_DEVICE=settings.rerank_device or "cpu",
-        DATABASE_URL=os.getenv("DATABASE_URL", settings.database_url),
-        REDIS_URL=os.getenv("REDIS_URL", settings.redis_url),
-        QDRANT_URL=os.getenv("QDRANT_URL", settings.qdrant_url),
-        QDRANT_COLLECTION="meal_search_bge_m3",
+        HF_HUB_OFFLINE="1",
+        OMP_NUM_THREADS=os.getenv("OMP_NUM_THREADS", "4"),
+        TOKENIZERS_PARALLELISM="false",
+    )
+
+
+def _configure_infrastructure(args: argparse.Namespace) -> None:
+    from nutripilot.config import Settings
+
+    settings = Settings()
+    _check_port(args.mcp_port)
+    if args.mcp_port in {args.api_port, args.web_port}:
+        raise SystemExit("API, web and MCP ports must be different")
+    os.environ.update(
+        APP_MODE="docker",
+        DATABASE_URL=settings.database_url,
+        REDIS_URL=settings.redis_url,
+        QDRANT_URL=settings.qdrant_url,
+        QDRANT_COLLECTION="meal_search_bge_m3" if args.mode == "real" else "meal_search",
         MCP_ENABLED="true",
         MCP_SERVER_URL=f"http://127.0.0.1:{args.mcp_port}/mcp",
         MCP_INTERNAL_TOKEN=secrets.token_urlsafe(32),
         MCP_TIMEOUT_SECONDS="120",
+        CHAT_QUEUE=f"{args.mode}-{args.api_port}",
         NUTRIPILOT_MCP_HOST="127.0.0.1",
         NUTRIPILOT_MCP_PORT=str(args.mcp_port),
-        HF_HUB_OFFLINE="1",
-        OMP_NUM_THREADS=os.getenv("OMP_NUM_THREADS", "4"),
-        TOKENIZERS_PARALLELISM="false",
     )
     # The compose service names only resolve inside Docker; local Python uses loopback.
     for variable, service in (
@@ -172,7 +197,7 @@ async def _warmup_mcp(process: subprocess.Popen[bytes], port: int) -> None:
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            raise RuntimeError("MCP exited during startup; see real-mcp.error.log")
+            raise RuntimeError("MCP exited during startup; see the MCP error log")
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=1):
                 break
@@ -185,7 +210,7 @@ async def _warmup_mcp(process: subprocess.Popen[bytes], port: int) -> None:
     )
     result = await transport.call_tool("search_meals", {"query": "午餐", "limit": 1})
     if not isinstance(result, dict) or not result.get("hits"):
-        raise RuntimeError("BGE warmup did not return meal candidates")
+        raise RuntimeError("MCP warmup did not return meal candidates")
 
 
 def main() -> None:
@@ -194,7 +219,7 @@ def main() -> None:
     parser.add_argument("--web-port", type=_port, default=5173)
     parser.add_argument("--foreground", action="store_true", default=os.name != "nt")
     parser.add_argument("--background", action="store_false", dest="foreground")
-    parser.add_argument("--mode", choices=["demo", "real"], default="demo")
+    parser.add_argument("--mode", choices=["demo", "persistent", "real"], default="demo")
     parser.add_argument("--mcp-port", type=_port, default=8010)
     parser.add_argument(
         "--embedding-model",
@@ -243,18 +268,20 @@ def main() -> None:
         for key in ("EMBEDDING_PROVIDER", "RERANK_PROVIDER"):
             os.environ.pop(key, None)
         _configure_real(args)
+    if args.mode != "demo":
+        _configure_infrastructure(args)
 
     processes: dict[str, subprocess.Popen[bytes]] = {}
     leave_running = False
-    prefix = f"{args.mode}-{args.api_port}-" if args.mode == "real" or args.api_port != 8000 else ""
+    prefix = f"{args.mode}-{args.api_port}-" if args.mode != "demo" or args.api_port != 8000 else ""
     try:
-        if args.mode == "real":
+        if args.mode != "demo":
             processes["mcp"] = _start(
                 [str(PYTHON), "-m", "apps.nutrition_mcp"],
                 stdout_name=f"{prefix}mcp.out.log",
                 stderr_name=f"{prefix}mcp.error.log",
             )
-            print("Warming up BGE embedding and reranker...", flush=True)
+            print("Warming up nutrition MCP...", flush=True)
             asyncio.run(_warmup_mcp(processes["mcp"], args.mcp_port))
         processes["api"] = _start(
             [
@@ -293,8 +320,28 @@ def main() -> None:
         health_payload = json.loads(
             _wait(f"{api_url}/health/ready", processes["api"]).decode("utf-8")
         )
+        if args.mode != "demo":
+            processes["worker"] = _start(
+                [str(PYTHON), "-m", "nutripilot.worker"],
+                stdout_name=f"{prefix}worker.out.log",
+                stderr_name=f"{prefix}worker.error.log",
+            )
+            (RUNTIME_DIR / f"{prefix}worker.pid").write_text(
+                str(processes["worker"].pid), encoding="utf-8"
+            )
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if processes["worker"].poll() is not None:
+                    raise RuntimeError("Chat worker exited during startup; see worker error log")
+                with urllib.request.urlopen(f"{api_url}/health/ready", timeout=2) as response:
+                    health_payload = json.loads(response.read())
+                if health_payload.get("chat_worker_ready"):
+                    break
+                time.sleep(0.5)
+            else:
+                raise RuntimeError("Chat worker did not become ready")
         expected_model = "openai" if args.mode == "real" else "fake"
-        expected_storage = "postgresql" if args.mode == "real" else "memory"
+        expected_storage = "memory" if args.mode == "demo" else "postgresql"
         if health_payload.get("model_provider") != expected_model or (
             health_payload.get("storage") != expected_storage
         ):
@@ -307,7 +354,7 @@ def main() -> None:
         print(f"  Mode:     {args.mode}", flush=True)
         print(f"  Logs:     {RUNTIME_DIR}", flush=True)
         if args.foreground:
-            print("Press Ctrl+C to stop both services.", flush=True)
+            print("Press Ctrl+C to stop application services.", flush=True)
             while True:
                 for name, process in processes.items():
                     if process.poll() is not None:

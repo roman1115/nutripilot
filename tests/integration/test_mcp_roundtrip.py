@@ -26,6 +26,7 @@ async def test_mcp_dynamic_discovery_and_tool_round_trip() -> None:
 
     assert set(registry.names()) == {
         "get_nutrition",
+        "get_recipe",
         "query_dietary_guidelines",
         "search_meals",
     }
@@ -54,11 +55,11 @@ async def test_mcp_filters_meal_role_before_truncating_candidates() -> None:
     service = NutritionMCPService.from_seed_data(DATA_DIR)
     adapter = MCPToolAdapter(InProcessMCPTransport(service))
     result = await adapter.call_tool(
-        "search_meals", {"query": "米粥", "meal_role": "complete_meal", "limit": 20}
+        "search_meals", {"query": "米粥", "meal_role": "staple", "limit": 20}
     )
     assert result["hits"]
-    assert all(hit["meal_role"] == "complete_meal" for hit in result["hits"])
-    assert result["total_candidates"] == 18
+    assert all(hit["meal_role"] == "staple" for hit in result["hits"])
+    assert all(hit["recipe_id"] >= 1000 for hit in result["hits"])
 
 
 @pytest.mark.integration
@@ -104,6 +105,7 @@ async def test_mcp_contract_registration_defers_discovery_until_first_call() -> 
     assert transport.discovery_calls == 0
     assert set(registry.names()) == {
         "get_nutrition",
+        "get_recipe",
         "query_dietary_guidelines",
         "search_meals",
     }
@@ -111,7 +113,7 @@ async def test_mcp_contract_registration_defers_discovery_until_first_call() -> 
         ToolCall(
             call_id="lazy-mcp-call",
             name="get_nutrition",
-            arguments={"meal_id": 1},
+            arguments={"meal_id": 1004},
         ),
         ToolContext(),
     )

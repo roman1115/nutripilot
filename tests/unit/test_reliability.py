@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from anyio import create_task_group
 from apps.nutrition_mcp.service import NutritionMCPService
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -77,7 +78,8 @@ def test_explanation_cannot_turn_meal_allergens_into_personal_facts() -> None:
     assert "移除你的鱼类过敏" not in text
     assert "用户画像记录的过敏原：花生" in text
     assert "餐食记录标注的过敏原：鱼" in text
-    assert "346" in grounded.recommendations[0].reason
+    assert grounded.recommendations[0].calories_kcal == 346
+    assert "346" not in grounded.recommendations[0].reason
 
 
 def test_unknown_recommendation_does_not_survive_grounding() -> None:
@@ -103,18 +105,18 @@ def test_unknown_recommendation_does_not_survive_grounding() -> None:
 @pytest.mark.asyncio
 async def test_nutrition_alias_resolves_to_the_authoritative_record() -> None:
     service = NutritionMCPService.from_seed_data(DATA_DIR)
-    result = await service.get_nutrition(GetNutritionMCPArgs(name="鸡胸肉藜麦能量碗"))
-    assert result.meal_id == 2
-    assert result.nutrition.calories_kcal == 516
+    result = await service.get_nutrition(GetNutritionMCPArgs(name="糖 拌 西 红 柿"))
+    assert result.meal_id == 1004
+    assert result.nutrition.calories_kcal == 113.4
 
 
 @pytest.mark.asyncio
 async def test_partial_and_fuzzy_names_require_confirmation() -> None:
     service = NutritionMCPService.from_seed_data(DATA_DIR)
     with pytest.raises(ToolRuntimeError) as caught:
-        await service.get_nutrition(GetNutritionMCPArgs(name="鸡胸"))
+        await service.get_nutrition(GetNutritionMCPArgs(name="糖拌"))
     assert caught.value.code == "MEAL_NAME_AMBIGUOUS"
-    assert caught.value.details["candidates"][0]["meal_id"] == 2
+    assert caught.value.details["candidates"][0]["meal_id"] == 1004
 
 
 @pytest.mark.asyncio
@@ -136,17 +138,63 @@ async def test_name_clarification_continues_with_selected_candidate() -> None:
     container = build_container(settings=_settings())
     first = await container.chat_service.chat(
         user_id=1,
-        message="鸡胸有多少热量？",
+        message="糖拌有多少热量？",
         thread_id="alias-clarify",
     )
     assert first["phase"] == "CLARIFY"
     second = await container.chat_service.chat(
         user_id=1,
-        message="鸡胸藜麦能量碗",
+        message="糖拌西红柿",
         thread_id="alias-clarify",
     )
     assert second["phase"] == "COMPLETED"
-    assert "516" in second["final_response"]["message"]
+    assert "113.4" in second["final_response"]["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("food_name", "phase"),
+    [("糖拌西红柿", "COMPLETED"), ("糖拌", "CLARIFY"), ("月球营养超级碗", "CLARIFY")],
+)
+async def test_named_nutrition_query_cannot_use_another_candidate_id(
+    food_name: str, phase: str
+) -> None:
+    gateway = FakeModelGateway()
+    container = build_container(gateway=gateway, settings=_settings())
+    await container.chat_service.chat(
+        user_id=1, message="推荐一道晚餐", thread_id="named-nutrition"
+    )
+    gateway.queue_response(
+        "intent",
+        {
+            "intent": "NUTRITION_QUERY",
+            "confidence": 1,
+            "extracted_slots": {"food_name": food_name},
+        },
+    )
+    gateway.queue_response(
+        "planner",
+        {
+            "complete": False,
+            "plan_summary": "查询营养",
+            "tool_calls": [
+                {
+                    "call_id": "wrong-candidate",
+                    "name": "get_nutrition",
+                    "arguments": {"meal_id": 1011, "name": "清炒花菜"},
+                }
+            ],
+        },
+    )
+    result = await container.chat_service.chat(
+        user_id=1, message=f"{food_name}有多少热量？", thread_id="named-nutrition"
+    )
+    assert result["phase"] == phase
+    if phase == "COMPLETED":
+        assert result["tool_results"][0]["data"]["meal_id"] == 1004
+        assert "113.4" in result["final_response"]["message"]
+    else:
+        assert result["tool_results"][0]["status"] == "error"
 
 
 @pytest.mark.asyncio
@@ -361,6 +409,67 @@ async def test_stop_cancels_model_and_concurrent_turn_is_rejected() -> None:
         await task
     assert gateway.cancelled.is_set()
     assert not container.chat_service.cancel(thread_id="cancel", user_id=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["chat", "stream", "confirm"])
+async def test_disconnect_persists_cancelled_turn_and_allows_continuation(
+    monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    gateway = FakeModelGateway()
+    container = build_container(gateway=gateway, settings=_settings())
+    thread_id = f"disconnect-{operation}"
+    if operation == "confirm":
+        pending = await container.chat_service.chat(
+            user_id=1, message="制定明天的晚餐餐单", thread_id=thread_id
+        )
+        assert pending["requires_confirmation"]
+    slow = SlowGateway()
+    generate = gateway.generate_structured
+    monkeypatch.setattr(gateway, "generate_structured", slow.generate_structured)
+    update = container.graph.compiled.aupdate_state
+
+    async def yielding_update(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(0)
+        return await update(*args, **kwargs)
+
+    monkeypatch.setattr(container.graph.compiled, "aupdate_state", yielding_update)
+
+    async def run() -> None:
+        if operation == "stream":
+            async for _ in container.chat_service.stream(
+                user_id=1, message="推荐晚餐", thread_id=thread_id
+            ):
+                pass
+        elif operation == "confirm":
+            await container.chat_service.confirm(
+                user_id=1, thread_id=thread_id, approved=True
+            )
+        else:
+            await container.chat_service.chat(
+                user_id=1, message="推荐晚餐", thread_id=thread_id
+            )
+
+    async with create_task_group() as group:
+        group.start_soon(run)
+        await asyncio.wait_for(slow.started.wait(), timeout=2)
+        group.cancel_scope.cancel()
+
+    state = await container.chat_service.get_thread(thread_id=thread_id, user_id=1)
+    assert state["phase"] == "FAILED"
+    assert state["error"]["code"] == "CANCELLED"
+    assert not state["requires_confirmation"]
+    messages = await container.chat_service.messages(thread_id=thread_id, user_id=1)
+    assert messages[-1].role == "assistant"
+    assert "已停止本轮请求" in messages[-1].content
+    assert not container.chat_service.cancel(thread_id=thread_id, user_id=1)
+    if operation == "confirm":
+        assert len(await container.data_store.list_plans(1)) == 1
+    monkeypatch.setattr(gateway, "generate_structured", generate)
+    result = await container.chat_service.chat(
+        user_id=1, message="糖拌西红柿有多少热量", thread_id=thread_id
+    )
+    assert result["phase"] == "COMPLETED"
 
 
 @pytest.mark.asyncio

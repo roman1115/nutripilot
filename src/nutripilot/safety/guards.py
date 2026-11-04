@@ -114,7 +114,11 @@ class OutputGuard:
         if safety_items_removed:
             flags.append("DIETARY_CONSTRAINT_VIOLATION_REMOVED")
         message = response.message
-        if any(term in message for term in self._MEDICAL_CLAIMS):
+        prose = "\n".join([
+            message, *(item.reason for item in response.recommendations),
+            *response.suggested_actions,
+        ])
+        if any(term in prose for term in self._MEDICAL_CLAIMS):
             flags.append("MEDICAL_CLAIM_BLOCKED")
             return (
                 FinalResponse(
@@ -134,11 +138,16 @@ class OutputGuard:
             )
         if not safety_items_removed and response.recommendations and not valid:
             message = "生成结果缺少可验证的餐食依据，请重新检索后再试。"
+        elif not safety_items_removed and len(supported) != len(response.recommendations):
+            names = "、".join(item.name for item in valid)
+            message = f"已移除缺少可靠依据的菜品，可以考虑{names}。"
         valid_ids = {item.meal_id for item in valid}
         removed_ids = {
             item.meal_id for item in response.recommendations if item.meal_id not in valid_ids
         }
-        removed_sources = {f"meal:{meal_id}" for meal_id in removed_ids}
+        removed_sources = {
+            f"{prefix}:{meal_id}" for meal_id in removed_ids for prefix in ("meal", "recipe")
+        }
         citations = [
             citation for citation in response.citations if citation.source_id not in removed_sources
         ]

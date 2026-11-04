@@ -24,6 +24,8 @@ def route_after_intent(state: AgentState) -> str:
         return "scope"
     if state.get("missing_slots"):
         return "clarify"
+    if state.get("intent") == Intent.CONVERSATION.value:
+        return "recommendation"
     return "planner"
 
 
@@ -51,6 +53,18 @@ def route_after_tool(
         error = results[-1].get("error")
         if isinstance(error, dict) and not error.get("retryable", False):
             return "tool_failure"
+        if (
+            (
+                results[-1].get("tool_name") in {"create_meal_plan", "get_recipe"}
+                or (
+                    results[-1].get("tool_name") == "search_meals"
+                    and state.get("intent")
+                    in {Intent.MEAL_RECOMMENDATION.value, Intent.MEAL_ADJUSTMENT.value}
+                )
+            )
+            and results[-1].get("status") == "success"
+        ):
+            return "recommendation"
     if state.get("step_count", 0) >= max_tool_steps:
         return "budget"
     return "planner"

@@ -35,6 +35,7 @@ async def test_external_mcp_service_exposes_contracts_before_connecting(
     assert isinstance(service, ExternalNutritionMCPService)
     assert {tool.name for tool in await service.list_tools()} == {
         "get_nutrition",
+        "get_recipe",
         "query_dietary_guidelines",
         "search_meals",
     }

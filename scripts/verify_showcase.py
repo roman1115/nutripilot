@@ -1,14 +1,74 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
+import time
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 import httpx
+from pydantic import BaseModel
+
+from nutripilot.config import Settings
+from nutripilot.model_gateway import ModelGatewayError, OpenAICompatibleModelGateway
+from nutripilot.model_gateway.budget import execution_budget
+
+
+class ModelProbeOutput(BaseModel):
+    ok: Literal[True]
+
+
+async def probe_model(settings: Settings) -> dict[str, Any]:
+    """Check the configured primary model once, without retry or fallback."""
+
+    gateway = OpenAICompatibleModelGateway(
+        api_key=settings.model_api_key or "",
+        base_url=settings.model_base_url,
+        model=settings.model_name,
+        timeout_seconds=settings.model_timeout_seconds,
+        max_retries=0,
+    )
+    started = time.monotonic()
+    evidence: dict[str, Any] = {
+        "checked_at": datetime.now(UTC).isoformat(),
+        "model": settings.model_name,
+    }
+    try:
+        with execution_budget(seconds=settings.model_timeout_seconds, tokens=512):
+            result = await gateway.generate_structured(
+                worker="availability",
+                system_prompt='Return {"ok":true}.',
+                payload={},
+                response_model=ModelProbeOutput,
+                prompt_version="availability-v1",
+            )
+        if result.usage.input_tokens <= 0 or result.usage.output_tokens <= 0:
+            error = ModelGatewayError("MODEL_USAGE_MISSING", "模型未返回实际 Token 用量。")
+            error.usage = result.usage
+            raise error
+        evidence.update(
+            status="passed",
+            usage=result.usage.model_dump(exclude={"estimated_cost"}),
+            attempts=result.attempts,
+        )
+    except ModelGatewayError as exc:
+        evidence.update(
+            status="blocked",
+            error_code=exc.code,
+            message=str(exc),
+            usage=(
+                exc.usage.model_dump(exclude={"estimated_cost"}) if exc.usage.total_tokens else None
+            ),
+        )
+    finally:
+        await gateway.client.close()
+    evidence["latency_ms"] = round((time.monotonic() - started) * 1000, 2)
+    return evidence
 
 
 def main() -> int:
@@ -16,9 +76,20 @@ def main() -> int:
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--user-id", type=int, default=910021)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--probe-only", action="store_true", help="Check model access before startup."
+    )
     args = parser.parse_args()
     if args.user_id <= 0:
         parser.error("--user-id must be positive")
+    if args.probe_only:
+        result = asyncio.run(probe_model(Settings(model_provider="openai")))
+        output = args.output or Path(".runtime/model-probe.json")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        serialized = json.dumps(result, ensure_ascii=False, indent=2)
+        output.write_text(serialized + "\n", encoding="utf-8")
+        print(serialized)
+        return 0 if result["status"] == "passed" else 1
     token = os.getenv("NUTRIPILOT_ACCESS_TOKEN")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     with httpx.Client(base_url=args.base_url, timeout=300, headers=headers) as client:

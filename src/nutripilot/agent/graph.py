@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from functools import partial
 from typing import Any, cast
 
+from anyio import CancelScope
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
@@ -30,8 +31,10 @@ from nutripilot.agent.routing import (
     route_entry,
 )
 from nutripilot.agent.state import AgentState, state_identity
-from nutripilot.domain.enums import Phase
+from nutripilot.domain.enums import Intent, Phase
+from nutripilot.domain.execution import current_execution
 from nutripilot.domain.models import FinalResponse
+from nutripilot.infrastructure.checkpointer import FencedCheckpointer
 from nutripilot.model_gateway import ModelGateway
 from nutripilot.model_gateway.budget import (
     BudgetedModelGateway,
@@ -68,13 +71,49 @@ class AgentGraph:
                 code = exc.code if isinstance(exc, ExecutionLimitExceeded) else "DEADLINE_EXCEEDED"
                 return await self._terminate(state, config, code)
             except asyncio.CancelledError:
-                await self._terminate(state, config, "CANCELLED")
+                with CancelScope(shield=True):
+                    await self._terminate(state, config, "CANCELLED")
                 raise
 
     async def aget_state(self, config: dict[str, Any]) -> AgentState | None:
         snapshot = await self.compiled.aget_state(config)
         values = getattr(snapshot, "values", None)
         return cast("AgentState", values) if values else None
+
+    async def astream_durable(
+        self,
+        state: AgentState,
+        config: dict[str, Any],
+        *,
+        seconds: float,
+        tokens: int,
+    ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
+        """Resume a checkpoint without creating another turn or treating shutdown as stop."""
+        snapshot = await self.compiled.aget_state(config)
+        previous = getattr(snapshot, "values", {}) or {}
+        same_run = previous.get("run_id") == state["run_id"]
+        if same_run and not snapshot.next:
+            return
+        graph_input = None if same_run else state
+        with execution_budget(seconds=seconds, tokens=tokens):
+            try:
+                async with asyncio.timeout(seconds):
+                    async for chunk in self.compiled.astream(
+                        graph_input, config=config, stream_mode="updates", durability="sync"
+                    ):
+                        if isinstance(chunk, dict):
+                            for node, update in chunk.items():
+                                if isinstance(node, str) and isinstance(update, dict):
+                                    yield node, update
+            except (TimeoutError, ExecutionLimitExceeded) as exc:
+                code = exc.code if isinstance(exc, ExecutionLimitExceeded) else "DEADLINE_EXCEEDED"
+                await self._terminate(state, config, code)
+            except asyncio.CancelledError:
+                execution = current_execution.get()
+                if execution is None or not execution.suspend:
+                    with CancelScope(shield=True):
+                        await self._terminate(state, config, "CANCELLED")
+                raise
 
     async def astream_updates(
         self,
@@ -97,7 +136,8 @@ class AgentGraph:
                 terminated = await self._terminate(state, config, code)
                 yield "budget", cast("dict[str, Any]", terminated)
             except asyncio.CancelledError:
-                await self._terminate(state, config, "CANCELLED")
+                with CancelScope(shield=True):
+                    await self._terminate(state, config, "CANCELLED")
                 raise
 
     def _record_termination(self, state: AgentState, code: str) -> None:
@@ -122,6 +162,10 @@ class AgentGraph:
                 else "本次请求达到总时限，已停止继续调用。"
                 if code == "DEADLINE_EXCEEDED"
                 else "本次请求达到 Token 预算，已停止继续调用。"
+                if code == "TOKEN_BUDGET_EXCEEDED"
+                else "本次任务恢复次数已达上限，请重试。"
+                if code == "RECOVERY_LIMIT_EXCEEDED"
+                else "本次任务执行失败，请重试；已完成的数据写入仍保留。"
             ),
             suggested_actions=["缩小需求范围后重试"],
         )
@@ -133,6 +177,8 @@ class AgentGraph:
             "error": {"code": code, "retryable": False},
             "final_response": response.model_dump(mode="json"),
         }
+        if state.get("run_id"):
+            update["run_id"] = state["run_id"]
         await self.compiled.aupdate_state(config, update, as_node="budget")
         final = await self.aget_state(config)
         assert final is not None
@@ -187,7 +233,8 @@ def create_agent_graph(
     graph.add_conditional_edges(
         "intent",
         route_after_intent,
-        {"scope": "scope", "clarify": "clarify", "planner": "planner"},
+        {"scope": "scope", "clarify": "clarify", "planner": "planner",
+         "recommendation": "recommendation"},
     )
     graph.add_conditional_edges(
         "planner",
@@ -205,6 +252,7 @@ def create_agent_graph(
         {
             "confirmation": "confirmation",
             "planner": "planner",
+            "recommendation": "recommendation",
             "budget": "budget",
             "tool_failure": "tool_failure",
         },
@@ -223,7 +271,7 @@ def create_agent_graph(
     graph.add_edge("tool_failure", END)
 
     return AgentGraph(
-        graph.compile(checkpointer=checkpointer or InMemorySaver()),
+        graph.compile(checkpointer=FencedCheckpointer(checkpointer or InMemorySaver())),
         recorder,
         deadline_seconds,
         token_budget,
@@ -240,9 +288,14 @@ async def tool_failure(state: AgentState) -> dict[str, Any]:
         names = [item["name"] for item in candidates if isinstance(item, dict) and "name" in item]
         message = f"请确认你要查询的是哪一道餐食：{'、'.join(names)}。"
     elif code == "MEAL_NOT_FOUND":
-        message = "没有找到该餐食的可靠营养记录，请提供完整菜名后再试。"
-    elif str(code).startswith("PLAN_NUTRITION_"):
-        message = str(error.get("message") or "当前餐食无法满足每日营养目标，已阻止写入。")
+        label = "做法" if state.get("intent") == Intent.RECIPE_QUERY.value else "营养"
+        message = f"没有找到该菜品的可靠{label}记录，请提供完整菜名后再试。"
+    elif code == "RECIPE_NOT_FOUND":
+        message = "这道菜尚未收录有来源的做法，暂时无法提供可靠步骤。"
+    elif code == "MEAL_RETIRED":
+        message = "餐单中有菜品已退役，本次没有保存新餐单，请重新生成菜品安排。"
+    elif code == "PLAN_CANDIDATES_INSUFFICIENT":
+        message = str(error.get("message") or "符合当前条件的来源菜谱不足，无法生成餐单。")
     else:
         message = "本次工具调用未能完成，已停止重复尝试，请调整需求后重试。"
     response = FinalResponse(

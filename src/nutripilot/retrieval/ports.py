@@ -6,6 +6,8 @@ from nutripilot.retrieval.models import DietaryGuideline, Meal, ScoredId
 
 
 class MealRepository(Protocol):
+    """List active meals; ID lookups also retain archived records for history."""
+
     async def list_meals(self) -> list[Meal]: ...
 
     async def get_meal(self, meal_id: int) -> Meal | None: ...
