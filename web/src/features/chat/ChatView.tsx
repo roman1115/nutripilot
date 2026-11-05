@@ -29,7 +29,7 @@ import {
 import { ErrorNotice } from "../../components/Common";
 import {
   ApiError, cancelRun, deleteConversation, getChatSnapshot, getConversations, getThread,
-  getTrace, streamChat, subscribeRun, submitConfirmation,
+  getTrace, restoreConversation, streamChat, subscribeRun, submitConfirmation,
   normalizePlanItem,
 } from "../../lib/api";
 import {
@@ -241,6 +241,9 @@ function ChatSession({
   const [historyOpen, setHistoryOpen] = useState(() => window.matchMedia("(min-width: 1100px)").matches);
   const [activityOpen, setActivityOpen] = useState(false);
   const [historyQuery, setHistoryQuery] = useState("");
+  const [historyMode, setHistoryMode] = useState<"history" | "trash">("history");
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const historyRequestRef = useRef(0);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -440,11 +443,12 @@ function ChatSession({
 
   useEffect(() => {
     if (!active || !historyOpen || connection !== "online") return;
+    historyRequestRef.current += 1;
     let cancelled = false;
     setHistoryLoading(true);
     setHistoryError(null);
     const load = () => {
-      void getConversations(historyQuery.trim()).then((items) => {
+      void getConversations(historyQuery.trim(), 0, historyMode === "trash").then((items) => {
         if (cancelled) return;
         setConversations(items);
         setHistoryOffset(items.length);
@@ -457,22 +461,27 @@ function ChatSession({
     const polling = window.setInterval(load, 5000);
     return () => {
       cancelled = true;
+      historyRequestRef.current += 1;
       window.clearTimeout(timer);
       window.clearInterval(polling);
     };
-  }, [active, connection, historyOpen, historyQuery, isSending]);
+  }, [active, connection, historyOpen, historyQuery, historyMode, historyVersion, isSending]);
 
   const loadMoreHistory = async () => {
+    const version = historyRequestRef.current;
     setHistoryLoading(true);
     try {
-      const items = await getConversations(historyQuery.trim(), historyOffset);
+      const items = await getConversations(historyQuery.trim(), historyOffset, historyMode === "trash");
+      if (version !== historyRequestRef.current) return;
       setConversations((current) => [...current, ...items]);
       setHistoryOffset((current) => current + items.length);
       setHistoryMore(items.length === 30);
     } catch (caught) {
-      setHistoryError(caught instanceof Error ? caught.message : "历史会话读取失败");
+      if (version === historyRequestRef.current) {
+        setHistoryError(caught instanceof Error ? caught.message : "历史会话读取失败");
+      }
     } finally {
-      setHistoryLoading(false);
+      if (version === historyRequestRef.current) setHistoryLoading(false);
     }
   };
 
@@ -815,15 +824,40 @@ function ChatSession({
 
   const deleteThread = async (item: ConversationSummary) => {
     if (deletingThreadId || ["queued", "running", "cancelling"].includes(item.runStatus || "")) return;
-    if (!window.confirm(`确定删除“${item.title}”吗？此操作无法撤销。`)) return;
     setDeletingThreadId(item.threadId);
     setHistoryError(null);
     try {
       await deleteConversation(item.threadId);
+      if (!mountedRef.current) return;
       setConversations((current) => current.filter((conversation) => conversation.threadId !== item.threadId));
+      setHistoryVersion((current) => current + 1);
       if (item.threadId === threadId) startNewThread();
     } catch (caught) {
       setHistoryError(caught instanceof Error ? caught.message : "删除会话失败");
+    } finally {
+      setDeletingThreadId(null);
+    }
+  };
+
+  const restoreThread = async (item: ConversationSummary) => {
+    if (deletingThreadId) return;
+    setDeletingThreadId(item.threadId);
+    setHistoryError(null);
+    try {
+      await restoreConversation(item.threadId);
+      if (!mountedRef.current) return;
+      setConversations([]);
+      setHistoryQuery("");
+      setHistoryMode("history");
+      setHistoryVersion((current) => current + 1);
+      if (item.threadId === threadId) {
+        restoredThreadRef.current = null;
+        setRestoreVersion((current) => current + 1);
+      } else {
+        selectThread(item.threadId);
+      }
+    } catch (caught) {
+      setHistoryError(caught instanceof Error ? caught.message : "恢复会话失败");
     } finally {
       setDeletingThreadId(null);
     }
@@ -844,39 +878,78 @@ function ChatSession({
                 <button className="icon-button" type="button" title="关闭历史会话" aria-label="关闭历史会话"
                   onClick={() => setHistoryOpen(false)}><X size={18} /></button>
               </div>
+              <div className="history-tabs" role="tablist" aria-label="会话分类"
+                onKeyDown={(event) => {
+                  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                  event.preventDefault();
+                  const mode = event.key === "Home" ? "history" : event.key === "End" ? "trash"
+                    : historyMode === "history" ? "trash" : "history";
+                  const button = event.currentTarget.querySelector<HTMLButtonElement>(`#history-tab-${mode}`);
+                  button?.click();
+                  button?.focus();
+                }}>
+                {(["history", "trash"] as const).map((mode) => (
+                  <button key={mode} type="button" role="tab" id={`history-tab-${mode}`}
+                    aria-selected={historyMode === mode} aria-controls="conversation-list"
+                    tabIndex={historyMode === mode ? 0 : -1}
+                    disabled={Boolean(deletingThreadId)}
+                    onClick={() => {
+                      setConversations([]);
+                      setHistoryMore(false);
+                      setHistoryQuery("");
+                      setHistoryMode(mode);
+                    }}>
+                    {mode === "history" ? <History size={14} /> : <Trash2 size={14} />}
+                    {mode === "history" ? "历史" : "回收站"}
+                  </button>
+                ))}
+              </div>
               <label className="history-search">
                 <Search size={15} aria-hidden="true" />
                 <input value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)}
                   type="search" maxLength={200} aria-label="搜索会话" placeholder="搜索对话…" />
               </label>
               {historyError ? <ErrorNotice message={historyError} /> : null}
-              <div className="conversation-items">
-              {conversations.map((item) => (
+              <div className="conversation-items" id="conversation-list" role="tabpanel"
+                aria-labelledby={`history-tab-${historyMode}`}>
+              {conversations.map((item) => {
+                const summary = <>
+                  <strong>{item.title}</strong>
+                  <span>{new Date(item.updatedAt).toLocaleDateString("zh-CN", { month: "long", day: "numeric" })} · {item.messageCount} 条消息
+                    {historyMode === "trash" ? ""
+                      : item.runStatus === "queued" ? " · 排队中"
+                      : item.runStatus === "running" ? " · 生成中"
+                      : item.runStatus === "cancelling" ? " · 正在停止"
+                      : item.runStatus === "awaiting_confirmation" ? " · 待确认" : ""}
+                  </span>
+                  {historyMode === "trash" && item.expiresAt ? <span>
+                    {new Date(item.expiresAt).toLocaleString("zh-CN", {
+                      month: "long", day: "numeric", hour: "2-digit", minute: "2-digit",
+                    })} 到期删除
+                  </span> : null}
+                </>;
+                return (
                 <div key={item.threadId} className={`conversation-row${item.threadId === threadId ? " is-current" : ""}`}>
-                  <button type="button" className="conversation-item"
+                  {historyMode === "trash" ? <div className="conversation-item">{summary}</div> :
+                    <button type="button" className="conversation-item"
                     aria-current={item.threadId === threadId ? "true" : undefined}
                     onClick={() => selectThread(item.threadId)}>
-                    <strong>{item.title}</strong>
-                    <span>{new Date(item.updatedAt).toLocaleDateString("zh-CN", { month: "long", day: "numeric" })} · {item.messageCount} 条消息
-                      {item.runStatus === "queued" ? " · 排队中"
-                        : item.runStatus === "running" ? " · 生成中"
-                        : item.runStatus === "cancelling" ? " · 正在停止"
-                        : item.runStatus === "awaiting_confirmation" ? " · 待确认" : ""}
-                    </span>
-                  </button>
-                  <button className="icon-button conversation-delete" type="button"
-                    title="删除会话" aria-label={`删除会话：${item.title}`}
+                    {summary}
+                  </button>}
+                  <button className={`icon-button ${historyMode === "trash" ? "conversation-restore" : "conversation-delete"}`} type="button"
+                    title={historyMode === "trash" ? "恢复会话" : "移入回收站"}
+                    aria-label={`${historyMode === "trash" ? "恢复会话" : "删除会话"}：${item.title}`}
                     disabled={Boolean(deletingThreadId) || ["queued", "running", "cancelling"].includes(item.runStatus || "")}
-                    onClick={() => void deleteThread(item)}>
+                    onClick={() => void (historyMode === "trash" ? restoreThread(item) : deleteThread(item))}>
                     {deletingThreadId === item.threadId
                       ? <LoaderCircle className="spin" size={16} />
-                      : <Trash2 size={16} />}
+                      : historyMode === "trash" ? <RotateCcw size={16} /> : <Trash2 size={16} />}
                   </button>
                 </div>
-              ))}
+              );})}
               {!conversations.length && !historyLoading ? <div className="history-empty">
                 <History size={24} strokeWidth={1.5} aria-hidden="true" />
-                <p>{historyQuery ? "没有找到相关对话" : "还没有历史会话"}</p>
+                <p>{historyQuery ? "没有找到相关对话" : historyMode === "trash" ? "回收站为空" : "还没有历史会话"}</p>
               </div> : null}
               {historyLoading ? <p role="status">正在读取历史会话…</p> : null}
               {historyMore ? <button type="button" className="button button-secondary"
@@ -1051,7 +1124,7 @@ function ChatSession({
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={handleComposerKey}
               rows={1}
-              placeholder="想吃什么，或是有什么饮食打算？"
+              placeholder="今天想吃什么？"
               aria-label="发送给 NutriPilot 的消息"
               disabled={connection === "offline" || restoring || confirmationBusy}
             />

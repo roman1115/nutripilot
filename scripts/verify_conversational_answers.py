@@ -52,12 +52,12 @@ def verify(api_url: str, output: Path) -> dict[str, Any]:
             checks = {
                 "completed": run["status"] == "completed" and state.get("phase") == "COMPLETED",
                 "intent": state.get("intent") == intent,
-                "reviewed": any(
-                    event["event_type"] == "response.reviewed"
-                    and event.get("payload", {}).get("supported") is True
+                "facts_checked": any(
+                    event["event_type"] == "response.facts_checked"
+                    and event.get("payload", {}).get("passed") is True
                     for event in events
                 ),
-                "reviewed_prose_published": any(
+                "agent_prose_published": any(
                     event["event_type"] == "safety.output_checked"
                     and event.get("payload", {}).get("approved_prose_applied") is True
                     for event in events
@@ -72,6 +72,12 @@ def verify(api_url: str, output: Path) -> dict[str, Any]:
                     for event in model_events
                 ),
             }
+            if intent != "CONVERSATION":
+                checks["boundary_checked"] = any(
+                    event["event_type"] == "response.boundary_checked"
+                    and event.get("payload", {}).get("passed") is True
+                    for event in events
+                )
             if intent in {"FOOD_QUESTION", "CONVERSATION", "RECIPE_QUERY"}:
                 checks["no_new_cards"] = not state["final_response"]["recommendations"]
             if intent == "CONVERSATION":
@@ -96,6 +102,30 @@ def verify(api_url: str, output: Path) -> dict[str, Any]:
             }, ensure_ascii=False), flush=True)
             return state
 
+        lunch_thread = f"natural-lunch-{uuid4().hex}"
+        lunch = send(lunch_thread, "推荐一份高蛋白的午餐", "MEAL_RECOMMENDATION")
+        lunch_cards = lunch["final_response"]["recommendations"]
+        if len(lunch_cards) != 1:
+            report["failures"].append({"message": "高蛋白午餐", "check": "one_choice"})
+        if lunch_cards:
+            original = lunch_cards[0]
+            replacement = send(
+                lunch_thread, f"{original['name']}脂肪太高了，换一个", "MEAL_ADJUSTMENT",
+            )
+            new_cards = replacement["final_response"]["recommendations"]
+            for check, passed in {
+                "one_replacement": len(new_cards) == 1,
+                "dish_not_excluded_ingredient": original["name"] not in replacement[
+                    "slots"
+                ].get("excluded_ingredients", []),
+                "lower_fat": bool(new_cards) and all(
+                    card["meal_id"] != original["meal_id"]
+                    and card["fat_g"] is not None and original["fat_g"] is not None
+                    and card["fat_g"] < original["fat_g"] for card in new_cards
+                ),
+            }.items():
+                if not passed:
+                    report["failures"].append({"message": "脂肪太高换一个", "check": check})
         ingredient_thread = f"natural-ingredient-{uuid4().hex}"
         send(ingredient_thread, "想吃鸡胸肉", "MEAL_RECOMMENDATION")
         send(ingredient_thread, "为什么推荐第一道？", "FOOD_QUESTION")
@@ -171,6 +201,7 @@ def verify_browser(
     report: dict[str, Any], web_url: str, output: Path, executable: str | None = None,
 ) -> None:
     from playwright.sync_api import expect, sync_playwright
+    from scripts.verify_web import navigate_view
 
     user_id = report["user_id"]
     last = report["turns"][-1]
@@ -195,8 +226,8 @@ def verify_browser(
             expect(response.locator(".message-content")).to_have_text(expected, timeout=20000)
             assert response.locator(".message-content p").count() > 0
             assert response.locator(".meal-result").count() == 0
-            page.locator(".sidebar").get_by_role("button", name="饮食偏好").click()
-            page.locator(".sidebar").get_by_role("button", name="对话", exact=True).click()
+            navigate_view(page, "饮食偏好")
+            navigate_view(page, "对话")
             expect(response.locator(".message-content")).to_have_text(expected)
             page.reload()
             page.wait_for_load_state("networkidle")
@@ -213,9 +244,7 @@ def verify_browser(
             for width, height in ((1440, 1000), (390, 844), (320, 740)):
                 page.set_viewport_size({"width": width, "height": height})
                 if width < 960:
-                    page.wait_for_function(
-                        "document.querySelector('.sidebar').getBoundingClientRect().right <= 0"
-                    )
+                    expect(page.get_by_role("navigation", name="主导航")).not_to_be_visible()
                 for name, message in (("comparison", comparison), ("recipe", response)):
                     message.scroll_into_view_if_needed()
                     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")

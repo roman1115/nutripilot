@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -12,10 +13,11 @@ from nutripilot.agent.state import AgentState
 from nutripilot.application.chat_service import (
     ChatService,
     InvalidConfirmationStateError,
-    ThreadBusyError,
 )
 from nutripilot.application.history import ConversationMessage
 from nutripilot.infrastructure.chat_tasks import TERMINAL, ChatTaskStore
+
+logger = logging.getLogger(__name__)
 
 
 class ChatRunService:
@@ -25,12 +27,15 @@ class ChatRunService:
         self.max_queued = max_queued
 
     async def delete_thread(self, user_id: int, thread_id: str) -> None:
-        bundle = await asyncio.to_thread(self.store.bundle, thread_id, user_id)
-        run = bundle["run"]
-        if run and run["status"] in ("queued", "running", "cancelling"):
-            raise ThreadBusyError("会话仍有任务正在执行，完成或停止后才能删除。")
-        await self.chat.graph.compiled.checkpointer.adelete_thread(thread_id)
         await asyncio.to_thread(self.store.delete_thread, user_id, thread_id)
+
+    async def purge_expired_threads(self) -> None:
+        for thread_id in await asyncio.to_thread(self.store.claim_expired_threads):
+            try:
+                await self.chat.graph.compiled.checkpointer.adelete_thread(thread_id)
+                await asyncio.to_thread(self.store.purge_thread, thread_id)
+            except Exception:
+                logger.exception("Expired conversation cleanup failed: %s", thread_id)
 
     async def submit(
         self,

@@ -11,6 +11,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -25,6 +26,7 @@ from nutripilot.domain.execution import ExecutionOwnershipLost
 
 ACTIVE = ("queued", "running", "cancelling")
 TERMINAL = ("completed", "awaiting_confirmation", "failed", "cancelled")
+TRASH_RETENTION_SECONDS = 7 * 24 * 60 * 60
 
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS chat_workers (
@@ -54,6 +56,11 @@ SCHEMA = (
         run_id TEXT NOT NULL REFERENCES chat_runs(id), sequence BIGINT NOT NULL,
         event_type TEXT NOT NULL, payload TEXT NOT NULL,
         PRIMARY KEY(run_id, sequence))""",
+    """CREATE TABLE IF NOT EXISTS chat_thread_trash (
+        thread_id TEXT PRIMARY KEY REFERENCES chat_threads(thread_id),
+        deleted_at DOUBLE PRECISION NOT NULL, purging BOOLEAN NOT NULL DEFAULT FALSE)""",
+    """CREATE INDEX IF NOT EXISTS chat_thread_trash_expiry ON chat_thread_trash(deleted_at)""",
+    """CREATE TABLE IF NOT EXISTS chat_history_imports (thread_id TEXT PRIMARY KEY)""",
 )
 
 
@@ -162,7 +169,9 @@ class ChatTaskStore:
             thread = (
                 connection.execute(
                     text(
-                        "SELECT * FROM chat_threads WHERE thread_id=:id AND user_id=:user" + suffix
+                        "SELECT * FROM chat_threads WHERE thread_id=:id AND user_id=:user "
+                        "AND NOT EXISTS (SELECT 1 FROM chat_thread_trash WHERE thread_id=:id)"
+                        + suffix
                     ),
                     {"id": thread_id, "user": user_id},
                 )
@@ -199,7 +208,10 @@ class ChatTaskStore:
     @staticmethod
     def _owner(connection: Connection, user_id: int, thread_id: str) -> None:
         owner = connection.execute(
-            text("SELECT user_id FROM chat_threads WHERE thread_id=:id"), {"id": thread_id}
+            text(
+                "SELECT user_id FROM chat_threads WHERE thread_id=:id "
+                "AND NOT EXISTS (SELECT 1 FROM chat_thread_trash WHERE thread_id=:id)"
+            ), {"id": thread_id}
         ).scalar()
         if owner is None or owner != user_id:
             raise ThreadNotFoundError(thread_id)
@@ -208,19 +220,24 @@ class ChatTaskStore:
         self, connection: Connection, user_id: int, thread_id: str, message: ConversationMessage
     ) -> None:
         now = message.created_at.timestamp()
-        connection.execute(
+        inserted_thread = connection.execute(
             text(
                 "INSERT INTO chat_threads(thread_id,user_id,title,updated_at) "
-                "VALUES (:id,:user,:title,:now) ON CONFLICT(thread_id) DO NOTHING"
+                "VALUES (:id,:user,:title,:now) ON CONFLICT(thread_id) DO NOTHING "
+                "RETURNING thread_id"
             ),
             {"id": thread_id, "user": user_id, "title": message.content[:80], "now": now},
-        )
-        self._owner(connection, user_id, thread_id)
+        ).scalar()
+        if inserted_thread and connection.execute(
+            text("SELECT 1 FROM chat_history_imports WHERE thread_id=:id"), {"id": thread_id}
+        ).first():
+            raise ThreadNotFoundError(thread_id)
         if self.postgres:
             connection.execute(
                 text("SELECT thread_id FROM chat_threads WHERE thread_id=:id FOR UPDATE"),
                 {"id": thread_id},
             )
+        self._owner(connection, user_id, thread_id)
         existing = connection.execute(
             text("SELECT payload FROM chat_messages WHERE id=:id"), {"id": message.id}
         ).scalar()
@@ -252,22 +269,26 @@ class ChatTaskStore:
             self._append(connection, user_id, thread_id, message)
 
     def list_threads(
-        self, user_id: int, query: str, limit: int, offset: int
+        self, user_id: int, query: str, limit: int, offset: int, *, trashed: bool = False
     ) -> list[ConversationSummary]:
-        from datetime import UTC, datetime
-
         escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        visibility = (
+            "t.deleted_at > :cutoff AND t.purging=FALSE"
+            if trashed else "t.thread_id IS NULL"
+        )
+        ordering = "t.deleted_at" if trashed else "c.updated_at"
         with self.transaction() as connection:
             rows = (
                 connection.execute(
                     text(
-                        "SELECT c.thread_id,c.title,c.updated_at,COUNT(m.id) AS count "
+                        "SELECT c.thread_id,c.title,c.updated_at,t.deleted_at,COUNT(m.id) AS count "
                         "FROM chat_threads c JOIN chat_messages m ON m.thread_id=c.thread_id "
-                        "WHERE c.user_id=:user AND (:q='' OR EXISTS "
+                        "LEFT JOIN chat_thread_trash t ON t.thread_id=c.thread_id "
+                        f"WHERE c.user_id=:user AND {visibility} AND (:q='' OR EXISTS "
                         "(SELECT 1 FROM chat_messages s WHERE s.thread_id=c.thread_id "
                         "AND LOWER(s.content) LIKE LOWER(:pattern) ESCAPE '\\')) "
-                        "GROUP BY c.thread_id,c.title,c.updated_at "
-                        "ORDER BY c.updated_at DESC,c.thread_id LIMIT :limit OFFSET :offset"
+                        "GROUP BY c.thread_id,c.title,c.updated_at,t.deleted_at "
+                        f"ORDER BY {ordering} DESC,c.thread_id LIMIT :limit OFFSET :offset"
                     ),
                     {
                         "user": user_id,
@@ -275,6 +296,7 @@ class ChatTaskStore:
                         "pattern": f"%{escaped}%",
                         "limit": limit,
                         "offset": offset,
+                        "cutoff": time.time() - TRASH_RETENTION_SECONDS,
                     },
                 )
                 .mappings()
@@ -296,6 +318,15 @@ class ChatTaskStore:
                         updated_at=datetime.fromtimestamp(row["updated_at"], UTC),
                         message_count=row["count"],
                         run_status=status,
+                        deleted_at=(
+                            datetime.fromtimestamp(row["deleted_at"], UTC)
+                            if row["deleted_at"] is not None else None
+                        ),
+                        expires_at=(
+                            datetime.fromtimestamp(
+                                row["deleted_at"] + TRASH_RETENTION_SECONDS, UTC
+                            ) if row["deleted_at"] is not None else None
+                        ),
                     )
                 )
             return items
@@ -340,6 +371,72 @@ class ChatTaskStore:
                 raise ThreadBusyError("会话仍有任务正在执行，完成或停止后才能删除。")
             connection.execute(
                 text(
+                    "INSERT INTO chat_thread_trash(thread_id,deleted_at) VALUES (:id,:now) "
+                    "ON CONFLICT(thread_id) DO NOTHING"
+                ),
+                {"id": thread_id, "now": time.time()},
+            )
+
+    def restore_thread(self, user_id: int, thread_id: str) -> None:
+        with self.transaction() as connection:
+            suffix = " FOR UPDATE OF c,t" if self.postgres else ""
+            row = connection.execute(
+                text(
+                    "SELECT t.deleted_at,t.purging FROM chat_threads c "
+                    "JOIN chat_thread_trash t ON t.thread_id=c.thread_id "
+                    "WHERE c.thread_id=:id AND c.user_id=:user" + suffix
+                ),
+                {"id": thread_id, "user": user_id},
+            ).mappings().first()
+            if (
+                row is None or row["purging"]
+                or row["deleted_at"] <= time.time() - TRASH_RETENTION_SECONDS
+            ):
+                raise ThreadNotFoundError(thread_id)
+            connection.execute(
+                text("DELETE FROM chat_thread_trash WHERE thread_id=:id"), {"id": thread_id}
+            )
+
+    def claim_expired_threads(self, limit: int = 100) -> list[str]:
+        with self.transaction() as connection:
+            suffix = " FOR UPDATE SKIP LOCKED" if self.postgres else ""
+            rows = connection.execute(
+                text(
+                    "SELECT thread_id FROM chat_thread_trash WHERE deleted_at<=:cutoff "
+                    "ORDER BY deleted_at,thread_id LIMIT :limit" + suffix
+                ),
+                {"cutoff": time.time() - TRASH_RETENTION_SECONDS, "limit": limit},
+            ).scalars().all()
+            for thread_id in rows:
+                connection.execute(
+                    text("UPDATE chat_thread_trash SET purging=TRUE WHERE thread_id=:id"),
+                    {"id": thread_id},
+                )
+            return list(rows)
+
+    def purge_thread(self, thread_id: str) -> None:
+        with self.transaction() as connection:
+            suffix = " FOR UPDATE" if self.postgres else ""
+            connection.execute(
+                text("SELECT thread_id FROM chat_threads WHERE thread_id=:id" + suffix),
+                {"id": thread_id},
+            ).first()
+            purging = connection.execute(
+                text("SELECT purging FROM chat_thread_trash WHERE thread_id=:id" + suffix),
+                {"id": thread_id},
+            ).scalar()
+            if not purging:
+                return
+            # Retire the opaque ID so an old URL/import cannot recreate a purged thread.
+            connection.execute(
+                text(
+                    "INSERT INTO chat_history_imports(thread_id) VALUES (:id) "
+                    "ON CONFLICT(thread_id) DO NOTHING"
+                ),
+                {"id": thread_id},
+            )
+            connection.execute(
+                text(
                     "DELETE FROM chat_events WHERE run_id IN "
                     "(SELECT id FROM chat_runs WHERE thread_id=:id)"
                 ),
@@ -348,6 +445,9 @@ class ChatTaskStore:
             connection.execute(text("DELETE FROM chat_runs WHERE thread_id=:id"), {"id": thread_id})
             connection.execute(
                 text("DELETE FROM chat_messages WHERE thread_id=:id"), {"id": thread_id}
+            )
+            connection.execute(
+                text("DELETE FROM chat_thread_trash WHERE thread_id=:id"), {"id": thread_id}
             )
             connection.execute(
                 text("DELETE FROM chat_threads WHERE thread_id=:id"), {"id": thread_id}
@@ -380,6 +480,7 @@ class ChatTaskStore:
                 if existing:
                     if existing["request_hash"] != request_hash or existing["queue"] != self.queue:
                         raise RequestConflictError("同一请求编号不能提交不同内容。")
+                    self._owner(connection, user_id, thread_id)
                     return self._public(dict(existing))
                 count = connection.execute(
                     text(
@@ -472,6 +573,7 @@ class ChatTaskStore:
                 return None
             if row["request_hash"] != request_hash or row["queue"] != self.queue:
                 raise RequestConflictError("同一请求编号不能提交不同内容。")
+            self._owner(connection, user_id, row["thread_id"])
             return self._public(dict(row))
 
     @staticmethod
@@ -502,6 +604,7 @@ class ChatTaskStore:
         )
         if row is None:
             raise ThreadNotFoundError(run_id)
+        self._owner(connection, user_id, row["thread_id"])
         return self._public(dict(row))
 
     def get(self, run_id: str, user_id: int) -> dict[str, Any]:
@@ -755,9 +858,28 @@ class ChatTaskStore:
                 "JOIN conversation_messages m ON m.thread_id=c.thread_id ORDER BY m.sequence"
             ).fetchall()
         with self.transaction() as connection:
+            imported = set(connection.execute(
+                text("SELECT thread_id FROM chat_history_imports")
+            ).scalars())
+            visible = set(connection.execute(
+                text(
+                    "SELECT thread_id FROM chat_threads c WHERE NOT EXISTS "
+                    "(SELECT 1 FROM chat_thread_trash t WHERE t.thread_id=c.thread_id)"
+                )
+            ).scalars())
             for user_id, thread_id, payload in rows:
+                if thread_id in imported and thread_id not in visible:
+                    continue
                 self._append(
                     connection, user_id, thread_id, ConversationMessage.model_validate_json(payload)
+                )
+            for thread_id in {row[1] for row in rows}:
+                connection.execute(
+                    text(
+                        "INSERT INTO chat_history_imports(thread_id) VALUES (:id) "
+                        "ON CONFLICT(thread_id) DO NOTHING"
+                    ),
+                    {"id": thread_id},
                 )
         counts["threads"] = len({row[1] for row in rows})
         counts["messages"] = len(rows)

@@ -1,17 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   CalendarDays,
   FlaskConical,
   Salad,
-  ChevronRight,
-  Menu,
+  ChevronDown,
+  LayoutGrid,
   MessageSquareText,
   RefreshCw,
   UserRound,
   Wifi,
   WifiOff,
-  X,
   LockKeyhole,
 } from "lucide-react";
 import { ChatView } from "./features/chat/ChatView";
@@ -54,7 +53,7 @@ function getStoredTraceIds(): string[] {
 
 export default function App() {
   const [view, setView] = useState<ViewKey>(getInitialView);
-  const [mobileOpen, setMobileOpen] = useState(false);
+  const navigationRef = useRef<HTMLDivElement>(null);
   const [connection, setConnection] = useState<ConnectionState>("checking");
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [traceIds, setTraceIds] = useState<string[]>(getStoredTraceIds);
@@ -123,103 +122,19 @@ export default function App() {
 
   const navigate = (next: ViewKey) => {
     setView(next);
-    setMobileOpen(false);
+    navigationRef.current?.hidePopover();
   };
 
   return (
     <div className="app-shell">
-      <aside className={`sidebar${mobileOpen ? " is-open" : ""}`} aria-label="主导航">
-        <div className="brand-row">
-          <div className="brand-mark" aria-hidden="true">
-            <Salad size={23} strokeWidth={1.7} />
-          </div>
-          <div>
-            <strong>NutriPilot</strong>
-            <span>好好吃饭，慢慢计划。</span>
-          </div>
-          <button
-            className="icon-button sidebar-close"
-            type="button"
-            onClick={() => setMobileOpen(false)}
-            aria-label="关闭导航"
-          >
-            <X size={19} />
-          </button>
-        </div>
-
-        <nav className="nav-list">
-          <p className="nav-label">我的日常</p>
-          {navigation.slice(0, 3).map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                className={`nav-item${view === item.key ? " is-active" : ""}`}
-                key={item.key}
-                type="button"
-                onClick={() => navigate(item.key)}
-                aria-current={view === item.key ? "page" : undefined}
-              >
-                <Icon size={18} aria-hidden="true" />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
-        </nav>
-        <nav className="nav-list nav-tools" aria-label="开发工具">
-          <p className="nav-label">开发工具</p>
-          {navigation.slice(3).map((item) => {
-            const Icon = item.icon;
-            return <button className={`nav-item${view === item.key ? " is-active" : ""}`}
-              key={item.key} type="button" onClick={() => navigate(item.key)}
-              aria-current={view === item.key ? "page" : undefined}>
-              <Icon size={18} aria-hidden="true" /><span>{item.label}</span>
-            </button>;
-          })}
-        </nav>
-
-        <div className="sidebar-footer">
-          <button className="personal-space" type="button" onClick={() => navigate("profile")}>
-            <span className="personal-avatar"><UserRound size={19} /></span>
-            <span><strong>我的饮食空间</strong><small>偏好与饮食目标</small></span>
-            <ChevronRight size={15} />
-          </button>
-          <div className="connection-card">
-            <div className={`connection-icon connection-${connection}`}>
-              {connection === "offline" ? <WifiOff size={17} /> : <Wifi size={17} />}
-            </div>
-            <div>
-              <strong>
-                {connection === "checking" ? "正在检查"
-                  : connection === "online" ? runtime?.status === "worker_unavailable" ? "等待任务执行器" : "服务已就绪"
-                  : "服务未连接"}
-              </strong>
-              <span>{runtime?.modelProvider === "fake" ? "演示模式" : "日常饮食助手"}</span>
-            </div>
-            <button className="icon-button" type="button" onClick={() => void refreshHealth()} aria-label="重新检查服务">
-              <RefreshCw size={15} className={connection === "checking" ? "spin" : ""} />
-            </button>
-          </div>
-          <details className="environment-note">
-            <summary>连接信息</summary>
-            <p>{API_BASE_URL}</p>
-            <p>{runtime ? `${runtime.modelName} · ${runtime.storage} · ${runtime.mcpTransport}` : "运行环境未识别"}</p>
-          </details>
-        </div>
-      </aside>
-
-      {mobileOpen ? <button className="sidebar-scrim" onClick={() => setMobileOpen(false)} aria-label="关闭导航" /> : null}
-
       <div className="workspace">
         <header className="topbar">
-          <button className="icon-button mobile-menu" type="button" onClick={() => setMobileOpen(true)} aria-label="打开导航">
-            <Menu size={20} />
+          <button className="app-brand" type="button" onClick={() => navigate("chat")}
+            aria-label="NutriPilot 对话首页">
+            <Salad size={24} strokeWidth={1.7} aria-hidden="true" />
+            <strong>NutriPilot</strong>
           </button>
-          <div className="topbar-breadcrumb">
-            <span className="mobile-brand">NutriPilot</span>
-            <span className="topbar-kicker">我的空间</span>
-            <ChevronRight size={13} aria-hidden="true" />
-            <strong>{viewTitles[view]}</strong>
-          </div>
+          {view !== "chat" ? <span className="topbar-view-title">{viewTitles[view]}</span> : null}
           <time className="topbar-date" dateTime={new Date().toLocaleDateString("en-CA")}>
             <CalendarDays size={15} aria-hidden="true" />
             {new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "long" }).format(new Date())}
@@ -233,6 +148,62 @@ export default function App() {
               ? runtime?.status === "worker_unavailable" ? "等待执行器"
                 : runtime?.modelProvider === "fake" ? "演示模式" : "已连接"
               : connection === "checking" ? "检查中" : "离线"}
+          </div>
+          <button className="navigation-trigger" type="button" popoverTarget="app-navigation"
+            title="功能导航" aria-label="功能导航" aria-controls="app-navigation">
+            <LayoutGrid size={18} aria-hidden="true" />
+            <span>功能</span>
+            <ChevronDown size={14} aria-hidden="true" />
+          </button>
+          <div id="app-navigation" className="navigation-popover" popover="auto" ref={navigationRef}>
+            <nav aria-label="主导航">
+              <div className="nav-list">
+                <p className="nav-label">我的日常</p>
+                {navigation.slice(0, 3).map((item) => {
+                  const Icon = item.icon;
+                  return <button className={`nav-item${view === item.key ? " is-active" : ""}`}
+                    key={item.key} type="button" onClick={() => navigate(item.key)}
+                    aria-current={view === item.key ? "page" : undefined}>
+                    <Icon size={18} aria-hidden="true" /><span>{item.label}</span>
+                  </button>;
+                })}
+              </div>
+              <div className="nav-list nav-tools">
+                <p className="nav-label">开发工具</p>
+                {navigation.slice(3).map((item) => {
+                  const Icon = item.icon;
+                  return <button className={`nav-item${view === item.key ? " is-active" : ""}`}
+                    key={item.key} type="button" onClick={() => navigate(item.key)}
+                    aria-current={view === item.key ? "page" : undefined}>
+                    <Icon size={18} aria-hidden="true" /><span>{item.label}</span>
+                  </button>;
+                })}
+              </div>
+            </nav>
+            <div className="navigation-footer">
+              <div className="connection-card">
+                <div className={`connection-icon connection-${connection}`}>
+                  {connection === "offline" ? <WifiOff size={17} /> : <Wifi size={17} />}
+                </div>
+                <div>
+                  <strong>
+                    {connection === "checking" ? "正在检查"
+                      : connection === "online" ? runtime?.status === "worker_unavailable" ? "等待任务执行器" : "服务已就绪"
+                      : "服务未连接"}
+                  </strong>
+                  <span>{runtime?.modelProvider === "fake" ? "演示模式" : "日常饮食助手"}</span>
+                </div>
+                <button className="icon-button" type="button" onClick={() => void refreshHealth()}
+                  title="重新检查服务" aria-label="重新检查服务">
+                  <RefreshCw size={15} className={connection === "checking" ? "spin" : ""} />
+                </button>
+              </div>
+              <details className="environment-note">
+                <summary>连接信息</summary>
+                <p>{API_BASE_URL}</p>
+                <p>{runtime ? `${runtime.modelName} · ${runtime.storage} · ${runtime.mcpTransport}` : "运行环境未识别"}</p>
+              </details>
+            </div>
           </div>
         </header>
         <main className={`main-content view-${view}`}>
@@ -281,23 +252,6 @@ export default function App() {
         </main>
       </div>
 
-      <nav className="mobile-bottom-nav" aria-label="移动端导航">
-        {navigation.map((item) => {
-          const Icon = item.icon;
-          return (
-            <button
-              className={view === item.key ? "is-active" : ""}
-              key={item.key}
-              type="button"
-              onClick={() => navigate(item.key)}
-              aria-label={item.label}
-            >
-              <Icon size={19} />
-              <span>{item.key === "profile" ? "偏好" : item.key === "plans" ? "餐单" : item.label}</span>
-            </button>
-          );
-        })}
-      </nav>
     </div>
   );
 }

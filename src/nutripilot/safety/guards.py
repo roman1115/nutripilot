@@ -10,6 +10,20 @@ from pydantic import BaseModel, Field
 from nutripilot.domain.enums import RiskLevel
 from nutripilot.domain.models import FinalResponse
 
+CHICKEN_SAFETY_REFERENCE = {
+    "source_id": "guideline:cdc-chicken-safety",
+    "title": "CDC · Chicken and Food Poisoning",
+    "uri": "https://www.cdc.gov/food-safety/foods/chicken.html",
+    "checked_at": "2026-11-04",
+    "applies_to": "鸡肉的家庭烹饪与剩菜保存，不是其他食材的统一标准。",
+    "guidance": (
+        "CDC建议用食品温度计确认鸡肉中心达到165°F（约74°C），"
+        "不能只凭颜色、插筷或计时保证安全。剩鸡肉在2小时内冷藏或冷冻；"
+        "环境温度超过90°F（约32°C）时缩短为1小时。"
+        "不把更低温度和任意时长当作等效安全方案。"
+    ),
+}
+
 _ALLERGEN_SPLIT_RE = re.compile(r"[、，,/]|(?:和|及|与)")
 _EXPLICIT_ALLERGY_RE = re.compile(
     r"(?:我|本人)?对(?:吃|食用)?(?P<items>[\u4e00-\u9fffa-z0-9、，,/和及与]{1,30}?)"

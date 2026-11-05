@@ -113,6 +113,8 @@ export interface ConversationSummary {
   updatedAt: string;
   messageCount: number;
   runStatus?: string;
+  deletedAt?: string;
+  expiresAt?: string;
 }
 
 export interface MealPlan {

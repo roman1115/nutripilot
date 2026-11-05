@@ -20,6 +20,7 @@ class AgentState(TypedDict, total=False):
     current_date: str
     intent: str | None
     intent_confidence: float | None
+    answer_task: dict[str, Any]
     slots: dict[str, Any]
     missing_slots: list[str]
     conversation_summary: str | None
@@ -72,6 +73,7 @@ def new_agent_state(
         current_date=(current_date or date.today()).isoformat(),
         intent=None,
         intent_confidence=None,
+        answer_task={},
         slots={},
         missing_slots=[],
         conversation_summary=None,

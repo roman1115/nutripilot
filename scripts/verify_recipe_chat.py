@@ -137,8 +137,7 @@ def main() -> None:
                 for width, height in ((1440, 1000), (390, 844), (320, 740)):
                     page.set_viewport_size({"width": width, "height": height})
                     page.wait_for_function(
-                        "window.innerWidth > 960 || "
-                        "document.querySelector('.sidebar').getBoundingClientRect().right <= 0"
+                        "document.querySelector('.workspace').getBoundingClientRect().left === 0"
                     )
                     page.locator(".message-assistant").last.scroll_into_view_if_needed()
                     assert page.evaluate(
@@ -189,7 +188,7 @@ def main() -> None:
             for width, height in ((390, 844), (320, 740)):
                 page.set_viewport_size({"width": width, "height": height})
                 page.wait_for_function(
-                    "document.querySelector('.sidebar').getBoundingClientRect().right <= 0"
+                    "document.querySelector('.workspace').getBoundingClientRect().left === 0"
                 )
                 page.locator(".message-assistant").last.scroll_into_view_if_needed()
                 assert page.evaluate(
@@ -227,7 +226,7 @@ def main() -> None:
             for width, height in ((390, 844), (320, 740)):
                 page.set_viewport_size({"width": width, "height": height})
                 page.wait_for_function(
-                    "document.querySelector('.sidebar').getBoundingClientRect().right <= 0"
+                    "document.querySelector('.workspace').getBoundingClientRect().left === 0"
                 )
                 page.locator(".message-assistant").last.scroll_into_view_if_needed()
                 assert page.evaluate(

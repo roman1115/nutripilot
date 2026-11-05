@@ -13,6 +13,7 @@ from nutripilot.agent.agents.base import (
     fallback_update,
     record_worker_event,
 )
+from nutripilot.agent.answers import answer_evidence
 from nutripilot.agent.contracts import PlannerOutput, PlanSpec
 from nutripilot.agent.planning import PlanBuilder, PlanBuildError, candidate_meals_from_results
 from nutripilot.agent.state import AgentState
@@ -53,7 +54,7 @@ _TOOLS_BY_INTENT: dict[str, set[str]] = {
 
 class PlannerAgent:
     name = "PlannerAgent"
-    prompt_version = "planner-v14"
+    prompt_version = "planner-v16"
     system_prompt = (
         "你是工具规划 Worker。根据结构化状态选择白名单工具；一次只生成必要调用，"
         "不得虚构工具，不得决定图路由或绕过写操作确认。对于推荐、调整或计划，"
@@ -71,7 +72,13 @@ class PlannerAgent:
         "slots中的数值限制为本轮最终条件，值为null表示已取消，不得从旧消息重新添加；"
         "有新数值时使用新值，不能继续沿用旧值。"
         "food_name 为点名对象，必须传给 search_meals，不得用其他菜代替。"
-        "用户明确根据天气选菜时必须查询天气；其他推荐天气可选。"
+        "用户明确根据天气选菜时必须查询天气；其他推荐不要为天气额外调用。"
+        "首次可以一起读取画像和反馈；已有所需资料就检索，不重复读取。"
+        "answer_task表达本轮目标。替换指定菜品时不要排除其原料或无关菜品。"
+        "lower_fat表示想比原菜脂肪更少，不是固定低脂标准；保留高蛋白等已有目标，"
+        "检索足够候选供回答Agent比较营养，不编造脂肪上限。"
+        "answer_task只供理解任务，不把meal_ids、nutrient_preference等任务字段作为工具参数；"
+        "调用参数严格使用available_tools的schema。"
         "FOOD_QUESTION先判断conversation_evidence能否支持本轮解释或比较，足够则complete=true。"
         "一般烹饪原理可直接解释，不强制查菜谱。具体配方细节缺失时用get_recipe，"
         "具体营养缺失时用get_nutrition，一般营养资料可query_dietary_guidelines。"
@@ -96,6 +103,14 @@ class PlannerAgent:
     async def run(self, state: AgentState) -> dict[str, Any]:
         started = time.monotonic()
         intent = str(state.get("intent") or "")
+        # A successful search already completes ordinary read-only recommendation planning.
+        if intent in {Intent.MEAL_RECOMMENDATION.value, Intent.MEAL_ADJUSTMENT.value} and any(
+            result.get("tool_name") == "search_meals" and result.get("status") == "success"
+            for result in state.get("tool_results", [])
+        ):
+            return self._update(state, PlannerOutput(
+                complete=True, plan_summary="候选已取得，由回答Agent结合本轮目标选择。",
+            ))
         allowed_tools = _TOOLS_BY_INTENT.get(intent, set())
         payload = {
             "intent": intent,
@@ -106,8 +121,14 @@ class PlannerAgent:
             "user_message": state["user_message"],
             "current_date": state["current_date"],
             "available_tools": self.registry.planner_schemas(allowed_tools),
-            "conversation_summary": state.get("conversation_summary"),
-            "conversation_evidence": state.get("conversation_evidence", []),
+            "answer_task": state.get("answer_task", {}),
+            "recent_messages": [
+                item for item in state.get("recent_messages", [])[-4:]
+                if item.get("role") == "user"
+            ],
+            "conversation_evidence": answer_evidence(
+                state.get("conversation_evidence", []), state, historical=True,
+            ),
             "discussed_meals": state.get("discussed_meals", []),
         }
         if (

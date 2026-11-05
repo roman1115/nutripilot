@@ -23,6 +23,8 @@ class ConversationSummary(BaseModel):
     updated_at: datetime
     message_count: int
     run_status: str | None = None
+    deleted_at: datetime | None = None
+    expires_at: datetime | None = None
 
 
 class ConversationStore(Protocol):

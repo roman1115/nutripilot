@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -26,6 +27,8 @@ class ExecutionBudget:
     token_limit: int
     input_tokens: int = 0
     output_tokens: int = 0
+    observed_input_ratio: float | None = None
+    completion_cap: int = 4096
 
     @property
     def remaining_tokens(self) -> int:
@@ -41,14 +44,32 @@ class ExecutionBudget:
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
 
+    def estimate_input(self, request: object) -> int:
+        base = max(1, len(json.dumps(
+            request, ensure_ascii=False, default=str, separators=(",", ":"),
+        ).encode()) // 2)
+        ratio = min(1.0, self.observed_input_ratio * 1.2) if (
+            self.observed_input_ratio is not None
+        ) else 1.0
+        return math.ceil(base * ratio)
+
+    def observe_input(self, request: object, actual_tokens: int) -> None:
+        if actual_tokens <= 0:
+            return
+        base = max(1, len(json.dumps(
+            request, ensure_ascii=False, default=str, separators=(",", ":"),
+        ).encode()) // 2)
+        ratio = actual_tokens / base
+        self.observed_input_ratio = max(self.observed_input_ratio or 0, ratio)
+
     def completion_limit(self, request: object) -> int:
         self.check()
-        # This is a conservative estimate, not a provider-specific tokenizer.
-        estimated_input = len(json.dumps(request, ensure_ascii=False, default=str).encode()) // 2
+        # Calibrate this request only from provider usage, with headroom; never raise the cap.
+        estimated_input = self.estimate_input(request)
         remaining = self.remaining_tokens - estimated_input
         if remaining < 128:
             raise ExecutionLimitExceeded("TOKEN_BUDGET_EXCEEDED")
-        return min(4096, remaining)
+        return min(self.completion_cap, remaining)
 
 
 _CURRENT: ContextVar[ExecutionBudget | None] = ContextVar("execution_budget", default=None)
@@ -56,6 +77,20 @@ _CURRENT: ContextVar[ExecutionBudget | None] = ContextVar("execution_budget", de
 
 def current_budget() -> ExecutionBudget | None:
     return _CURRENT.get()
+
+
+@contextmanager
+def model_allocation(*, output_tokens: int) -> Iterator[None]:
+    budget = current_budget()
+    if budget is None:
+        yield
+        return
+    previous = budget.completion_cap
+    budget.completion_cap = min(4096, max(128, output_tokens))
+    try:
+        yield
+    finally:
+        budget.completion_cap = previous
 
 
 @contextmanager

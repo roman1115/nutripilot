@@ -84,6 +84,7 @@ def _compact_meal(meal: dict[str, Any]) -> dict[str, Any]:
             "meal_role",
             "recipe_id",
             "ingredients",
+            "ingredient_records",
             "allergens",
             "tastes",
             "cuisines",

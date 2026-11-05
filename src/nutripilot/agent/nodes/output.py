@@ -31,12 +31,13 @@ class OutputGuardNode:
             response = ground_recommendation_facts(
                 response, state.get("tool_results", []), state.get("slots", {}),
                 user_message=state.get("user_message", ""), require_meal_evidence=True,
+                auto_select=False,
             )
             response.warnings = list(dict.fromkeys([
                 *response.warnings, *(state.get("plan_quality") or {}).get("warnings", []),
             ]))
         guarded, flags, forbidden_meal_ids = guard_answer_facts(response, state, self.guard)
-        # Prose is reusable only while its reviewed facts survive the final safety filter.
+        # Prose is reusable only while its checked facts survive the final safety filter.
         prose_applied = False
         if guarded.status != "blocked":
             approved = apply_approved_answer(guarded, state.get("approved_answer"))

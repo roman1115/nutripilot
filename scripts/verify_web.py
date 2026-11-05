@@ -11,16 +11,18 @@ from uuid import uuid4
 from playwright.sync_api import Page, Request, Route, expect, sync_playwright
 
 
+def navigate_view(page: Page, label: str) -> None:
+    page.get_by_role("button", name="功能导航", exact=True).click()
+    page.get_by_role("navigation", name="主导航", exact=True).get_by_role(
+        "button", name=label, exact=True,
+    ).click()
+
+
 def verify_chat_navigation(page: Page) -> list[str]:
     """Hold the stream open so navigation cannot pass by finishing too quickly."""
     streams: list[Route] = []
     runs: list[dict[str, str]] = []
     cancellations: list[Request] = []
-    navigation = page.locator(
-        ".mobile-bottom-nav"
-        if page.viewport_size and page.viewport_size["width"] < 1100
-        else ".sidebar"
-    )
     composer = page.get_by_role("textbox", name="发送给 NutriPilot 的消息")
 
     def hold_stream(route: Route) -> None:
@@ -63,7 +65,7 @@ def verify_chat_navigation(page: Page) -> list[str]:
     page.route("**/api/v1/runs/*/cancel", cancel_run)
     page.on("request", record_cancellation)
     try:
-        navigation.get_by_role("button", name="对话", exact=True).click()
+        navigate_view(page, "对话")
         page.get_by_role("button", name="新对话", exact=True).click()
         expect(composer).to_be_enabled()
         composer.fill("页面切换回归")
@@ -76,16 +78,16 @@ def verify_chat_navigation(page: Page) -> list[str]:
             ("traces", "执行记录"),
             ("evaluations", "质量评估"),
         ):
-            navigation.get_by_role("button", name=label, exact=True).click()
+            navigate_view(page, label)
             expect(page.locator(f".main-content.view-{view}")).to_be_visible()
             expect(page.locator(".chat-layout")).not_to_be_visible()
-        navigation.get_by_role("button", name="对话", exact=True).click()
+        navigate_view(page, "对话")
         expect(page.get_by_role("button", name="停止生成")).to_be_visible()
         expect(composer).to_have_value("保留未发送的草稿")
         expect(page.locator(".message-user")).to_have_count(1)
         assert len(streams) == 1
         assert not cancellations
-        navigation.get_by_role("button", name="饮食偏好", exact=True).click()
+        navigate_view(page, "饮食偏好")
         thread_id = runs[0]["thread_id"]
         completed = {
             "thread_id": thread_id,
@@ -102,7 +104,7 @@ def verify_chat_navigation(page: Page) -> list[str]:
         )
         expect(page.locator(".message-assistant")).to_contain_text("切页后仍然完成的回答")
         expect(page.locator(".chat-layout")).not_to_be_visible()
-        navigation.get_by_role("button", name="对话", exact=True).click()
+        navigate_view(page, "对话")
         expect(page.get_by_text("切页后仍然完成的回答", exact=True)).to_be_visible()
         expect(page.get_by_role("button", name="停止生成")).not_to_be_visible()
         expect(composer).to_have_value("保留未发送的草稿")
@@ -152,7 +154,9 @@ def main() -> None:
         try:
             page.goto(args.base_url)
             page.wait_for_load_state("networkidle")
+            page.get_by_role("button", name="功能导航", exact=True).click()
             expect(page.get_by_text("服务已就绪", exact=True)).to_be_visible()
+            page.keyboard.press("Escape")
             expect(page.locator("#chat-activity")).not_to_be_visible()
             expect(page.get_by_role("region", name="历史会话列表")).to_be_visible()
             checks.append("desktop history is visible and execution details start collapsed")
@@ -204,7 +208,7 @@ def main() -> None:
             page.get_by_role("button", name="查看执行记录", exact=True).first.click()
             expect(page.get_by_role("heading", name="调用链回放")).to_be_visible()
             checks.append("trace can be opened")
-            page.locator(".sidebar").get_by_role("button", name="对话", exact=True).click()
+            navigate_view(page, "对话")
             page.get_by_role("button", name="新对话", exact=True).click()
             page.get_by_role("textbox", name="发送给 NutriPilot 的消息").fill(
                 "糖拌西红柿有多少热量？"
@@ -282,7 +286,7 @@ def main() -> None:
             checks.append(
                 "plan preview shows whole recipe ranges without personal target judgments"
             )
-            page.locator(".sidebar").get_by_role("button", name="饮食计划", exact=True).click()
+            navigate_view(page, "饮食计划")
             expect(page.locator(".plan-meal-row")).to_have_count(3, timeout=10000)
             saved_names = [
                 name.replace("菜谱来源", "").strip()
@@ -309,7 +313,7 @@ def main() -> None:
                 )
             checks.append("saved plan ranges, sources and notices fit desktop and mobile layouts")
             page.set_viewport_size({"width": 1440, "height": 1000})
-            page.locator(".sidebar").get_by_role("button", name="对话", exact=True).click()
+            navigate_view(page, "对话")
             close_activity = page.get_by_role("button", name="关闭执行过程", exact=True)
             if close_activity.is_visible():
                 close_activity.click()
@@ -328,7 +332,7 @@ def main() -> None:
                 )
             checks.append("welcome images load and five responsive widths fit without overflow")
             page.set_viewport_size({"width": 390, "height": 844})
-            expect(page.locator(".sidebar")).not_to_be_in_viewport()
+            expect(page.get_by_role("navigation", name="主导航")).not_to_be_visible()
             expect(page.get_by_role("textbox", name="发送给 NutriPilot 的消息")).to_be_visible()
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
             page.screenshot(

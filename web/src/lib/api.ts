@@ -313,9 +313,11 @@ export async function getChatSnapshot(threadId: string): Promise<Record<string, 
   return apiRequest(`/api/v1/threads/${encodeURIComponent(threadId)}/snapshot`);
 }
 
-export async function getConversations(query: string, offset = 0): Promise<ConversationSummary[]> {
+export async function getConversations(
+  query: string, offset = 0, trashed = false,
+): Promise<ConversationSummary[]> {
   const value = await apiRequest<{ items: Array<Record<string, unknown>> }>(
-    `/api/v1/threads?q=${encodeURIComponent(query)}&limit=30&offset=${offset}`,
+    `/api/v1/threads${trashed ? "/trash" : ""}?q=${encodeURIComponent(query)}&limit=30&offset=${offset}`,
   );
   return value.items.map((item) => ({
     threadId: String(item.thread_id),
@@ -323,11 +325,17 @@ export async function getConversations(query: string, offset = 0): Promise<Conve
     title: String(item.title),
     updatedAt: String(item.updated_at),
     messageCount: Number(item.message_count),
+    deletedAt: firstString(item.deleted_at),
+    expiresAt: firstString(item.expires_at),
   }));
 }
 
 export async function deleteConversation(threadId: string): Promise<void> {
   await apiRequest(`/api/v1/threads/${encodeURIComponent(threadId)}`, { method: "DELETE" });
+}
+
+export async function restoreConversation(threadId: string): Promise<void> {
+  await apiRequest(`/api/v1/threads/${encodeURIComponent(threadId)}/restore`, { method: "POST" });
 }
 
 export async function getConversationMessages(threadId: string): Promise<Array<Record<string, unknown>>> {

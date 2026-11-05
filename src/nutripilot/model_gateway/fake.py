@@ -45,6 +45,10 @@ class FakeModelGateway:
             "intent": self._intent,
             "planner": self._planner,
             "recommendation": self._recommendation,
+            "answer_boundary": lambda payload: {
+                "facts_match": True, "objects_match": True, "portion_basis_preserved": True,
+                "cooking_conditions_preserved": True, "issues": [],
+            },
             "answer_review": self._answer_review,
             "evaluation": self._evaluation,
         }
@@ -98,11 +102,11 @@ class FakeModelGateway:
     def _answer_review(payload: dict[str, Any]) -> dict[str, Any]:
         # Fake checks exercise the contract only, not semantic correctness.
         return {
-            "supported": True, "issues": [],
+            "supported": True, "issues": [], "coherent": True,
             "checks": [
                 {
                     "unit_id": unit_id, "kind": "general_advice", "supported": True,
-                    "object_counts": [],
+                    "has_object_count": False, "object_counts": [],
                     "conditions_preserved": True, "conditions": [], "evidence": [],
                     "explanation": "Fake contract check; not a factual assessment.",
                 }
@@ -248,6 +252,16 @@ class FakeModelGateway:
             "confidence": 0.96 if intent is not Intent.OTHER else 0.65,
             "extracted_slots": slots,
             "missing_slots": missing,
+            "answer_task": {
+                "objective": message,
+                "context": "general" if intent is Intent.FOOD_QUESTION and (
+                    "柴" in message or "补救" in message
+                ) else "auto",
+                "recommendation_count": 1 if any(
+                    term in message for term in ("一份", "一道", "换一个")
+                ) else None,
+                "needs_nutrition": any(term in message for term in ("蛋白", "脂肪", "营养")),
+            },
             "notes": "deterministic fake classification",
         }
 
@@ -369,6 +383,8 @@ class FakeModelGateway:
 
     @staticmethod
     def _recommendation(payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("answer_to_revise"):
+            return {"response": payload["answer_to_revise"]}
         intent = payload.get("intent")
         if intent == Intent.CONVERSATION.value:
             return {"response": {"message": "不客气，有饮食或做菜的问题可以继续聊。"}}
@@ -402,6 +418,13 @@ class FakeModelGateway:
             list(payload.get("tool_results") or []), payload.get("slots") or {},
             user_message=str(payload.get("user_message", "")),
         )
+        count = (payload.get("answer_task") or {}).get("recommendation_count")
+        if count and response.recommendations:
+            response = ground_recommendation_facts(
+                response.model_copy(update={"recommendations": response.recommendations[:count]}),
+                list(payload.get("tool_results") or []), payload.get("slots") or {},
+                user_message=str(payload.get("user_message", "")),
+            )
         return {"response": response.model_dump(include={"status", "message", "recommendations"})}
 
     @staticmethod

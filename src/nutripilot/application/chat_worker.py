@@ -14,8 +14,8 @@ from sqlalchemy import text
 
 from nutripilot.agent.state import AgentState
 from nutripilot.api.schemas import ChatResponse
-from nutripilot.application.chat_runs import response_message
-from nutripilot.application.chat_service import ChatService
+from nutripilot.application.chat_runs import ChatRunService, response_message
+from nutripilot.application.chat_service import ChatService, ThreadNotFoundError
 from nutripilot.config import Settings
 from nutripilot.domain.execution import (
     ExecutionOwnershipLost,
@@ -43,6 +43,7 @@ class ChatWorker:
             await asyncio.to_thread(self.store.heartbeat)
             self.ready.set()
             heartbeat_at = time.monotonic()
+            cleanup_at = time.monotonic() - 60
             while not self.stopping.is_set():
                 if self.store.postgres:
                     await asyncio.to_thread(lock.execute, text("SELECT 1"))
@@ -50,12 +51,22 @@ class ChatWorker:
                 if time.monotonic() - heartbeat_at >= 1:
                     await asyncio.to_thread(self.store.heartbeat)
                     heartbeat_at = time.monotonic()
+                if time.monotonic() - cleanup_at >= 60:
+                    try:
+                        await ChatRunService(self.chat, self.store).purge_expired_threads()
+                    except Exception:
+                        logger.exception("Conversation trash cleanup failed; will retry")
+                    cleanup_at = time.monotonic()
                 for run_id, (task, execution, user_id) in list(self.active.items()):
                     if task.done():
                         task.result()
                         del self.active[run_id]
                         continue
-                    state = await asyncio.to_thread(self.store.get, run_id, user_id)
+                    try:
+                        state = await asyncio.to_thread(self.store.get, run_id, user_id)
+                    except ThreadNotFoundError:
+                        # A completed run can be trashed before its coroutine returns.
+                        continue
                     if (
                         state["status"] == "cancelling"
                         and not task.cancelling()

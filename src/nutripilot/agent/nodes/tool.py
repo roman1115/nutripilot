@@ -99,7 +99,15 @@ class ToolExecutionNode:
                 )
             call = _apply_profile_constraints(call, results, state.get("slots", {}))
             if call.name == "search_meals":
-                if (
+                targets = state.get("answer_task", {}).get("meal_ids", [])
+                if state.get("intent") == Intent.MEAL_ADJUSTMENT.value and targets:
+                    call = call.model_copy(update={"arguments": {
+                        **call.arguments,
+                        "excluded_meal_ids": sorted({
+                            *call.arguments.get("excluded_meal_ids", []), *targets,
+                        }),
+                    }})
+                elif (
                     state.get("intent") == Intent.MEAL_ADJUSTMENT.value
                     and any(term in state["user_message"] for term in (
                         "换一批", "换一个", "不想吃这个", "再来", "换几道",

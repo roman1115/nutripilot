@@ -76,21 +76,17 @@ class OpenAICompatibleModelGateway:
                 try:
                     budget = current_budget()
                     completion_options: dict[str, Any] = {}
+                    model_request = {
+                        "prompt": system_prompt, "payload": payload,
+                        "schema": response_model.model_json_schema(),
+                        "schema_feedback": schema_feedback,
+                    }
                     if budget:
-                        completion_options["max_tokens"] = budget.completion_limit(
-                            {
-                                "prompt": system_prompt,
-                                "payload": payload,
-                                "schema": response_model.model_json_schema(),
-                            }
-                        )
+                        completion_options["max_tokens"] = budget.completion_limit(model_request)
                     execution = current_execution.get()
                     reserved = 0
                     if budget and execution and execution.reserve:
-                        estimated = len(json.dumps({
-                            "prompt": system_prompt, "payload": payload,
-                            "schema": response_model.model_json_schema(),
-                        }, ensure_ascii=False, default=str).encode()) // 2
+                        estimated = budget.estimate_input(model_request)
                         reserved = min(
                             budget.remaining_tokens,
                             estimated + int(completion_options.get("max_tokens", 4096)),
@@ -118,6 +114,7 @@ class OpenAICompatibleModelGateway:
                                     },
                                     ensure_ascii=False,
                                     default=str,
+                                    separators=(",", ":"),
                                 ),
                             },
                         ],
@@ -132,6 +129,7 @@ class OpenAICompatibleModelGateway:
                     total_output_tokens += output_tokens
                     if budget:
                         budget.add_usage(input_tokens, output_tokens)
+                        budget.observe_input(model_request, input_tokens)
                     if reserved and usage is not None and execution and execution.settle:
                         await execution.settle(reserved, input_tokens + output_tokens)
                     content = completion.choices[0].message.content
@@ -141,7 +139,9 @@ class OpenAICompatibleModelGateway:
                             "The model returned no structured content.",
                             retryable=True,
                         )
-                    output = response_model.model_validate(json.loads(content))
+                    output = response_model.model_validate(
+                        json.loads(content), context={"payload": payload},
+                    )
                     return GatewayResult(
                         output=output,
                         model=model,
@@ -157,7 +157,10 @@ class OpenAICompatibleModelGateway:
                 except (json.JSONDecodeError, ValidationError) as exc:
                     schema_feedback = (
                         [
-                            {"field": list(error["loc"]), "type": error["type"]}
+                            {
+                                "field": list(error["loc"]), "type": error["type"],
+                                "message": error["msg"],
+                            }
                             for error in exc.errors()[:10]
                         ]
                         if isinstance(exc, ValidationError)

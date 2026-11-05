@@ -21,6 +21,7 @@ def ground_recommendation_facts(
     *,
     user_message: str = "",
     require_meal_evidence: bool = False,
+    auto_select: bool = True,
 ) -> FinalResponse:
     recipe = _latest_data(tool_results, "get_recipe")
     if recipe:
@@ -50,7 +51,7 @@ def ground_recommendation_facts(
             if meets_ingredient_requirements(meal, required, groups)
         }
     recommendations = [item for item in response.recommendations if item.meal_id in meals][:3]
-    if not recommendations:
+    if not recommendations and auto_select:
         recommendations = [
             MealRecommendation(meal_id=meal_id, name=meal["name"], reason="")
             for meal_id, meal in list(meals.items())[:3]
@@ -64,10 +65,11 @@ def ground_recommendation_facts(
                 for name in (meal.get("name"), *meal.get("aliases", []))
             }
         }
-        recommendations = [
-            MealRecommendation(meal_id=meal_id, name=meal["name"], reason="")
-            for meal_id, meal in meals.items()
-        ][:3]
+        recommendations = (
+            [MealRecommendation(meal_id=meal_id, name=meal["name"], reason="")
+             for meal_id, meal in meals.items()][:3]
+            if auto_select else [item for item in recommendations if item.meal_id in meals]
+        )
     grounded = []
     citations: list[Citation] = []
     for recommendation in recommendations:
@@ -90,7 +92,7 @@ def ground_recommendation_facts(
                     "reason": _recommendation_explanation(
                         meal, _latest_data(tool_results, "get_user_profile"),
                         slots or {}, user_message,
-                    ),
+                    ) if auto_select else "",
                 }
             )
         )
@@ -186,6 +188,10 @@ def ground_recommendation_facts(
         explanations = [f"{item.name}：{item.reason}" for item in grounded if item.reason]
         if explanations:
             message += "\n\n" + "\n".join(explanations)
+    if not auto_select and grounded and not plan:
+        message = "本次未能完成可靠的推荐说明，以下仅保留已核对的菜品与整菜营养估算。"
+    elif not auto_select and meals and not grounded and not plan:
+        message = "检索到了候选，但这次未能完成可靠选择，请稍后重试。"
     return response.model_copy(
         update={
             "status": "completed" if plan else response.status if grounded else "degraded",

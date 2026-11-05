@@ -108,6 +108,10 @@ async def verify(output: Path) -> dict[str, Any]:
          "可以考虑凉拌鸡丝，配方里有鸡胸肉。"),
         ("general_rescue_variant", True, state, "肉柴了怎么办",
          "已经熟透的话，可以切成小块拌进汤面里，入口时不那么干；不必反复加热。"),
+        ("contradictory_rescue", False, state, "已经做柴了怎么补救",
+         "可以把熟鸡胸肉再蒸一下。\n\n注意完全不要再加热。"),
+        ("qualified_rescue", True, state, "已经做柴了怎么补救",
+         "如果已经熟透，可以撕细拌酱改善入口感受；避免反复长时间加热。"),
         ("mixed_health_claim", False, state, "想吃鸡胸肉",
          "凉拌鸡丝含鸡胸肉，而且能稳定餐后血糖。"),
         ("single_card_plural", False, single_card_state, "推荐一道含鸡胸肉的菜",
@@ -139,11 +143,11 @@ async def verify(output: Path) -> dict[str, Any]:
                 [{"meal_id": item.id, "name": item.name} for item in selected]
                 if current["intent"] == "MEAL_RECOMMENDATION" else []
             ))
-            records = answer_review_records(current, draft)
             units = answer_review_units(draft)
             canonical, _, _ = guard_answer_facts(
                 canonical_answer(current, draft), current, OutputGuard(),
             )
+            records = answer_review_records(current, draft, canonical)
             objects = {
                 "recommendations": [item.meal_id for item in canonical.recommendations],
                 "display": [item["meal_id"] for item in current.get("discussed_meals", [])],
@@ -166,7 +170,7 @@ async def verify(output: Path) -> dict[str, Any]:
                 issues = answer_review_issues(result.output, units, records, objects)
                 accepted = not issues
                 semantic_accepted = (
-                    result.output.supported and not result.output.issues
+                    result.output.supported and result.output.coherent and not result.output.issues
                     and bool(result.output.checks)
                     and all(
                         check.supported and check.conditions_preserved
@@ -190,7 +194,11 @@ async def verify(output: Path) -> dict[str, Any]:
                     "used_fallback": result.used_fallback, "input": payload,
                 }
             except Exception as exc:
-                item = {"name": name, "passed": False, "error_type": type(exc).__name__}
+                item = {
+                    "name": name, "passed": False, "error_type": type(exc).__name__,
+                    "error_code": getattr(exc, "code", None),
+                    "validation_error": str(exc.__cause__)[:1800] if exc.__cause__ else None,
+                }
             report["cases"].append(item)
             await asyncio.to_thread(
                 output.write_text, json.dumps(report, ensure_ascii=False, indent=2),

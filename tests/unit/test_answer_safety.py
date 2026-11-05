@@ -14,6 +14,7 @@ from nutripilot.agent.nodes.output import OutputGuardNode
 from nutripilot.agent.state import new_agent_state
 from nutripilot.domain.models import Citation, FinalResponse, MealRecommendation
 from nutripilot.safety import OutputGuard
+from nutripilot.safety.guards import CHICKEN_SAFETY_REFERENCE
 from nutripilot.tracing import InMemoryTraceRecorder
 
 
@@ -207,6 +208,51 @@ def test_number_feedback_identifies_the_unsupported_quantity_for_correction():
     draft = RecommendationDraft(message="加热到99℃就行。")
     issues = prose_issues(draft, canonical_answer(state, draft), state, {})
     assert any("UNSUPPORTED_NUMBER: 99" in issue for issue in issues)
+
+
+def test_fractional_recipe_estimate_and_close_coarse_nutrition_rounding_are_supported():
+    state = new_agent_state(message="高蛋白午餐", user_id=1)
+    state["intent"] = "FOOD_QUESTION"
+    state["tool_results"] = [{
+        "tool_name": "search_meals", "status": "success", "data": {"hits": [{
+            "meal_id": 1, "name": "肉蛋饭", "nutrition": {
+                "calories_kcal": 1717.1665, "protein_g": 85.6754,
+            },
+        }]},
+    }]
+    draft = RecommendationDraft(message="假设均分后取一半配方，约860千卡、43克蛋白质。")
+    assert not prose_issues(draft, canonical_answer(state, draft), state, {})
+    draft.message = "半份500千卡，煮99分钟就行。"
+    assert any("UNSUPPORTED_NUMBER" in issue for issue in prose_issues(
+        draft, canonical_answer(state, draft), state, {},
+    ))
+
+
+def test_general_question_numbers_are_not_treated_as_specific_recipe_facts():
+    state = new_agent_state(message="鸡胸肉为什么发柴", user_id=1)
+    state.update(intent="FOOD_QUESTION", answer_task={"context": "general"})
+    draft = RecommendationDraft(message="鸡胸肉脂肪比例较低，常见约2%，加热会失水。")
+    assert not any(issue.startswith("UNSUPPORTED_NUMBER") for issue in prose_issues(
+        draft, canonical_answer(state, draft), state, {},
+    ))
+    state["answer_task"] = {"context": "meals"}
+    assert any(issue.startswith("UNSUPPORTED_NUMBER") for issue in prose_issues(
+        draft, canonical_answer(state, draft), state, {},
+    ))
+
+
+def test_general_chicken_safety_citation_is_registered_and_traceable():
+    state = new_agent_state(message="鸡肉怎么确认熟透", user_id=1)
+    state.update(intent="FOOD_QUESTION", answer_task={"context": "general"})
+    draft = RecommendationDraft(
+        message="用食品温度计确认鸡肉中心达到约74℃。",
+        source_ids=[CHICKEN_SAFETY_REFERENCE["source_id"]],
+    )
+    response = canonical_answer(state, draft)
+    assert not prose_issues(draft, response, state, {})
+    assert response.citations[0].uri == CHICKEN_SAFETY_REFERENCE["uri"]
+    assert response.citations[0].source_type == "guideline"
+    assert "165°F" in response.citations[0].excerpt
 
 
 def test_thanks_cannot_cite_historical_food_sources():

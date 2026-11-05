@@ -5,8 +5,8 @@ import pytest
 
 from nutripilot.agent.agents.base import compact_tool_results
 from nutripilot.agent.agents.recommendation import RecommendationAgent
-from nutripilot.agent.answers import answer_evidence, compact_answer
-from nutripilot.agent.contracts import RecommendationOutput
+from nutripilot.agent.answers import answer_boundary_evidence, answer_evidence, compact_answer
+from nutripilot.agent.contracts import RecommendationDraft, RecommendationOutput
 from nutripilot.agent.state import AgentState
 from nutripilot.domain.models import FinalResponse, MealRecommendation
 from nutripilot.model_gateway import FakeModelGateway
@@ -16,7 +16,7 @@ from nutripilot.tracing import InMemoryTraceRecorder
 def test_recommendation_output_schema_only_requests_model_authored_fields():
     definitions = RecommendationOutput.model_json_schema()["$defs"]
     assert set(definitions["RecommendationDraft"]["properties"]) == {
-        "status", "message", "recommendations", "source_ids"
+        "status", "message", "recommendations", "source_ids", "calculations"
     }
     assert set(definitions["RecommendationChoice"]["properties"]) == {"meal_id", "name", "reason"}
 
@@ -83,6 +83,49 @@ def test_generation_evidence_only_exposes_relevant_numbers_and_retains_safety(
         "allergens": ["花生"], "dislikes": ["香菇"], "preferences": ["清淡"],
     }
     assert any(item["tool_name"] == "get_weather_context" for item in projected) is weather
+
+
+def test_boundary_evidence_binds_ingredients_to_selected_dish_and_keeps_originals():
+    state: AgentState = {
+        "intent": "MEAL_RECOMMENDATION", "user_message": "推荐午餐",
+        "tool_results": [{
+            "tool_name": "search_meals", "status": "success", "data": {"hits": [
+                {"meal_id": 1, "name": "猪肉饭", "ingredients": ["猪肉", "米饭"],
+                 "ingredient_records": [{"name": "猪肉", "aliases": ["肉末"]}],
+                 "allergens": ["大豆"]},
+                {"meal_id": 2, "name": "鸡肉饭", "ingredients": ["鸡胸肉", "米饭"]},
+            ]},
+        }],
+    }
+    original = copy.deepcopy(state)
+    draft = RecommendationDraft(
+        message="可以选猪肉饭", recommendations=[{"meal_id": 1, "name": "猪肉饭"}],
+    )
+    result = answer_boundary_evidence(state, draft)
+    assert len(result[0]["data"]["hits"]) == 1
+    selected = result[0]["data"]["hits"][0]
+    assert selected["ingredients"] == ["猪肉", "米饭"]
+    assert selected["allergens"] == ["大豆"]
+    assert selected["ingredient_records"] == [{"name": "猪肉", "aliases": ["肉末"]}]
+    assert state == original
+
+
+def test_recipe_generation_does_not_mix_nutrition_mapping_with_original_ingredients():
+    state: AgentState = {"intent": "RECIPE_QUERY", "user_message": "凉拌鸡丝怎么做"}
+    results = [
+        {"tool_name": "search_meals", "status": "success", "data": {"hits": [{
+            "meal_id": 1034, "name": "凉拌鸡丝", "ingredients": ["蒸馏白醋"],
+        }]}},
+        {"tool_name": "get_recipe", "status": "success", "data": {
+            "meal_id": 1034, "name": "凉拌鸡丝",
+            "raw_ingredients": "香醋", "raw_quantities": "香醋4毫升", "instructions": "拌匀",
+        }},
+    ]
+    original = copy.deepcopy(results)
+    projected = answer_evidence(results, state)
+    assert [item["tool_name"] for item in projected] == ["get_recipe"]
+    assert projected[0]["data"]["raw_ingredients"] == "香醋"
+    assert results == original
 
 
 @pytest.mark.parametrize("nested", [False, True])
@@ -185,14 +228,13 @@ async def test_recommendation_grounds_from_original_results_after_context_projec
     for call in gateway.call_history:
         assert "verified_response" not in call["payload"]
     assert "verified_facts" not in gateway.call_history[0]["payload"]
-    assert "message" not in gateway.call_history[1]["payload"]["verified_facts"]
-    assert "reason" not in gateway.call_history[1]["payload"]["verified_facts"][
-        "recommendations"
-    ][0]
+    assert len(gateway.call_history) == 2
+    assert gateway.call_history[0]["worker"] == "recommendation"
+    assert gateway.call_history[1]["worker"] == "answer_boundary"
+    assert "evidence_records" not in gateway.call_history[1]["payload"]
     assert "nutrition" not in gateway.call_history[0]["payload"]["tool_results"][0][
         "data"
     ]["hits"][0]
-    assert "nutrition" not in gateway.call_history[1]["payload"]["evidence_records"]["current:0"]
     response = update["final_response"]
     assert response["recommendations"][0]["meal_id"] == 1001
     assert response["warnings"] == [

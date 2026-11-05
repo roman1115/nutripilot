@@ -455,6 +455,19 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
         )
         return {"items": [item.model_dump(mode="json") for item in items]}
 
+    @app.get("/api/v1/threads/trash", tags=["chat"])
+    async def trashed_threads(
+        user_id: int = Depends(get_user_id),
+        service: ChatRunService = Depends(runs),
+        q: str = Query(default="", max_length=200),
+        limit: int = Query(default=30, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
+        items = await asyncio.to_thread(
+            service.store.list_threads, user_id, q.strip(), limit, offset, trashed=True
+        )
+        return {"items": [item.model_dump(mode="json") for item in items]}
+
     @app.delete("/api/v1/threads/{thread_id}", status_code=204, tags=["chat"])
     async def delete_thread(
         thread_id: str, user_id: int = Depends(get_user_id),
@@ -466,6 +479,16 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Thread not found") from exc
         except ThreadBusyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/v1/threads/{thread_id}/restore", status_code=204, tags=["chat"])
+    async def restore_thread(
+        thread_id: str, user_id: int = Depends(get_user_id),
+        service: ChatRunService = Depends(runs),
+    ) -> None:
+        try:
+            await asyncio.to_thread(service.store.restore_thread, user_id, thread_id)
+        except ThreadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="会话不存在或已超过回收站保留期。") from exc
 
     @app.get("/api/v1/threads/{thread_id}/messages", tags=["chat"])
     async def thread_messages(
@@ -531,8 +554,8 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
                         thread_id=thread_id, turn_id=run["turn_id"], trace_id=run["trace_id"],
                         phase="RECEIVED", run=run,
                     )
-            except ThreadNotFoundError:
-                pass
+            except ThreadNotFoundError as exc:
+                raise HTTPException(status_code=404, detail="Thread not found") from exc
         try:
             state = await container.chat_service.get_thread(thread_id=thread_id, user_id=user_id)
         except ThreadNotFoundError as exc:

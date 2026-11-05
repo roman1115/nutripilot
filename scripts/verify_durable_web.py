@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import httpx
 from playwright.sync_api import Page, expect, sync_playwright
+from scripts.verify_web import navigate_view
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -136,9 +137,8 @@ def main() -> None:
                             runs.append(send(page, f"推荐午餐，并发验收{width}-1"))
                             urls.append(page.url)
                             composer.fill("保留草稿")
-                            nav = page.locator(".mobile-bottom-nav" if width < 1100 else ".sidebar")
                             for label in ("饮食偏好", "饮食计划", "执行记录", "质量评估", "对话"):
-                                nav.get_by_role("button", name=label, exact=True).click()
+                                navigate_view(page, label)
                             expect(composer).to_have_value("保留草稿")
                             expect(page.get_by_role("button", name="停止生成")).to_be_visible()
                             for number in (2, 3, 4):

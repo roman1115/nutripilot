@@ -66,32 +66,31 @@ async def test_grouped_explanation_can_select_fewer_dishes_without_a_template(co
     assert "verified_response" not in payload
     assert "verified_facts" not in payload
     assert "tool_results" in payload
+    assert payload["nutrition_calculations"] == []
     assert not any(
         result["tool_name"] == "get_recipe" for result in state["tool_results"]
     )
 
 
 @pytest.mark.asyncio
-async def test_semantic_review_repairs_count_mismatch_without_a_count_regex(container):
+async def test_requested_card_count_is_repaired_without_a_semantic_review(container):
     gateway = container.gateway
     invalid = {
-        "message": "可以试试这几道菜，这些菜的收录配方都包含鸡胸肉。",
+        "message": "可以选凉拌鸡丝和蛋包饭。",
         "recommendations": [
             {"meal_id": 1034, "name": "凉拌鸡丝", "reason": "配方包含鸡胸肉。"},
+            {"meal_id": 1067, "name": "蛋包饭", "reason": "配方包含鸡胸肉。"},
         ],
     }
     corrected = {
         **invalid,
         "message": "可以选凉拌鸡丝，这道菜的收录配方包含鸡胸肉。",
+        "recommendations": invalid["recommendations"][:1],
     }
     gateway.queue_response("recommendation", {"response": invalid})
-    gateway.queue_response("answer_review", {
-        "supported": False, "issues": ["正文说有几道菜，但实际只选了一道。"],
-        "checks": [],
-    })
     gateway.queue_response("recommendation", {"response": corrected})
     state = await container.chat_service.chat(
-        user_id=1, message="想吃鸡胸肉，整道菜不超过600千卡",
+        user_id=1, message="只推荐一道含鸡胸肉的菜",
     )
 
     response = state["final_response"]
@@ -101,12 +100,11 @@ async def test_semantic_review_repairs_count_mismatch_without_a_count_regex(cont
     assert "这些菜" not in response["message"]
     calls = [call for call in gateway.call_history if call["worker"] == "recommendation"]
     assert len(calls) == 2
-    assert "正文说有几道菜，但实际只选了一道。" in calls[1]["payload"]["answer_feedback"]
+    assert any(issue.startswith("REQUESTED_COUNT") for issue in calls[1]["payload"][
+        "answer_feedback"
+    ])
     reviews = [call for call in gateway.call_history if call["worker"] == "answer_review"]
-    assert len(reviews) == 2
-    assert reviews[0]["payload"]["verified_facts"]["recommendations"] == [
-        {"meal_id": 1034, "name": "凉拌鸡丝"}
-    ]
+    assert not reviews
     assert response["message"] == corrected["message"]
     assert state["approved_answer"]
     assert not state["fallback_events"]
@@ -128,6 +126,37 @@ async def test_general_rescue_answer_does_not_need_a_recipe_or_create_recommenda
     assert not state["final_response"]["recommendations"]
     assert not state["tool_results"]
     assert state["approved_answer"]
+
+
+@pytest.mark.asyncio
+async def test_general_advice_still_requires_a_safety_boundary_check(container):
+    gateway = container.gateway
+    gateway.queue_response("intent", {
+        "intent": "FOOD_QUESTION", "confidence": 1, "extracted_slots": {},
+        "answer_task": {"context": "general"},
+    })
+    gateway.queue_response("recommendation", {"response": {
+        "message": "鸡肉煮2分钟就肯定熟透。",
+    }})
+    gateway.queue_response("answer_boundary", {
+        "facts_match": True, "objects_match": True, "portion_basis_preserved": True,
+        "cooking_conditions_preserved": False, "issues": ["时间不能保证熟透。"],
+    })
+    gateway.queue_response("recommendation", {"response": {
+        "message": "时间受肉块大小等影响，需确认熟透，不能仅看计时。",
+    }})
+    state = await container.chat_service.chat(user_id=1, message="鸡胸肉一般怎么煮？")
+    assert state["approved_answer"]
+    assert "肯定熟透" not in state["final_response"]["message"]
+    calls = [call for call in gateway.call_history if call["worker"] == "recommendation"]
+    assert len(calls) == 2
+    assert "时间不能保证熟透。" in calls[1]["payload"]["answer_feedback"]
+    boundary = next(
+        call for call in gateway.call_history if call["worker"] == "answer_boundary"
+    )
+    assert boundary["payload"]["food_safety_reference"]["uri"] == (
+        "https://www.cdc.gov/food-safety/foods/chicken.html"
+    )
 
 
 @pytest.mark.asyncio
@@ -170,11 +199,14 @@ async def test_explanation_and_comparison_keep_display_order_without_recommendin
     ]
     why_calls = container.gateway.call_history[before_why:]
     assert any(call["worker"] == "recommendation" for call in why_calls)
-    assert any(call["worker"] == "answer_review" for call in why_calls)
+    assert not any(call["worker"] == "answer_review" for call in why_calls)
     why_payload = next(
         call["payload"] for call in why_calls if call["worker"] == "recommendation"
     )
-    assert why_payload["discussed_meals"] == second["discussed_meals"]
+    assert why_payload["discussed_meals"] == [
+        {key: value for key, value in meal.items() if key != "reason"}
+        for meal in second["discussed_meals"]
+    ]
     call_count = len(container.gateway.call_history)
     third = await container.chat_service.chat(
         user_id=1, thread_id="explain", message="前两个有什么区别？"
@@ -190,12 +222,12 @@ async def test_explanation_and_comparison_keep_display_order_without_recommendin
     assert third["final_response"]["citations"]
     followup_calls = container.gateway.call_history[call_count:]
     assert any(call["worker"] == "recommendation" for call in followup_calls)
-    assert any(call["worker"] == "answer_review" for call in followup_calls)
+    assert not any(call["worker"] == "answer_review" for call in followup_calls)
     generated_payload = next(
         call["payload"] for call in followup_calls if call["worker"] == "recommendation"
     )
     assert generated_payload["discussed_meals"][:2] == [
-        {"meal_id": card["meal_id"], "name": card["name"], "reason": card["reason"]}
+        {"meal_id": card["meal_id"], "name": card["name"]}
         for card in cards[:2]
     ]
     recipe = await container.chat_service.chat(
@@ -270,18 +302,18 @@ async def test_domain_question_and_thanks_do_not_trigger_meal_search_or_write(co
         assert not state["final_response"]["recommendations"]
         assert state["final_response"]["message"]
         assert state["approved_answer"]
-        review = next(
+        answer = next(
             call["payload"] for call in reversed(container.gateway.call_history)
-            if call["worker"] == "answer_review"
+            if call["worker"] == "recommendation"
         )
-        assert "verified_response" not in review
-        assert "message" not in review["verified_facts"]
+        assert "verified_response" not in answer
+        assert "evidence_records" not in answer
     assert not await container.data_store.list_plans(1)
 
 
 @pytest.mark.asyncio
 async def test_answer_context_is_bounded_and_thread_and_user_isolated(container):
-    first = await container.chat_service.chat(
+    await container.chat_service.chat(
         user_id=1, thread_id="private", message="推荐午餐"
     )
     await container.chat_service.chat(
@@ -291,13 +323,12 @@ async def test_answer_context_is_bounded_and_thread_and_user_isolated(container)
         item["payload"] for item in reversed(container.gateway.call_history)
         if item["worker"] == "recommendation"
     )
-    assert "推荐午餐" in payload["conversation_summary"]
-    assert len(payload["conversation_summary"]) <= 2100
-    assert payload["discussed_meals"][1]["meal_id"] == (
-        first["final_response"]["recommendations"][1]["meal_id"]
+    assert payload["conversation_summary"] is None
+    assert payload["recent_messages"] == [{"role": "user", "content": "推荐午餐"}]
+    assert not payload["discussed_meals"]
+    assert all(
+        item["tool_name"] == "get_user_profile" for item in payload["conversation_evidence"]
     )
-    assert payload["conversation_evidence"]
-    assert "calculation_note" not in str(payload["conversation_evidence"])
     new = await container.chat_service.chat(
         user_id=2, thread_id="separate", message="为什么推荐第二个？"
     )
@@ -320,7 +351,8 @@ async def test_rejected_narrative_is_repaired_once_then_uses_canonical_facts(con
     text = str(state["final_response"])
     assert "治愈" not in text
     assert "99999" not in text
-    assert state["final_response"]["recommendations"]
+    assert not state["final_response"]["recommendations"]
+    assert state["final_response"]["status"] == "degraded"
     assert state["approved_answer"] is None
     assert any(event["code"] == "ANSWER_NOT_GROUNDED" for event in state["fallback_events"])
     calls = [call for call in gateway.call_history if call["worker"] == "recommendation"]
@@ -334,92 +366,127 @@ async def test_rejected_narrative_is_repaired_once_then_uses_canonical_facts(con
 
 
 @pytest.mark.asyncio
-async def test_semantic_rejection_and_reviewer_outage_cannot_publish_unchecked_text(container):
+@pytest.mark.parametrize("failure", [
+    RuntimeError("review unavailable"), ExecutionLimitExceeded("TOKEN_BUDGET_EXCEEDED"),
+])
+async def test_offline_reviewer_outage_cannot_degrade_a_normal_answer(container, failure):
     gateway = container.gateway
-    for _ in range(2):
-        gateway.queue_response("recommendation", {"response": {
-            "message": "这是未经审核的个性化解释。",
-            "recommendations": [],
-        }})
-    gateway.queue_response("answer_review", {
-        "supported": False, "issues": ["没有根据当前问题解释"],
-        "checks": [],
-    })
-    gateway.queue_response("answer_review", RuntimeError("review unavailable"))
+    text = "可以选凉拌鸡丝，配方里有你想吃的鸡胸肉。"
+    gateway.queue_response("recommendation", {"response": {
+        "message": text, "recommendations": [{"meal_id": 1034, "name": "凉拌鸡丝"}],
+    }})
+    gateway.queue_response("answer_review", failure)
     state = await container.chat_service.chat(user_id=1, message="想吃鸡胸肉")
-    assert "未经审核" not in state["final_response"]["message"]
-    assert state["approved_answer"] is None
-    assert state["final_response"]["recommendations"]
+    assert state["final_response"]["message"] == text
+    assert state["approved_answer"]
+    assert not state["fallback_events"]
+    assert not any(call["worker"] == "answer_review" for call in gateway.call_history)
+    events = container.recorder.get_trace(state["trace_id"])
+    assert any(
+        event.event_type == "response.facts_checked" and event.payload["passed"]
+        and event.payload["mode"] == "deterministic"
+        for event in events
+    )
+    assert not any(event.event_type == "response.reviewed" for event in events)
 
 
 @pytest.mark.asyncio
-async def test_extracted_count_mismatch_repairs_a_positive_reviewer_vote(container):
+@pytest.mark.parametrize(("invalid", "issue"), [
+    ("这几道菜都含鸡胸肉：凉拌鸡丝。", "正文是复数，但最终卡片只有一道菜。"),
+    ("凉拌鸡丝的配方没有鸡胸肉。", "食材与工具记录冲突，实际含鸡胸肉。"),
+    ("整道菜就是适合你的一人份午餐。", "份数未知，不能将来源整菜等同于个人一餐。"),
+    ("煮到来源所写时间就一定熟透。", "时间不能保证成熟，保留大小和未熟延长等条件。"),
+])
+async def test_compact_boundary_check_repairs_concrete_errors_without_sentence_proofs(
+    container, invalid, issue,
+):
+    gateway = container.gateway
+    cards = [{"meal_id": 1034, "name": "凉拌鸡丝"}]
+    corrected = "可以选凉拌鸡丝，配方里有鸡胸肉。营养按来源整道菜估算。"
+    gateway.queue_response("recommendation", {"response": {
+        "message": invalid, "recommendations": cards,
+    }})
+    gateway.queue_response("answer_boundary", {
+        "facts_match": True, "objects_match": True, "portion_basis_preserved": True,
+        "cooking_conditions_preserved": True, "issues": [issue],
+    })
+    gateway.queue_response("recommendation", {"response": {
+        "message": corrected, "recommendations": cards,
+    }})
+    state = await container.chat_service.chat(user_id=1, message="只推荐一道含鸡胸肉的菜")
+    assert state["approved_answer"]
+    assert state["final_response"]["message"] == corrected
+    calls = [call for call in gateway.call_history if call["worker"] == "recommendation"]
+    assert len(calls) == 2
+    assert calls[1]["payload"]["answer_feedback"] == [issue]
+    boundary_calls = [
+        call for call in gateway.call_history if call["worker"] == "answer_boundary"
+    ]
+    assert len(boundary_calls) == 2
+    assert all("review_units" not in call["payload"] for call in boundary_calls)
+    assert all("evidence_records" not in call["payload"] for call in boundary_calls)
+
+
+@pytest.mark.asyncio
+async def test_boundary_check_outage_keeps_facts_without_publishing_unchecked_claims(container):
+    gateway = container.gateway
+    gateway.queue_response("recommendation", {"response": {
+        "message": "来源配方就是一人份午餐。",
+        "recommendations": [{"meal_id": 1034, "name": "凉拌鸡丝"}],
+    }})
+    gateway.queue_response("answer_boundary", RuntimeError("boundary unavailable"))
+    state = await container.chat_service.chat(user_id=1, message="想吃鸡胸肉")
+    assert state["final_response"]["status"] == "degraded"
+    assert state["final_response"]["recommendations"]
+    assert state["approved_answer"] is None
+    assert "就是一人份" not in state["final_response"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_source_is_repaired_without_losing_the_original_task(container):
     gateway = container.gateway
     invalid = {
-        "message": "这几道菜的配方含鸡胸肉，可以选凉拌鸡丝。",
+        "message": "可以选凉拌鸡丝，配方含鸡胸肉。",
         "recommendations": [{"meal_id": 1034, "name": "凉拌鸡丝"}],
+        "source_ids": ["invented:source"],
     }
-    corrected = {**invalid, "message": "可以选凉拌鸡丝，配方含鸡胸肉。"}
+    corrected = {**invalid, "source_ids": []}
     gateway.queue_response("recommendation", {"response": invalid})
     gateway.queue_response("recommendation", {"response": corrected})
 
-    def review(payload):
-        raw = FakeModelGateway._answer_review(payload)
-        for check in raw["checks"]:
-            text = payload["review_units"][check["unit_id"]]
-            if "这几道菜" in text:
-                check["object_counts"] = [{
-                    "quote": "这几道菜", "scope": "recommendations",
-                    "meal_ids": [], "minimum": 2, "maximum": None,
-                }]
-        return raw
-
-    gateway.register_handler("answer_review", review)
     state = await container.chat_service.chat(user_id=1, message="只推荐一道含鸡胸肉的菜")
     assert state["final_response"]["message"] == corrected["message"]
     assert state["approved_answer"]
     calls = [call for call in gateway.call_history if call["worker"] == "recommendation"]
     assert len(calls) == 2
-    assert any("OBJECT_COUNT_MISMATCH" in issue
-               for issue in calls[1]["payload"]["answer_feedback"])
-    reviews = [call for call in gateway.call_history if call["worker"] == "answer_review"]
-    assert reviews[0]["payload"]["objects"]["recommendations"] == [1034]
+    assert "UNKNOWN_SOURCE" in calls[1]["payload"]["answer_feedback"]
+    assert calls[1]["payload"]["answer_task"] == calls[0]["payload"]["answer_task"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["missing_checks", "invented_evidence", "lost_condition"])
-async def test_unverifiable_review_cannot_publish_prose_and_passes_feedback_to_repair(
-    container, failure,
-):
+@pytest.mark.parametrize(("text", "keeps_draft"), [
+    ("这道菜能治愈疾病。", True),
+    ("这道菜不含任何过敏原。", True),
+    ("这道菜含99999克蛋白质。", False),
+])
+async def test_fact_and_safety_failures_still_cannot_publish_prose(container, text, keeps_draft):
     gateway = container.gateway
-    text = "这道菜有独特优势。"
-    gateway.queue_response("recommendation", {"response": {"message": text}})
-
-    def review(payload):
-        checks = [{
-            "unit_id": unit_id, "kind": "source_fact", "supported": True,
-            "object_counts": [], "conditions": [],
-            "conditions_preserved": failure != "lost_condition",
-            "evidence": [{"record_id": "missing", "quote": "没有这条证据"}],
-            "explanation": "遗漏了原文完成条件。",
-        } for unit_id in payload["review_units"]]
-        return {"supported": True, "issues": [], "checks": (
-            [] if failure == "missing_checks" else checks
-        )}
-
-    gateway.register_handler("answer_review", review)
+    for _ in range(2):
+        gateway.queue_response("recommendation", {"response": {"message": text}})
     state = await container.chat_service.chat(user_id=1, message="想吃鸡胸肉")
     assert not state["approved_answer"]
     assert text not in state["final_response"]["message"]
     calls = [call for call in gateway.call_history if call["worker"] == "recommendation"]
     assert len(calls) == 2
-    assert calls[1]["payload"]["answer_to_revise"]["message"] == text
+    assert calls[1]["payload"]["answer_to_revise"].get("message") == (
+        text if keeps_draft else None
+    )
     assert calls[1]["payload"]["answer_feedback"]
-    assert "evidence_records" in calls[1]["payload"]
+    assert calls[1]["payload"]["tool_results"] == calls[0]["payload"]["tool_results"]
     events = container.recorder.get_trace(state["trace_id"])
-    reviews = [event for event in events if event.event_type == "response.reviewed"]
-    assert all(not event.payload["supported"] for event in reviews)
-    assert all("checks" in event.payload for event in reviews)
+    checks = [event for event in events if event.event_type == "response.facts_checked"]
+    assert len(checks) == 2
+    assert all(not event.payload["passed"] for event in checks)
 
 
 @pytest.mark.asyncio
@@ -439,18 +506,59 @@ async def test_thanks_does_not_confirm_pending_plan_and_unrelated_topics_stay_sc
 
 
 @pytest.mark.asyncio
-async def test_review_budget_exhaustion_keeps_verified_results_but_not_unreviewed_prose(container):
+async def test_generation_budget_exhaustion_keeps_only_the_checked_cards(container):
+    container.gateway.queue_response("recommendation", {"response": {
+        "message": "只需99999分钟。",
+        "recommendations": [{"meal_id": 1034, "name": "凉拌鸡丝", "reason": "待核对"}],
+    }})
     container.gateway.queue_response(
-        "answer_review", ExecutionLimitExceeded("TOKEN_BUDGET_EXCEEDED"),
+        "recommendation", ExecutionLimitExceeded("TOKEN_BUDGET_EXCEEDED"),
     )
     state = await container.chat_service.chat(user_id=1, message="想吃鸡胸肉")
     assert state["phase"] == "COMPLETED"
     assert state["final_response"]["recommendations"]
     for card in state["final_response"]["recommendations"]:
-        assert card["reason"]
-        assert card["reason"] in state["final_response"]["message"]
+        assert card["reason"] == ""
+    assert state["final_response"]["status"] == "degraded"
     assert state["approved_answer"] is None
     assert state["fallback_events"][-1]["code"] == "TOKEN_BUDGET_EXCEEDED"
+
+
+@pytest.mark.asyncio
+async def test_targeted_replacement_keeps_other_candidates_and_carries_relative_goal(container):
+    first = await container.chat_service.chat(
+        user_id=1, thread_id="target-replacement", message="推荐午餐",
+    )
+    cards = first["final_response"]["recommendations"]
+    selected, other = cards[:2]
+    container.tool_executor.trace_sink = container.recorder
+    container.gateway.queue_response("intent", {
+        "intent": "MEAL_ADJUSTMENT", "confidence": 1,
+        "extracted_slots": {"excluded_ingredients": [selected["name"]]},
+        "answer_task": {
+            "objective": "只替换指定菜，比较整菜脂肪",
+            "context": "meals", "meal_ids": [selected["meal_id"]],
+            "recommendation_count": 1, "nutrient_preference": "lower_fat",
+            "needs_nutrition": True,
+        },
+    })
+    state = await container.chat_service.chat(
+        user_id=1, thread_id="target-replacement",
+        message=f"{selected['name']}脂肪太高了，换一个",
+    )
+    assert selected["name"] not in state["slots"]["excluded_ingredients"]
+    search_call = next(
+        event.payload for event in container.recorder.get_trace(state["trace_id"])
+        if event.event_type == "tool.completed" and event.payload["tool_name"] == "search_meals"
+    )
+    excluded = search_call["arguments"]["excluded_meal_ids"]
+    assert selected["meal_id"] in excluded
+    assert other["meal_id"] not in excluded
+    assert len(state["final_response"]["recommendations"]) <= 1
+    assert all(
+        card["fat_g"] < selected["fat_g"]
+        for card in state["final_response"]["recommendations"]
+    )
 
 
 @pytest.mark.asyncio

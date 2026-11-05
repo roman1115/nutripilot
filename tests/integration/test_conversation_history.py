@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from nutripilot.api.app import create_app
 from nutripilot.application import build_container
-from nutripilot.application.chat_service import ChatService, ThreadBusyError
+from nutripilot.application.chat_runs import ChatRunService
+from nutripilot.application.chat_service import ChatService, ThreadBusyError, ThreadNotFoundError
+from nutripilot.application.chat_worker import ChatWorker
 from nutripilot.application.history import ConversationMessage
 from nutripilot.config import Settings
-from nutripilot.infrastructure.chat_tasks import ChatTaskStore
+from nutripilot.infrastructure.chat_tasks import TRASH_RETENTION_SECONDS, ChatTaskStore
 from nutripilot.infrastructure.history import InMemoryConversationStore, SQLiteConversationStore
 from nutripilot.infrastructure.run_store import SQLiteRunStore
 from nutripilot.model_gateway import FakeModelGateway
@@ -98,7 +104,7 @@ def test_history_api_is_user_scoped_and_restores_confirmation_messages() -> None
         assert "拒绝" in messages[2]["content"]
 
 
-def test_history_api_deletes_owned_thread_and_its_checkpoint() -> None:
+def test_history_api_moves_to_trash_and_restores_messages_and_checkpoint() -> None:
     container = build_container(settings=Settings(_env_file=None))
     with TestClient(create_app(container)) as client:
         created = client.post(
@@ -106,7 +112,8 @@ def test_history_api_deletes_owned_thread_and_its_checkpoint() -> None:
             json={"user_id": 1, "thread_id": "delete-history", "message": "推荐午餐"},
         )
         assert created.status_code == 200
-        assert client.get("/api/v1/threads/delete-history/snapshot").status_code == 200
+        snapshot = client.get("/api/v1/threads/delete-history/snapshot").json()
+        run = snapshot["run"]
 
         assert client.delete(
             "/api/v1/threads/delete-history", headers={"X-User-ID": "2"}
@@ -116,6 +123,231 @@ def test_history_api_deletes_owned_thread_and_its_checkpoint() -> None:
         assert client.get("/api/v1/threads").json()["items"] == []
         assert client.get("/api/v1/threads/delete-history/messages").status_code == 404
         assert client.get("/api/v1/threads/delete-history/snapshot").status_code == 404
+        assert client.get("/api/v1/threads/delete-history").status_code == 404
+        assert client.get(f"/api/v1/runs/{run['id']}").status_code == 404
+        assert client.get(f"/api/v1/runs/{run['id']}/events").status_code == 404
+        assert client.post(
+            "/api/v1/threads/delete-history/runs",
+            json={"message": "继续", "request_id": uuid4().hex},
+        ).status_code == 404
+
+        trash = client.get("/api/v1/threads/trash").json()["items"]
+        assert len(trash) == 1 and trash[0]["thread_id"] == "delete-history"
+        assert trash[0]["deleted_at"] and trash[0]["expires_at"]
+        assert client.delete("/api/v1/threads/delete-history").status_code == 204
+        assert client.get("/api/v1/threads/trash").json()["items"] == trash
+        assert not client.get(
+            "/api/v1/threads/trash", headers={"X-User-ID": "2"}
+        ).json()["items"]
+        assert client.post(
+            "/api/v1/threads/delete-history/restore", headers={"X-User-ID": "2"}
+        ).status_code == 404
+        assert client.post("/api/v1/threads/delete-history/restore").status_code == 204
+        assert not client.get("/api/v1/threads/trash").json()["items"]
+        assert client.get("/api/v1/threads/delete-history/snapshot").json() == snapshot
+        assert client.get("/api/v1/threads").json()["items"][0]["message_count"] == 2
+        continued = client.post(
+            "/api/v1/chat",
+            json={"user_id": 1, "thread_id": "delete-history", "message": "第一道怎么做？"},
+        )
+        assert continued.status_code == 200
+        assert continued.json()["intent"] == "RECIPE_QUERY"
+        assert len(client.get("/api/v1/threads/delete-history/messages").json()["items"]) == 4
+
+
+def test_trash_search_pagination_expiry_and_redelete_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "trash.sqlite"
+    store = ChatTaskStore.create(f"sqlite:///{path}")
+    store.initialize()
+    now = 1_800_000_000.0
+    monkeypatch.setattr(
+        "nutripilot.infrastructure.chat_tasks.time", SimpleNamespace(time=lambda: now)
+    )
+    for thread_id in ("a", "b", "c"):
+        store.append(1, thread_id, ConversationMessage(
+            id=thread_id, role="user", content=f"午餐100% {thread_id}"
+        ))
+        store.delete_thread(1, thread_id)
+        now += 1
+    assert [item.thread_id for item in store.list_threads(1, "%", 1, 1, trashed=True)] == ["b"]
+    assert not store.list_threads(1, "_", 30, 0, trashed=True)
+    assert not store.list_threads(2, "", 30, 0, trashed=True)
+    store.close()
+    store = ChatTaskStore.create(f"sqlite:///{path}")
+    store.initialize()
+    original = store.list_threads(1, "", 30, 0, trashed=True)
+    now = 1_800_000_000.0 + TRASH_RETENTION_SECONDS - 1
+    store.delete_thread(1, "a")
+    assert store.list_threads(1, "100%", 30, 0, trashed=True) == original
+    assert not store.claim_expired_threads()
+    now += 1
+    with pytest.raises(ThreadNotFoundError):
+        store.restore_thread(1, "a")
+    assert [item.thread_id for item in store.list_threads(1, "", 30, 0, trashed=True)] == ["c", "b"]
+    assert store.claim_expired_threads() == ["a"]
+    store.purge_thread("b")
+    store.restore_thread(1, "b")
+    now += TRASH_RETENTION_SECONDS
+    store.delete_thread(1, "b")
+    restored = store.list_threads(1, "", 30, 0, trashed=True)
+    assert len(restored) == 1 and restored[0].deleted_at.timestamp() == now
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_expired_trash_purge_retries_checkpoint_failure_and_clears_all_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container = build_container(settings=Settings(_env_file=None))
+    store = ChatTaskStore.create()
+    store.initialize()
+    container.chat_service.history = store
+    service = ChatRunService(container.chat_service, store)
+    worker = ChatWorker(container.chat_service, store, container.settings)
+    task = asyncio.create_task(worker.run())
+    await worker.ready.wait()
+    try:
+        run = await service.submit(
+            user_id=1, thread_id="expired", message="推荐午餐", request_key="expired-key"
+        )
+        await service.wait(run, 1)
+        await service.delete_thread(1, "expired")
+        assert await container.graph.aget_state(container.chat_service._config("expired"))
+        with pytest.raises(ThreadNotFoundError):
+            await service.submit(
+                user_id=1, thread_id="expired", message="推荐午餐", request_key="expired-key"
+            )
+        with store.transaction() as connection:
+            connection.execute(text(
+                "UPDATE chat_thread_trash SET deleted_at=:expired WHERE thread_id='expired'"
+            ), {"expired": time.time() - TRASH_RETENTION_SECONDS - 1})
+        checkpointer = container.graph.compiled.checkpointer
+        delete_checkpoint = checkpointer.adelete_thread
+
+        async def unavailable(thread_id: str) -> None:
+            raise OSError("checkpoint unavailable")
+
+        monkeypatch.setattr(checkpointer, "adelete_thread", unavailable)
+        await service.purge_expired_threads()
+        with store.transaction() as connection:
+            assert connection.execute(text("SELECT COUNT(*) FROM chat_messages")).scalar() == 2
+        with pytest.raises(ThreadNotFoundError):
+            store.restore_thread(1, "expired")
+        monkeypatch.setattr(checkpointer, "adelete_thread", delete_checkpoint)
+        await service.purge_expired_threads()
+        assert not await container.graph.aget_state(container.chat_service._config("expired"))
+        with pytest.raises(ThreadNotFoundError):
+            await service.submit(
+                user_id=1, thread_id="expired", message="继续", request_key="reuse-purged-id"
+            )
+        with store.transaction() as connection:
+            for table in ("chat_messages", "chat_runs", "chat_events", "chat_thread_trash",
+                          "chat_threads"):
+                assert connection.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar() == 0
+    finally:
+        await worker.close()
+        await task
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_cleans_expired_trash_on_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    container = build_container(settings=Settings(_env_file=None))
+    store = ChatTaskStore.create()
+    store.initialize()
+    container.chat_service.history = store
+    await container.chat_service.chat(user_id=1, thread_id="old-trash", message="你好")
+    store.delete_thread(1, "old-trash")
+    with store.transaction() as connection:
+        connection.execute(text(
+            "UPDATE chat_thread_trash SET deleted_at=:expired"
+        ), {"expired": time.time() - TRASH_RETENTION_SECONDS - 1})
+    worker = ChatWorker(container.chat_service, store, container.settings)
+    cleaned = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    purge = store.purge_thread
+
+    def observe_purge(thread_id: str) -> None:
+        purge(thread_id)
+        loop.call_soon_threadsafe(cleaned.set)
+
+    monkeypatch.setattr(store, "purge_thread", observe_purge)
+    task = asyncio.create_task(worker.run())
+    try:
+        await asyncio.wait_for(cleaned.wait(), 5)
+        assert not await container.graph.aget_state(container.chat_service._config("old-trash"))
+    finally:
+        await worker.close()
+        await task
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_trashing_finished_run_before_worker_returns_keeps_processing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container = build_container(settings=Settings(_env_file=None))
+    store = ChatTaskStore.create()
+    store.initialize()
+    container.chat_service.history = store
+    service = ChatRunService(container.chat_service, store)
+    worker = ChatWorker(container.chat_service, store, container.settings)
+    finished = asyncio.Event()
+    release = asyncio.Event()
+    finish = worker._finish
+
+    async def pause_after_finish(row):  # type: ignore[no-untyped-def]
+        await finish(row)
+        if row["thread_id"] == "finishing":
+            finished.set()
+            await release.wait()
+
+    monkeypatch.setattr(worker, "_finish", pause_after_finish)
+    task = asyncio.create_task(worker.run())
+    await worker.ready.wait()
+    try:
+        await service.submit(
+            user_id=1, thread_id="finishing", message="你好", request_key="finishing"
+        )
+        await asyncio.wait_for(finished.wait(), 5)
+        await service.delete_thread(1, "finishing")
+        next_run = await service.submit(
+            user_id=1, thread_id="next", message="你好", request_key="next"
+        )
+        result = await asyncio.wait_for(service.wait(next_run, 1), 5)
+        assert result["phase"] == "COMPLETED"
+        assert not task.done()
+    finally:
+        release.set()
+        await worker.close()
+        await task
+        store.close()
+
+
+def test_legacy_import_does_not_resurrect_trashed_or_purged_history(tmp_path: Path) -> None:
+    source = SQLiteRunStore(tmp_path / "legacy.sqlite")
+    legacy = SQLiteConversationStore(source)
+    legacy.append(1, "legacy", ConversationMessage(id="legacy", role="user", content="旧消息"))
+    store = ChatTaskStore.create()
+    store.initialize()
+    try:
+        store.import_history(source)
+        store.delete_thread(1, "legacy")
+        store.import_history(source)
+        assert len(store.list_threads(1, "", 30, 0, trashed=True)) == 1
+        with store.transaction() as connection:
+            connection.execute(text(
+                "UPDATE chat_thread_trash SET deleted_at=:expired"
+            ), {"expired": time.time() - TRASH_RETENTION_SECONDS - 1})
+        assert store.claim_expired_threads() == ["legacy"]
+        store.purge_thread("legacy")
+        store.import_history(source)
+        assert not store.list_threads(1, "", 30, 0)
+        assert not store.list_threads(1, "", 30, 0, trashed=True)
+    finally:
+        store.close()
 
 
 def test_active_thread_cannot_be_deleted(tmp_path: Path) -> None:
