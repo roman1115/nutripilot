@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from nutripilot.domain.enums import RiskLevel
 from nutripilot.domain.models import FinalResponse
+from nutripilot.safety.dietary import match_ingredient, merge_dietary_terms
 
 CHICKEN_SAFETY_REFERENCE = {
     "source_id": "guideline:cdc-chicken-safety",
@@ -115,6 +116,7 @@ class OutputGuard:
         *,
         allowed_meal_ids: set[int],
         forbidden_meal_ids: set[int] | None = None,
+        dietary_exclusions: list[str] | None = None,
     ) -> tuple[FinalResponse, list[str]]:
         flags: list[str] = []
         forbidden_meal_ids = forbidden_meal_ids or set()
@@ -142,6 +144,12 @@ class OutputGuard:
                 ),
                 flags,
             )
+        if dietary_prose_conflicts(prose, dietary_exclusions or []):
+            flags.append("DIETARY_PROSE_CONFLICT")
+            return FinalResponse(
+                status="blocked",
+                message="这段回答包含与已记录过敏或忌口冲突的食材，已停止展示，请勿照做。",
+            ), flags
         warnings = list(response.warnings)
         if safety_items_removed:
             warnings.append("已自动移除与过敏或忌口约束冲突的餐食。")
@@ -176,3 +184,30 @@ class OutputGuard:
             ),
             flags,
         )
+
+
+def dietary_prose_conflicts(text: str, exclusions: list[str]) -> list[str]:
+    """Reject explicit use instructions, not mere mentions of a user's exclusions."""
+    conflicts = []
+    for clause in re.split(r"[。；;\n]", text.replace("**", "")):
+        for term in merge_dietary_terms(exclusions):
+            if not match_ingredient(term, [clause], exclusion=True):
+                continue
+            # shortcut: detects explicit instructions, not every semantic paraphrase.
+            uses = re.finditer(
+                r"(?:加入|添加|撒上|撒|拌入|淋入|使用|用|吃|加|放)\s*"
+                r"(?:(?:少许|适量|少量|一些|一点|些|点)\s*)?"
+                + re.escape(term), clause, re.IGNORECASE,
+            )
+            explicit_use = any(
+                not re.search(
+                    r"(?:不|勿|不能|不可|不要|避免|省略|去掉)\s*$", clause[:use.start()],
+                )
+                for use in uses
+            )
+            ingredient_entry = bool(re.match(
+                r"\s*[-*]\s*" + re.escape(term), clause, re.IGNORECASE,
+            )) and not re.search(r"不|勿|避免|省略|去掉|过敏", clause)
+            if explicit_use or ingredient_entry:
+                conflicts.append(term)
+    return list(dict.fromkeys(conflicts))

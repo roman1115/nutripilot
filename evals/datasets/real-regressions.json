@@ -36,6 +36,7 @@
         "food_name": "糖拌西红柿"
       },
       "expected_tools": [
+        "get_user_profile",
         "get_nutrition"
       ],
       "expected_phase": "COMPLETED",
@@ -51,6 +52,7 @@
       "user_message": "月球营养超级碗有多少热量？",
       "expected_intent": "NUTRITION_QUERY",
       "expected_tools": [
+        "get_user_profile",
         "get_nutrition"
       ],
       "expected_phase": "CLARIFY",
@@ -146,6 +148,7 @@
       ],
       "expected_intent": "NUTRITION_QUERY",
       "expected_tools": [
+        "get_user_profile",
         "get_nutrition"
       ],
       "expected_phase": "COMPLETED",

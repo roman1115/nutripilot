@@ -45,16 +45,20 @@ _TOOLS_BY_INTENT: dict[str, set[str]] = {
         "search_meals",
         "create_meal_plan",
     },
-    Intent.NUTRITION_QUERY.value: {"get_nutrition", "query_dietary_guidelines"},
-    Intent.RECIPE_QUERY.value: {"get_recipe"},
-    Intent.FOOD_QUESTION.value: {"get_recipe", "get_nutrition", "query_dietary_guidelines"},
+    Intent.NUTRITION_QUERY.value: {
+        "get_user_profile", "get_nutrition", "query_dietary_guidelines",
+    },
+    Intent.RECIPE_QUERY.value: {"get_user_profile", "get_recipe"},
+    Intent.FOOD_QUESTION.value: {
+        "get_user_profile", "get_recipe", "get_nutrition", "query_dietary_guidelines",
+    },
     Intent.PROFILE_UPDATE.value: {"update_user_profile"},
 }
 
 
 class PlannerAgent:
     name = "PlannerAgent"
-    prompt_version = "planner-v16"
+    prompt_version = "planner-v17"
     system_prompt = (
         "你是工具规划 Worker。根据结构化状态选择白名单工具；一次只生成必要调用，"
         "不得虚构工具，不得决定图路由或绕过写操作确认。对于推荐、调整或计划，"
@@ -336,6 +340,19 @@ class PlannerAgent:
                     ],
                 }
             )
+        if state.get("intent") in {
+            Intent.RECIPE_QUERY.value, Intent.NUTRITION_QUERY.value, Intent.FOOD_QUESTION.value,
+        } and not any(
+            result.get("tool_name") == "get_user_profile" and result.get("status") == "success"
+            for result in state.get("tool_results", [])
+        ):
+            output = output.model_copy(update={"tool_calls": [
+                ToolCall(
+                    call_id=f"{state['turn_id']}:required:get_user_profile",
+                    name="get_user_profile", arguments={},
+                ),
+                *(call for call in output.tool_calls if call.name != "get_user_profile"),
+            ]})
         serialized_calls = [call.model_dump(mode="json") for call in output.tool_calls]
         return {
             "phase": Phase.PLANNING.value,
@@ -344,6 +361,7 @@ class PlannerAgent:
                 {
                     "summary": output.plan_summary,
                     "tools": [call.name for call in output.tool_calls],
+                    "complete": output.complete,
                 },
             ],
             "pending_tool_calls": serialized_calls,

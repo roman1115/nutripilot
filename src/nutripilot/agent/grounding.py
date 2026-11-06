@@ -194,7 +194,10 @@ def ground_recommendation_facts(
         message = "检索到了候选，但这次未能完成可靠选择，请稍后重试。"
     return response.model_copy(
         update={
-            "status": "completed" if plan else response.status if grounded else "degraded",
+            "status": (
+                "completed" if plan
+                else response.status if grounded or not auto_select else "degraded"
+            ),
             "message": message,
             "recommendations": grounded,
             "citations": citations,

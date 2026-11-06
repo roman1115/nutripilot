@@ -9,7 +9,7 @@ from nutripilot.agent.grounding import ground_recommendation_facts
 from nutripilot.agent.state import AgentState
 from nutripilot.domain.enums import Intent, Phase
 from nutripilot.domain.models import FinalResponse
-from nutripilot.safety import OutputGuard
+from nutripilot.safety import OutputGuard, merge_dietary_terms
 from nutripilot.tracing import TraceRecorder
 
 
@@ -46,6 +46,10 @@ class OutputGuardNode:
             guarded, prose_flags = self.guard.validate(
                 guarded, allowed_meal_ids={item.meal_id for item in guarded.recommendations},
                 forbidden_meal_ids=forbidden_meal_ids,
+                dietary_exclusions=merge_dietary_terms(
+                    state.get("dietary_constraints", {}).get("allergens"),
+                    state.get("dietary_constraints", {}).get("excluded_ingredients"),
+                ) if prose_applied else [],
             )
             flags = list(dict.fromkeys([*flags, *prose_flags]))
         phase = Phase.BLOCKED if guarded.status == "blocked" else Phase.COMPLETED

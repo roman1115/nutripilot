@@ -28,7 +28,9 @@ async def test_actual_follow_up_returns_sourced_steps_instead_of_more_recommenda
     )
     assert state["intent"] == "RECIPE_QUERY"
     assert state["phase"] == "COMPLETED"
-    assert [item["tool_name"] for item in state["tool_results"]] == ["get_recipe"]
+    assert [item["tool_name"] for item in state["tool_results"]] == [
+        "get_user_profile", "get_recipe",
+    ]
     response = state["final_response"]
     assert not response["recommendations"]
     assert "西葫芦 500g" in response["message"]
@@ -51,7 +53,8 @@ async def test_ordered_reference_uses_display_order_then_single_dish_context(con
         user_id=1, thread_id="recipe-ordinal", message="第二道怎么做？"
     )
     assert state["slots"]["food_name"] == second_dish["name"]
-    assert state["tool_results"][0]["data"]["meal_id"] == second_dish["meal_id"]
+    recipe = next(item for item in state["tool_results"] if item["tool_name"] == "get_recipe")
+    assert recipe["data"]["meal_id"] == second_dish["meal_id"]
     again = await container.chat_service.chat(
         user_id=1, thread_id="recipe-ordinal", message="这个的做法"
     )

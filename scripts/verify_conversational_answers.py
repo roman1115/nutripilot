@@ -72,10 +72,19 @@ def verify(api_url: str, output: Path) -> dict[str, Any]:
                     for event in model_events
                 ),
             }
+            checks["no_online_semantic_review"] = not any(
+                event.get("payload", {}).get("stage") in {"answer_boundary", "answer_review"}
+                or event["event_type"] in {"response.boundary_checked", "response.reviewed"}
+                for event in events
+            )
+            checks["bounded_generation"] = 1 <= sum(
+                event.get("payload", {}).get("stage") == "recommendation"
+                for event in model_events
+            ) <= 2
             if intent != "CONVERSATION":
-                checks["boundary_checked"] = any(
-                    event["event_type"] == "response.boundary_checked"
-                    and event.get("payload", {}).get("passed") is True
+                checks["user_safety_context"] = any(
+                    event["event_type"] == "tools.batch_completed"
+                    and "get_user_profile" in event.get("payload", {}).get("tools", [])
                     for event in events
                 )
             if intent in {"FOOD_QUESTION", "CONVERSATION", "RECIPE_QUERY"}:
@@ -113,16 +122,29 @@ def verify(api_url: str, output: Path) -> dict[str, Any]:
                 lunch_thread, f"{original['name']}脂肪太高了，换一个", "MEAL_ADJUSTMENT",
             )
             new_cards = replacement["final_response"]["recommendations"]
+            replacement_trace = report["turns"][-1]["trace"]
+            no_eligible_replacement = not new_cards and any(
+                event["event_type"] == "response.facts_checked"
+                and event.get("payload", {}).get("passed") is True
+                and event["payload"].get("candidate_ids")
+                and event["payload"].get("eligible_candidate_ids") == []
+                for event in replacement_trace
+            )
+            report["replacement_outcome"] = (
+                "no_eligible_lower_fat_candidate" if no_eligible_replacement else "selected"
+            )
             for check, passed in {
-                "one_replacement": len(new_cards) == 1,
+                "one_replacement_or_verified_no_match": (
+                    len(new_cards) == 1 or no_eligible_replacement
+                ),
                 "dish_not_excluded_ingredient": original["name"] not in replacement[
                     "slots"
                 ].get("excluded_ingredients", []),
-                "lower_fat": bool(new_cards) and all(
+                "lower_fat": no_eligible_replacement or (bool(new_cards) and all(
                     card["meal_id"] != original["meal_id"]
                     and card["fat_g"] is not None and original["fat_g"] is not None
                     and card["fat_g"] < original["fat_g"] for card in new_cards
-                ),
+                )),
             }.items():
                 if not passed:
                     report["failures"].append({"message": "脂肪太高换一个", "check": check})
@@ -136,6 +158,14 @@ def verify(api_url: str, output: Path) -> dict[str, Any]:
         )
         send(ingredient_thread, "已经做柴了，现在怎么补救？", "FOOD_QUESTION")
         send(ingredient_thread, "好的，谢谢", "CONVERSATION")
+        recipe_thread = f"natural-recipe-detail-{uuid4().hex}"
+        send(recipe_thread, "皮蛋豆腐怎么做？", "RECIPE_QUERY")
+        send(recipe_thread, "请把皮蛋豆腐的做法说得详细一些。", "RECIPE_QUERY")
+        send(recipe_thread, "这里的豆腐1盒是多少克？", "FOOD_QUESTION")
+        send(
+            f"natural-other-recipe-{uuid4().hex}",
+            "凉拌鸡丝怎么做？请保留原文的用量和成熟判断。", "RECIPE_QUERY",
+        )
         send(
             f"natural-ambiguous-{uuid4().hex}", "你说的那道菜为什么适合我？",
             "FOOD_QUESTION",

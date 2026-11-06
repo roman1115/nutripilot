@@ -120,7 +120,7 @@ async def test_partial_and_fuzzy_names_require_confirmation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unknown_name_stops_after_one_tool_call() -> None:
+async def test_unknown_name_stops_after_one_lookup_and_the_required_profile() -> None:
     gateway = FakeModelGateway()
     container = build_container(gateway=gateway, settings=_settings())
     result = await container.chat_service.chat(
@@ -128,7 +128,9 @@ async def test_unknown_name_stops_after_one_tool_call() -> None:
         message="月球营养超级碗有多少热量？",
     )
     assert result["phase"] == "CLARIFY"
-    assert len(result["tool_results"]) == 1
+    assert [item["tool_name"] for item in result["tool_results"]] == [
+        "get_user_profile", "get_nutrition",
+    ]
     assert sum(call["worker"] == "planner" for call in gateway.call_history) == 1
     assert "没有找到" in result["final_response"]["message"]
 
@@ -190,11 +192,14 @@ async def test_named_nutrition_query_cannot_use_another_candidate_id(
         user_id=1, message=f"{food_name}有多少热量？", thread_id="named-nutrition"
     )
     assert result["phase"] == phase
+    nutrition = next(
+        item for item in result["tool_results"] if item["tool_name"] == "get_nutrition"
+    )
     if phase == "COMPLETED":
-        assert result["tool_results"][0]["data"]["meal_id"] == 1004
+        assert nutrition["data"]["meal_id"] == 1004
         assert "113.4" in result["final_response"]["message"]
     else:
-        assert result["tool_results"][0]["status"] == "error"
+        assert nutrition["status"] == "error"
 
 
 @pytest.mark.asyncio

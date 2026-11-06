@@ -20,23 +20,31 @@ from nutripilot.domain.enums import Intent
 from nutripilot.domain.models import Citation, FinalResponse
 from nutripilot.safety import OutputGuard, has_dietary_conflict, merge_dietary_terms
 from nutripilot.safety.dietary import match_ingredient, meets_ingredient_requirements
-from nutripilot.safety.guards import CHICKEN_SAFETY_REFERENCE
+from nutripilot.safety.guards import (
+    CHICKEN_SAFETY_REFERENCE,
+    dietary_prose_conflicts,
+    extract_declared_allergens,
+)
 
 _RECOMMENDATION_INTENTS = {
     Intent.MEAL_RECOMMENDATION.value, Intent.MEAL_ADJUSTMENT.value, Intent.MEAL_PLAN.value,
 }
 _DOMAIN_INTENTS = {Intent.FOOD_QUESTION.value, Intent.CONVERSATION.value}
 _NUMBER_UNITS = {
-    "calories_kcal": "kcal", "max_calories_kcal": "kcal", "daily_calorie_target": "kcal",
-    "protein_g": "g", "min_protein_g": "g", "daily_protein_target_g": "g",
+    "calories_kcal": "kcal", "protein_g": "g",
     "fat_g": "g", "fiber_g": "g", "carbohydrates_g": "g", "serving_size_g": "g",
     "sodium_mg": "mg", "serving_weight_g": "g", "input_weight_range_g": "g",
-    "prep_minutes": "分钟", "max_prep_minutes": "分钟",
-    "price_cny": "元", "max_price_cny": "元", "temperature_c": "℃",
+    "prep_minutes": "分钟",
+    "price_cny": "元", "temperature_c": "℃",
     "humidity_percent": "%",
     "fat_reduction_g": "g", "fat_reduction_percent": "%",
     "protein_increase_g": "g", "protein_increase_percent": "%",
     "change_percent": "%",
+}
+_NUTRIENT_FIELDS = {
+    "calories_kcal", "protein_g", "fat_g", "fiber_g", "carbohydrates_g", "sodium_mg",
+    "fat_reduction_g", "fat_reduction_percent", "protein_increase_g",
+    "protein_increase_percent", "change_percent",
 }
 _UNIT_ALIASES = {
     "千卡": "kcal", "大卡": "kcal", "千克": "kg", "公斤": "kg", "克": "g",
@@ -52,12 +60,29 @@ def answer_evidence(
     message = state.get("user_message", "")
     task = state.get("answer_task", {})
     targets = set(task.get("meal_ids", []))
+    if state.get("intent") == Intent.RECIPE_QUERY.value and not targets:
+        targets = {
+            data["meal_id"] for result in state.get("tool_results", [])
+            if result.get("tool_name") == "get_recipe" and result.get("status") == "success"
+            and isinstance(data := result.get("data"), dict) and data.get("meal_id")
+        }
     displayed = {meal["meal_id"] for meal in state.get("discussed_meals", [])}
-    needs_nutrition = answer_needs_nutrition(state)
+    needs_nutrition = (
+        answer_needs_nutrition(state) and state.get("intent") != Intent.RECIPE_QUERY.value
+    )
     needs_weather = bool(re.search(r"天气|下雨|炎热|寒冷|降温|天热|天冷", message))
     projected = []
     for result in compact_tool_results(results):
         name = result.get("tool_name")
+        if historical and name == "get_user_profile" and any(
+            current.get("tool_name") == name and current.get("status") == "success"
+            for current in state.get("tool_results", [])
+        ):
+            continue
+        if state.get("intent") == Intent.RECIPE_QUERY.value and name not in {
+            "get_recipe", "get_user_profile",
+        }:
+            continue
         if name == "search_meals" and state.get("intent") == Intent.RECIPE_QUERY.value:
             continue
         if task.get("context") == "general" and name != "get_user_profile":
@@ -132,6 +157,13 @@ def answer_boundary_evidence(
     task = state.get("answer_task", {})
     meal_ids.update(task.get("meal_ids", []))
     if not meal_ids and state.get("intent") not in _RECOMMENDATION_INTENTS:
+        meal_ids.update(
+            data["meal_id"] for result in state.get("tool_results", [])
+            if result.get("status") == "success"
+            and result.get("tool_name") in {"get_recipe", "get_nutrition"}
+            and isinstance(data := result.get("data"), dict) and data.get("meal_id")
+        )
+    if not meal_ids and state.get("intent") not in _RECOMMENDATION_INTENTS:
         meal_ids.update(item["meal_id"] for item in state.get("discussed_meals", []))
     focused: AgentState = {
         **state, "answer_task": {**task, "meal_ids": sorted(meal_ids)},
@@ -139,6 +171,8 @@ def answer_boundary_evidence(
     }
     results = []
     for result in [*state.get("conversation_evidence", []), *state.get("tool_results", [])]:
+        if result.get("status") != "success":
+            continue
         data = result.get("data") or {}
         if result.get("tool_name") in {"get_recipe", "get_nutrition"} and (
             isinstance(data, dict) and data.get("meal_id") not in meal_ids
@@ -177,12 +211,20 @@ def _answer_data(value: Any, message: str) -> Any:
     return result
 
 
+def answer_needs_chicken_safety(state: AgentState) -> bool:
+    return state.get("intent") == Intent.RECIPE_QUERY.value and any(
+        result.get("tool_name") == "get_recipe" and result.get("status") == "success"
+        and re.search(r"鸡(?!蛋|精)", str((result.get("data") or {}).get("raw_ingredients", "")))
+        for result in state.get("tool_results", [])
+    )
+
+
 def answer_sources(state: AgentState) -> dict[str, Citation]:
     sources: dict[str, Citation] = {}
     if (
         state.get("intent") == Intent.FOOD_QUESTION.value
         and state.get("answer_task", {}).get("context") == "general"
-    ):
+    ) or answer_needs_chicken_safety(state):
         reference = CHICKEN_SAFETY_REFERENCE
         sources[reference["source_id"]] = Citation(
             source_id=reference["source_id"], title=reference["title"],
@@ -401,6 +443,11 @@ def canonical_answer(state: AgentState, draft: RecommendationDraft) -> FinalResp
     response.warnings = list(dict.fromkeys([
         *response.warnings, *(state.get("plan_quality") or {}).get("warnings", []),
     ]))
+    if state.get("intent") in _RECOMMENDATION_INTENTS and not draft.recommendations and any(
+        result.get("tool_name") == "search_meals" and result.get("status") == "success"
+        for result in state.get("tool_results", [])
+    ):
+        response = response.model_copy(update={"status": "completed"})
     return response
 
 
@@ -567,6 +614,31 @@ def guard_answer_facts(
     response: FinalResponse, state: AgentState, guard: OutputGuard,
 ) -> tuple[FinalResponse, list[str], set[int]]:
     forbidden = _find_constraint_violations(state)
+    exclusions = merge_dietary_terms(
+        state.get("dietary_constraints", {}).get("allergens"),
+        state.get("dietary_constraints", {}).get("excluded_ingredients"),
+    )
+    if state.get("intent") == Intent.RECIPE_QUERY.value:
+        conflicts = dietary_prose_conflicts(response.message, exclusions)
+        if conflicts:
+            response = response.model_copy(update={
+                "message": (
+                    f"不要使用{'、'.join(conflicts)}及其制品；"
+                    "来源配方含有与已记录禁忌冲突的食材，不能直接照做。"
+                    "需要核对其他配料及交叉接触，不能保证省略后没有过敏风险。"
+                ),
+            })
+        if answer_needs_chicken_safety(state):
+            source_id = CHICKEN_SAFETY_REFERENCE["source_id"]
+            response = response.model_copy(update={
+                "warnings": list(dict.fromkeys([
+                    *response.warnings, "食品安全补充：" + CHICKEN_SAFETY_REFERENCE["guidance"],
+                ])),
+                "citations": [
+                    *[item for item in response.citations if item.source_id != source_id],
+                    answer_sources(state)[source_id],
+                ],
+            })
     guarded, flags = guard.validate(
         response,
         allowed_meal_ids=(
@@ -764,11 +836,38 @@ def answer_review_issues(
     return list(dict.fromkeys(issues))
 
 
+def answer_candidate_ids(state: AgentState) -> set[int]:
+    """Apply a known relative preference before generation, not after a model guesses."""
+    candidates = set(state.get("candidate_ids", []))
+    task = state.get("answer_task", {})
+    if task.get("nutrient_preference") != "lower_fat" or not task.get("meal_ids"):
+        return candidates
+    historical = _meal_records(state.get("conversation_evidence", []))
+    bounds = [
+        (historical[meal_id].get("nutrition") or {}).get("nutrient_ranges", {}).get(
+            "fat_g", {},
+        ).get("minimum", (historical[meal_id].get("nutrition") or {}).get("fat_g"))
+        for meal_id in task["meal_ids"] if meal_id in historical
+    ]
+    known = [value for value in bounds if isinstance(value, (int, float))]
+    if not known:
+        return candidates
+    return {
+        meal_id for meal_id, meal in _meal_records(state.get("tool_results", [])).items()
+        if meal_id in candidates and isinstance(
+            upper := (meal.get("nutrition") or {}).get("nutrient_ranges", {}).get(
+                "fat_g", {},
+            ).get("maximum", (meal.get("nutrition") or {}).get("fat_g")), (int, float),
+        ) and upper < min(known)
+    }
+
+
 def prose_issues(
     draft: RecommendationDraft, canonical: FinalResponse, state: AgentState,
-    evidence: dict[str, Any],
 ) -> list[str]:
     issues = []
+    if not draft.message.strip():
+        issues.append("EMPTY_ANSWER")
     if set(draft.source_ids) - set(answer_sources(state)):
         issues.append("UNKNOWN_SOURCE")
     if state.get("intent") == Intent.CONVERSATION.value and draft.source_ids:
@@ -783,63 +882,32 @@ def prose_issues(
     if count and len(draft.recommendations) > count:
         issues.append(f"REQUESTED_COUNT: 用户只要求{count}个选择，不要额外推荐。")
     task = state.get("answer_task", {})
-    if task.get("nutrient_preference") == "lower_fat" and task.get("meal_ids"):
-        historical = _meal_records(state.get("conversation_evidence", []))
-        references = [
-            historical[meal_id] for meal_id in task["meal_ids"] if meal_id in historical
-        ]
-        bounds = [
-            (meal.get("nutrition") or {}).get("nutrient_ranges", {}).get("fat_g", {}).get(
-                "minimum", (meal.get("nutrition") or {}).get("fat_g"),
-            ) for meal in references
-        ]
-        known_bounds = [value for value in bounds if isinstance(value, (int, float))]
-        if known_bounds and any(
-            item.fat_g is None or item.fat_g >= min(known_bounds)
-            for item in canonical.recommendations
-        ):
-            issues.append(
-                "LOWER_FAT_NOT_MET: 所选菜品的整菜脂肪估算不能确认低于原菜；"
-                "选择有依据的较低选项，或说明没有合适候选，不要声称已满足。"
-            )
+    if task.get("nutrient_preference") == "lower_fat" and any(
+        item.meal_id not in answer_candidate_ids(state) for item in canonical.recommendations
+    ):
+        issues.append(
+            "LOWER_FAT_NOT_MET: 所选菜品的整菜脂肪估算不能确认低于原菜；"
+            "选择有依据的较低选项，或说明没有合适候选，不要声称已满足。"
+        )
     text = "\n".join([draft.message, *(item.reason for item in draft.recommendations)])
-    if re.search(r"你.{0,16}(?:过敏|患有|确诊)|治愈|替代药物|停药|处方", text):
+    if re.search(r"你.{0,16}(?:患有|确诊)|治愈|替代药物|停药|处方", text):
         issues.append("PERSONAL_OR_MEDICAL_CLAIM")
+    declared = merge_dietary_terms(state.get("dietary_constraints", {}).get("allergens"))
+    if re.search(r"你.{0,16}过敏", text) and (
+        not (claimed := extract_declared_allergens(text))
+        or set(claimed) - set(declared)
+    ):
+        issues.append("PERSONAL_OR_MEDICAL_CLAIM")
+    conflicts = dietary_prose_conflicts(text, merge_dietary_terms(
+        declared, state.get("dietary_constraints", {}).get("excluded_ingredients"),
+    ))
+    if conflicts:
+        issues.append(
+            f"DIETARY_PROSE_CONFLICT: 不要使用{'、'.join(conflicts)}；"
+            "来源中的可选配料也不能覆盖用户禁忌，删除添加建议并明确省略。"
+        )
     if re.search(r"(?:不含|没有|无)(?:任何|常见|已知)?过敏原", text):
         issues.append("ALLERGEN_ABSENCE_NOT_VERIFIED: 未标注不等于不含过敏原，不能保证无风险。")
-    # Exact quantities need evidence; this check does not prove their semantic attribution.
-    numbers = _quantity_numbers(text)
-    known = _evidence_quantities({
-        key: evidence[key] for key in ("tool_results", "conversation_evidence", "slots")
-        if key in evidence
-    })
-    known |= _evidence_quantities(answer_comparisons(state))
-    known |= _evidence_quantities(answer_nutrition_calculations(state))
-    known |= _evidence_quantities(answer_requested_calculations(state, draft))
-    displayed_numbers = {
-        (number.quantize(Decimal(precision)), unit)
-        for number, unit in known for precision in ("1", "0.1", "0.01")
-        if number.adjusted() < 12
-    }
-    displayed_numbers |= {
-        (rounded, unit)
-        for number, unit in known if unit in {"kcal", "g", "mg"} and number != 0
-        for precision in ("1E1", "1E2")
-        if number.adjusted() < 12
-        if abs((rounded := number.quantize(Decimal(precision))) - number) <= abs(number) / 100
-    }
-    unsupported = numbers - known - displayed_numbers
-    general_question = (
-        state.get("intent") == Intent.FOOD_QUESTION.value
-        and state.get("answer_task", {}).get("context") == "general"
-    )
-    if unsupported and not general_question:
-        issues.append(
-            "UNSUPPORTED_NUMBER: " + ", ".join(
-                f"{number} {unit}" for number, unit in sorted(unsupported)
-            )
-            + "；删除这些无依据的数值及相关断言，不换算、不新增或借用其他对象的数值。"
-        )
     if (
         state.get("intent") in _RECOMMENDATION_INTENTS
         and not canonical.recommendations
@@ -852,6 +920,29 @@ def prose_issues(
     if canonical.status not in {"completed", "degraded"}:
         issues.append("INVALID_ANSWER_STATE")
     return issues
+
+
+def answer_quantity_hints(
+    draft: RecommendationDraft, evidence: dict[str, Any],
+) -> dict[str, list[dict[str, str]]]:
+    """Unmatched quantities need context; matching never proves attribution."""
+    source_facts = [
+        result for result in evidence.get("source_facts", [])
+        if result.get("status") == "success" and result.get("tool_name") != "get_user_profile"
+    ]
+    known = _evidence_quantities({"source_facts": source_facts, **{
+        key: evidence[key] for key in (
+            "candidate_nutrition", "computed_comparisons", "nutrition_calculations",
+            "requested_calculations", "food_safety_reference",
+        ) if key in evidence
+    }})
+    normalized = {_normalize_quantity(number, unit) for number, unit in known}
+    text = "\n".join([draft.message, *(item.reason for item in draft.recommendations)])
+    return {"unmatched_quantities": [
+        {"value": str(number), "unit": unit}
+        for number, unit in sorted(_quantity_numbers(text))
+        if _normalize_quantity(number, unit) not in normalized
+    ]}
 
 
 def approve_answer(draft: RecommendationDraft, canonical: FinalResponse) -> dict[str, Any]:
@@ -894,20 +985,52 @@ def _quantity_numbers(text: str) -> set[tuple[Decimal, str]]:
     }
 
 
-def _evidence_quantities(value: Any, unit: str | None = None) -> set[tuple[Decimal, str]]:
+def _normalize_quantity(number: Decimal, unit: str) -> tuple[Decimal, str]:
+    base, multiplier = {
+        "kg": ("g", Decimal("1000")), "mg": ("g", Decimal("0.001")),
+        "l": ("ml", Decimal("1000")),
+        "小时": ("秒", Decimal("3600")), "分钟": ("秒", Decimal("60")),
+        "cm": ("mm", Decimal("10")),
+    }.get(unit, (unit, Decimal("1")))
+    return number * multiplier, base
+
+
+def _evidence_quantities(
+    value: Any, unit: str | None = None, *, nutrient: bool = False,
+) -> set[tuple[Decimal, str]]:
     if isinstance(value, dict):
         return set().union(*(
             _evidence_quantities(
                 item, _NUMBER_UNITS.get(key, unit if key in {"minimum", "maximum"} else None),
+                nutrient=(
+                    key in _NUTRIENT_FIELDS
+                    or (nutrient and key in {"minimum", "maximum"})
+                ),
             ) for key, item in value.items() if key not in {
                 "citation", "uri", "source_uri", "ingredient_source_uris",
                 "source_id", "source_sha256", "version",
             }
         ))
     if isinstance(value, list):
-        return set().union(*(_evidence_quantities(item, unit) for item in value))
+        return set().union(*(
+            _evidence_quantities(item, unit, nutrient=nutrient) for item in value
+        ))
     if isinstance(value, str):
         return _quantity_numbers(value)
     if unit and isinstance(value, (int, float)) and not isinstance(value, bool):
-        return {(Decimal(str(value)), unit)}
+        number = Decimal(str(value))
+        if not number.is_finite():
+            return set()
+        quantities = {(number, unit)}
+        if nutrient and number.adjusted() < 12:
+            quantities |= {
+                (number.quantize(Decimal(precision)), unit) for precision in ("1", "0.1", "0.01")
+            }
+            if number != 0 and unit in {"kcal", "g", "mg"}:
+                quantities |= {
+                    (rounded, unit) for precision in ("1E1", "1E2")
+                    if abs((rounded := number.quantize(Decimal(precision))) - number)
+                    <= abs(number) / 100
+                }
+        return quantities
     return set()

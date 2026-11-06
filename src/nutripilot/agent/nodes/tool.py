@@ -226,6 +226,19 @@ class ToolExecutionNode:
             if result.error and not result.error.retryable:
                 break
 
+        dietary_constraints = {
+            **dietary_constraints,
+            "allergens": merge_dietary_terms(
+                dietary_constraints.get("allergens"), _profile_terms(results, "allergens"),
+                state.get("slots", {}).get("allergens"),
+            ),
+            "excluded_ingredients": merge_dietary_terms(
+                dietary_constraints.get("excluded_ingredients"),
+                _profile_terms(results, "dislikes"),
+                state.get("slots", {}).get("dislikes"),
+                state.get("slots", {}).get("excluded_ingredients"),
+            ),
+        }
         candidate_ids, citations, filtered_meal_ids = _extract_grounding(
             results,
             dietary_constraints,
@@ -345,12 +358,10 @@ def _apply_profile_constraints(
     profile_allergens = _profile_terms(results, "allergens")
     profile_dislikes = _profile_terms(results, "dislikes")
     declared_allergens = merge_dietary_terms(
-        arguments.get("excluded_allergens"),
         profile_allergens,
         slots.get("allergens"),
     )
     excluded_ingredients = merge_dietary_terms(
-        arguments.get("excluded_ingredients"),
         profile_dislikes,
         profile_allergens,
         slots.get("dislikes"),

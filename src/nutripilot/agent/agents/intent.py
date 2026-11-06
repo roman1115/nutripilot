@@ -27,7 +27,7 @@ from nutripilot.tracing import TraceRecorder
 
 class IntentAgent:
     name = "IntentAgent"
-    prompt_version = "intent-v14"
+    prompt_version = "intent-v15"
     system_prompt = (
         "你是饮食意图识别 Worker。仅依据用户消息和已有状态识别意图、抽取槽位；"
         "不得调用工具或提供医疗结论，必须返回符合给定 Schema 的结构化结果。"
@@ -237,6 +237,8 @@ class IntentAgent:
 
 def _answer_task(state: AgentState, output: IntentOutput) -> dict[str, Any]:
     task = output.answer_task.model_dump(mode="json")
+    if output.intent in {Intent.RECIPE_QUERY, Intent.NUTRITION_QUERY}:
+        task["context"] = "meals"
     known = {meal["meal_id"] for meal in state.get("discussed_meals", [])}
     task["meal_ids"] = list(dict.fromkeys(
         meal_id for meal_id in task["meal_ids"] if meal_id in known

@@ -5,9 +5,14 @@ import pytest
 
 from nutripilot.agent.agents.base import compact_tool_results
 from nutripilot.agent.agents.recommendation import RecommendationAgent
-from nutripilot.agent.answers import answer_boundary_evidence, answer_evidence, compact_answer
+from nutripilot.agent.answers import (
+    answer_boundary_evidence,
+    answer_evidence,
+    answer_quantity_hints,
+    compact_answer,
+)
 from nutripilot.agent.contracts import RecommendationDraft, RecommendationOutput
-from nutripilot.agent.state import AgentState
+from nutripilot.agent.state import AgentState, new_agent_state
 from nutripilot.domain.models import FinalResponse, MealRecommendation
 from nutripilot.model_gateway import FakeModelGateway
 from nutripilot.tracing import InMemoryTraceRecorder
@@ -110,6 +115,48 @@ def test_boundary_evidence_binds_ingredients_to_selected_dish_and_keeps_original
     assert state == original
 
 
+@pytest.mark.parametrize("explicit_targets", [False, True])
+def test_boundary_evidence_keeps_current_recipe_without_relying_on_display_history(
+    explicit_targets,
+):
+    recipe = {"tool_name": "get_recipe", "status": "success", "data": {
+        "meal_id": 1, "name": "葱拌豆腐", "raw_quantities": "豆腐1盒",
+        "instructions": "拌匀。",
+    }}
+    old_recipe = {"tool_name": "get_recipe", "status": "success", "data": {
+        "meal_id": 2, "name": "旧菜品", "raw_quantities": "豆腐300克",
+    }}
+    failed_recipe = {"tool_name": "get_recipe", "status": "error", "data": {
+        "meal_id": 1, "name": "失败结果", "raw_quantities": "豆腐350克",
+    }}
+    state: AgentState = {
+        "intent": "RECIPE_QUERY", "user_message": "葱拌豆腐怎么做？",
+        "answer_task": {"context": "meals", "meal_ids": [1] if explicit_targets else []},
+        "discussed_meals": [{"meal_id": 2, "name": "旧菜品"}],
+        "conversation_evidence": [old_recipe],
+        "tool_results": [recipe, failed_recipe],
+    }
+    original = copy.deepcopy(state)
+    draft = RecommendationDraft(message="豆腐1盒，拌匀。")
+    projected = answer_boundary_evidence(state, draft)
+    assert projected == [recipe]
+    assert state == original
+    assert answer_quantity_hints(RecommendationDraft(message="豆腐300克。"), {
+        "source_facts": projected,
+    }) == {"unmatched_quantities": [{"value": "300", "unit": "g"}]}
+
+
+def test_boundary_evidence_keeps_current_nutrition_when_no_target_or_history():
+    result = {"tool_name": "get_nutrition", "status": "success", "data": {
+        "meal_id": 1, "name": "葱拌豆腐", "nutrition": {"protein_g": 10},
+    }}
+    state: AgentState = {
+        "intent": "NUTRITION_QUERY", "user_message": "葱拌豆腐蛋白多少？",
+        "tool_results": [result],
+    }
+    assert answer_boundary_evidence(state, RecommendationDraft(message="10克。")) == [result]
+
+
 def test_recipe_generation_does_not_mix_nutrition_mapping_with_original_ingredients():
     state: AgentState = {"intent": "RECIPE_QUERY", "user_message": "凉拌鸡丝怎么做"}
     results = [
@@ -126,6 +173,60 @@ def test_recipe_generation_does_not_mix_nutrition_mapping_with_original_ingredie
     assert [item["tool_name"] for item in projected] == ["get_recipe"]
     assert projected[0]["data"]["raw_ingredients"] == "香醋"
     assert results == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("facts", "message"), [
+    ({"raw_quantities": "豆腐300克，葱10克"}, "这道菜用葱300克。"),
+    ({"nutrition": {"protein_g": 30, "fat_g": 10}}, "这道菜脂肪30克。"),
+])
+async def test_matching_numbers_retain_attribution_evidence_for_offline_review(facts, message):
+    from scripts.verify_answer_quantities import offline_boundary_payload
+
+    state = new_agent_state(user_id=1, message="测试菜的用量和营养")
+    state.update(
+        intent="FOOD_QUESTION",
+        answer_task={"context": "meals", "meal_ids": [1], "needs_nutrition": True},
+        tool_results=[{"tool_name": "get_recipe", "status": "success", "data": {
+            "meal_id": 1, "name": "测试菜", **facts,
+        }}],
+    )
+    original = copy.deepcopy(state)
+    payload = offline_boundary_payload(state, RecommendationDraft(message=message))
+    assert state == original
+    assert payload["source_facts"][0]["data"] == {"meal_id": 1, "name": "测试菜", **facts}
+    assert payload["answer"]["message"] == message
+    assert payload["quantity_hints"] == {"unmatched_quantities": []}
+
+
+@pytest.mark.asyncio
+async def test_recipe_generation_focuses_target_without_numeric_hints_or_old_limits():
+    gateway = FakeModelGateway()
+    state = new_agent_state(user_id=1, message="测试菜的详细做法")
+    state.update(
+        intent="RECIPE_QUERY", answer_task={"context": "meals", "meal_ids": [1]},
+        slots={"max_calories_kcal": 600},
+        tool_results=[
+            {"tool_name": "get_recipe", "status": "success", "data": {
+                "meal_id": 2, "name": "其他菜", "raw_quantities": "豆腐300克",
+                "raw_ingredients": "豆腐", "instructions": "拌匀",
+            }},
+            {"tool_name": "get_recipe", "status": "success", "data": {
+                "meal_id": 1, "name": "测试菜", "raw_quantities": "豆腐1盒",
+                "raw_ingredients": "豆腐", "instructions": "拌匀",
+            }},
+        ],
+    )
+    text = "原文没有给出300克，也没有说明600千卡，不能推断为这些数值。"
+    gateway.queue_response("recommendation", {"response": {"message": text}})
+    update = await RecommendationAgent(gateway, InMemoryTraceRecorder()).run(state)
+    assert update["approved_answer"]
+    generation, = gateway.call_history
+    payload = generation["payload"]
+    assert all(result["data"]["meal_id"] == 1 for result in payload["tool_results"])
+    assert "quantity_hints" not in payload
+    assert "max_calories_kcal" not in payload["slots"]
+    assert payload["nutrition_calculations"] == []
 
 
 @pytest.mark.parametrize("nested", [False, True])
@@ -228,10 +329,8 @@ async def test_recommendation_grounds_from_original_results_after_context_projec
     for call in gateway.call_history:
         assert "verified_response" not in call["payload"]
     assert "verified_facts" not in gateway.call_history[0]["payload"]
-    assert len(gateway.call_history) == 2
+    assert len(gateway.call_history) == 1
     assert gateway.call_history[0]["worker"] == "recommendation"
-    assert gateway.call_history[1]["worker"] == "answer_boundary"
-    assert "evidence_records" not in gateway.call_history[1]["payload"]
     assert "nutrition" not in gateway.call_history[0]["payload"]["tool_results"][0][
         "data"
     ]["hits"][0]

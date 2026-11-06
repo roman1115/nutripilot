@@ -32,7 +32,9 @@ async def test_graph_runs_three_workers_and_real_tool_loop() -> None:
     workers = [item["worker"] for item in gateway.call_history]
     assert workers[0] == "intent"
     assert "planner" in workers
-    assert workers[-2:] == ["recommendation", "answer_boundary"]
+    assert workers[-1] == "recommendation"
+    assert workers.count("recommendation") == 1
+    assert not {"answer_boundary", "answer_review"}.intersection(workers)
     events = container.recorder.get_trace(state["trace_id"])
     assert any(event.component == "ToolExecutor" for event in events)
     assert any(event.component == "OutputGuard" for event in events)

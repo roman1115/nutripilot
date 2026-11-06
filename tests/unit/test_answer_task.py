@@ -8,9 +8,11 @@ import pytest
 from nutripilot.agent.agents.intent import IntentAgent
 from nutripilot.agent.agents.recommendation import RecommendationAgent
 from nutripilot.agent.answers import (
+    answer_candidate_ids,
     answer_comparisons,
     answer_evidence,
     answer_nutrition_calculations,
+    answer_quantity_hints,
     answer_requested_calculations,
     answer_review_records,
     prose_issues,
@@ -84,6 +86,29 @@ async def test_intent_keeps_relative_goal_and_count_out_of_persistent_slots():
     assert new_agent_state(user_id=1, message="谢谢")["answer_task"] == {}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("intent", "message"), [
+    ("RECIPE_QUERY", "皮蛋豆腐怎么做？"),
+    ("NUTRITION_QUERY", "查询皮蛋豆腐的营养"),
+])
+async def test_named_recipe_queries_cannot_discard_sources_as_general_knowledge(intent, message):
+    gateway = FakeModelGateway()
+    state = new_agent_state(user_id=1, message=message)
+    gateway.queue_response("intent", {
+        "intent": intent, "confidence": 1, "extracted_slots": {"food_name": "皮蛋豆腐"},
+        "answer_task": {"context": "general"},
+    })
+    update = await IntentAgent(gateway, InMemoryTraceRecorder()).run(state)
+    assert update["intent"] == intent
+    assert update["answer_task"]["context"] == "meals"
+    assert update["answer_task"]["meal_ids"] == []
+    state.update(update)
+    recipe = {"tool_name": "get_recipe", "status": "success", "data": {
+        "meal_id": 1043, "raw_quantities": "豆腐1盒", "instructions": "拌匀。",
+    }}
+    assert answer_evidence([recipe], state) == [recipe]
+
+
 def test_general_knowledge_context_keeps_allergy_but_omits_historical_recipe():
     state = new_agent_state(user_id=1, message="那现在怎么补救")
     state["intent"] = "FOOD_QUESTION"
@@ -150,18 +175,61 @@ def test_relative_fat_and_requested_count_are_checked_without_inventing_a_low_fa
         "meal_ids": [1], "nutrient_preference": "lower_fat", "recommendation_count": 1,
     }
     state["conversation_evidence"] = [search(meal(1, 100))]
+    state["candidate_ids"] = [2]
+    state["tool_results"] = [search(meal(2, 110))]
     draft = RecommendationDraft(message="可以选菜2", recommendations=[
         {"meal_id": 2, "name": "菜2"},
     ])
     canonical = FinalResponse(message="事实", recommendations=[
         MealRecommendation(meal_id=2, name="菜2", reason="", fat_g=110),
     ])
-    issues = prose_issues(draft, canonical, state, {})
+    issues = prose_issues(draft, canonical, state)
     assert any("LOWER_FAT_NOT_MET" in issue for issue in issues)
     canonical.recommendations[0].fat_g = 50
-    assert not prose_issues(draft, canonical, state, {})
+    state["tool_results"] = [search(meal(2, 50))]
+    assert not prose_issues(draft, canonical, state)
     draft.recommendations.append(draft.recommendations[0].model_copy())
-    assert any("REQUESTED_COUNT" in issue for issue in prose_issues(draft, canonical, state, {}))
+    assert any("REQUESTED_COUNT" in issue for issue in prose_issues(draft, canonical, state))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("available", [False, True])
+async def test_lower_fat_candidates_are_filtered_before_one_answer_generation(available):
+    state = new_agent_state(user_id=1, message="换一道脂肪更少的")
+    state.update(
+        intent="MEAL_ADJUSTMENT", candidate_ids=[2, 3],
+        answer_task={"meal_ids": [1], "nutrient_preference": "lower_fat"},
+        conversation_evidence=[search(meal(1, 10))],
+        tool_results=[search(meal(2, 8 if available else 12), meal(3, 20))],
+    )
+    original = copy.deepcopy(state)
+    assert answer_candidate_ids(state) == ({2} if available else set())
+    gateway = FakeModelGateway()
+    gateway.queue_response("recommendation", {"response": {
+        "message": "可以换成菜2。" if available else "本轮候选没有脂肪估算更低的菜。",
+        "recommendations": [{"meal_id": 2, "name": "菜2"}] if available else [],
+    }})
+    update = await RecommendationAgent(gateway, InMemoryTraceRecorder()).run(state)
+    call, = gateway.call_history
+    assert call["payload"]["candidate_ids"] == ([2] if available else [])
+    assert [row["meal_id"] for row in call["payload"]["tool_results"][0]["data"]["hits"]] == (
+        [2] if available else []
+    )
+    assert state == original
+    assert update["approved_answer"]
+    assert update["final_response"]["status"] == "completed"
+    assert not update.get("fallback_events")
+
+
+def test_lower_fat_overlap_does_not_fabricate_a_definite_improvement():
+    candidate = meal(2, 8)
+    candidate["nutrition"]["nutrient_ranges"]["fat_g"] = {"minimum": 7, "maximum": 11}
+    state = new_agent_state(user_id=1, message="脂肪更低的")
+    state.update(
+        candidate_ids=[2], answer_task={"meal_ids": [1], "nutrient_preference": "lower_fat"},
+        conversation_evidence=[search(meal(1, 10))], tool_results=[search(candidate)],
+    )
+    assert not answer_candidate_ids(state)
 
 
 def test_program_supplies_traceable_whole_recipe_comparison_without_mutation():
@@ -175,7 +243,9 @@ def test_program_supplies_traceable_whole_recipe_comparison_without_mutation():
     assert comparison["fat_reduction_percent"] == 76.9
     assert comparison["fat_reduction_g"] == 85.40
     draft = RecommendationDraft(message="整菜脂肪估算减少约77%。")
-    assert not prose_issues(draft, FinalResponse(message="事实"), state, {})
+    assert not answer_quantity_hints(draft, {
+        "computed_comparisons": [comparison],
+    })["unmatched_quantities"]
     assert "76.9" in answer_review_records(state, draft)["computed:2"]
     assert state == original
     state["tool_results"][0]["data"]["hits"][0]["nutrition"]["nutrient_ranges"]["fat_g"] = {
@@ -248,13 +318,15 @@ def test_agent_requested_difference_is_computed_from_known_sources_not_model_num
     assert row["direction"] == "lower"
     assert row["absolute_difference"] == {"fat_g": 85.4}
     assert row["change_percent"] == 76.9
-    assert not prose_issues(draft, FinalResponse(message="事实"), state, {})
+    assert not answer_quantity_hints(draft, {
+        "requested_calculations": [row],
+    })["unmatched_quantities"]
     assert "85.4" in answer_review_records(state, draft)["calculation:0"]
     draft.calculations[0].reference_meal_id = 999
     assert not answer_requested_calculations(state, draft)
-    assert any("UNSUPPORTED_NUMBER" in issue for issue in prose_issues(
-        draft, FinalResponse(message="事实"), state, {},
-    ))
+    assert answer_quantity_hints(draft, {
+        "requested_calculations": answer_requested_calculations(state, draft),
+    })["unmatched_quantities"]
 
 
 @pytest.mark.asyncio
@@ -266,7 +338,9 @@ async def test_revision_preserves_task_and_the_same_projected_tool_evidence():
         answer_task={"recommendation_count": 1, "objective": "推荐一个有依据的选项"},
     )
     gateway.queue_response("recommendation", {"response": {
-        "message": "只需9999分钟", "recommendations": [{"meal_id": 1, "name": "菜1"}],
+        "message": "可以选菜1。",
+        "recommendations": [{"meal_id": 1, "name": "菜1", "reason": "配方含鸡蛋。"}],
+        "source_ids": ["invented:source"],
     }})
     gateway.queue_response("recommendation", {"response": {
         "message": "可以选菜1，配方含鸡蛋。", "recommendations": [{"meal_id": 1, "name": "菜1"}],
@@ -281,5 +355,11 @@ async def test_revision_preserves_task_and_the_same_projected_tool_evidence():
         "conversation_evidence"
     ]
     assert "evidence_records" not in calls[1]["payload"]
-    assert "message" not in calls[1]["payload"]["answer_to_revise"]
+    assert calls[1]["payload"]["answer_to_revise"]["message"] == "可以选菜1。"
+    assert calls[1]["payload"]["answer_to_revise"]["recommendations"][0]["reason"] == (
+        "配方含鸡蛋。"
+    )
+    assert [call["worker"] for call in gateway.call_history] == [
+        "recommendation", "recommendation",
+    ]
     assert "9999" not in json.dumps(update["final_response"])

@@ -65,6 +65,16 @@ def route_after_tool(
             and results[-1].get("status") == "success"
         ):
             return "recommendation"
+        plans = state.get("execution_plan", [])
+        if (
+            results[-1].get("status") == "success" and plans
+            and plans[-1].get("complete")
+            and plans[-1].get("tools") == ["get_user_profile"]
+            and state.get("intent") in {
+                Intent.FOOD_QUESTION.value, Intent.NUTRITION_QUERY.value,
+            }
+        ):
+            return "recommendation"
     if state.get("step_count", 0) >= max_tool_steps:
         return "budget"
     return "planner"

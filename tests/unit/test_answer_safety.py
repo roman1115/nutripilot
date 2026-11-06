@@ -4,6 +4,9 @@ import pytest
 from pydantic import ValidationError
 
 from nutripilot.agent.answers import (
+    answer_needs_chicken_safety,
+    answer_nutrition_calculations,
+    answer_quantity_hints,
     apply_approved_answer,
     approve_answer,
     canonical_answer,
@@ -14,7 +17,7 @@ from nutripilot.agent.nodes.output import OutputGuardNode
 from nutripilot.agent.state import new_agent_state
 from nutripilot.domain.models import Citation, FinalResponse, MealRecommendation
 from nutripilot.safety import OutputGuard
-from nutripilot.safety.guards import CHICKEN_SAFETY_REFERENCE
+from nutripilot.safety.guards import CHICKEN_SAFETY_REFERENCE, dietary_prose_conflicts
 from nutripilot.tracing import InMemoryTraceRecorder
 
 
@@ -26,13 +29,12 @@ def test_review_bool_cannot_be_a_truthy_string():
 @pytest.mark.parametrize("message", [
     "你对鱼过敏，所以推荐这个。",
     "你患有糖尿病，所以推荐这个。",
-    "只要99999分钟就做好。",
 ])
-def test_unfounded_personal_claims_and_numbers_are_rejected_before_model_review(message):
+def test_unfounded_personal_claims_are_rejected_before_model_review(message):
     state = new_agent_state(message="解释一下", user_id=1)
     state["intent"] = "FOOD_QUESTION"
     draft = RecommendationDraft(message=message)
-    assert prose_issues(draft, canonical_answer(state, draft), state, {})
+    assert prose_issues(draft, canonical_answer(state, draft), state)
 
 
 def test_unknown_sources_and_unrequested_cards_are_rejected():
@@ -42,7 +44,7 @@ def test_unknown_sources_and_unrequested_cards_are_rejected():
         message="推荐假的", source_ids=["invented"],
         recommendations=[{"meal_id": 999, "name": "假的", "reason": ""}],
     )
-    issues = prose_issues(draft, canonical_answer(state, draft), state, {})
+    issues = prose_issues(draft, canonical_answer(state, draft), state)
     assert "UNKNOWN_SOURCE" in issues
     assert "UNSUPPORTED_MEAL" in issues
 
@@ -112,6 +114,76 @@ def test_medical_claim_in_card_reason_is_also_blocked():
     assert "MEDICAL_CLAIM_BLOCKED" in flags
 
 
+@pytest.mark.parametrize(("text", "conflict"), [
+    ("撒花生碎（可选）。", True),
+    ("不要加入花生碎。", False),
+    ("花生碎应省略。", False),
+    ("花生碎因您对花生过敏，全程不可添加。", False),
+    ("花生碎因过敏须避免。", False),
+    ("如需增香，可撒上葱花、香菜（花生碎因过敏须避免）。", False),
+    ("- 花生碎 10g（可选，但您对花生过敏，请勿添加）", False),
+    ("- 花生碎 10g（可选）", True),
+    ("用户记录花生过敏，这不是菜品过敏原信息。", False),
+    ("不要加花生碎，但可以加花生油。", True),
+    ("不要加花生碎但可以用花生油。", True),
+    ("豆腐切块，与皮蛋拌匀。", False),
+])
+def test_known_dietary_exclusions_apply_to_optional_ingredients(text, conflict):
+    assert bool(dietary_prose_conflicts(text, ["花生"])) is conflict
+
+
+@pytest.mark.parametrize(("ingredients", "needed"), [
+    ("鸡胸肉、姜、料酒", True),
+    ("三黄鸡、香菇", True),
+    ("鸡蛋、西葫芦、鸡精", False),
+    ("豆腐、皮蛋", False),
+])
+def test_chicken_safety_reference_applies_to_meat_not_eggs_or_seasoning(ingredients, needed):
+    state = new_agent_state(user_id=1, message="做法")
+    state.update(intent="RECIPE_QUERY", tool_results=[{
+        "tool_name": "get_recipe", "status": "success",
+        "data": {"raw_ingredients": ingredients},
+    }])
+    assert answer_needs_chicken_safety(state) is needed
+
+
+@pytest.mark.asyncio
+async def test_sourced_chicken_safety_notice_survives_a_generated_recipe():
+    from nutripilot.agent.answers import guard_answer_facts
+
+    state = new_agent_state(user_id=1, message="凉拌鸡丝做法")
+    state.update(intent="RECIPE_QUERY", tool_results=[{
+        "tool_name": "get_recipe", "status": "success", "data": {
+            "meal_id": 1, "name": "凉拌鸡丝", "raw_ingredients": "鸡胸肉、姜",
+            "instructions": "煮熟。",
+        },
+    }])
+    draft = RecommendationDraft(message="按原文准备，鸡肉用食品温度计核对熟度。")
+    canonical, _, _ = guard_answer_facts(canonical_answer(state, draft), state, OutputGuard())
+    state["final_response"] = canonical.model_dump(mode="json")
+    state["approved_answer"] = approve_answer(draft, canonical)
+    result = await OutputGuardNode(OutputGuard(), InMemoryTraceRecorder()).run(state)
+    assert result["final_response"]["message"] == draft.message
+    assert any("74°C" in item and "计时" in item
+               for item in result["final_response"]["warnings"])
+    assert any(item["source_id"] == CHICKEN_SAFETY_REFERENCE["source_id"]
+               for item in result["final_response"]["citations"])
+
+
+@pytest.mark.asyncio
+async def test_final_guard_rechecks_prose_against_current_user_exclusions():
+    state = new_agent_state(user_id=1, message="怎么做")
+    state.update(intent="FOOD_QUESTION", dietary_constraints={"allergens": ["花生"]})
+    canonical = FinalResponse(message="暂时无法回答。")
+    state["final_response"] = canonical.model_dump(mode="json")
+    state["approved_answer"] = approve_answer(
+        RecommendationDraft(message="加花生碎拌匀。"), canonical,
+    )
+    result = await OutputGuardNode(OutputGuard(), InMemoryTraceRecorder()).run(state)
+    assert result["final_response"]["status"] == "blocked"
+    assert "加花生碎" not in result["final_response"]["message"]
+
+
 def test_missing_nutrition_evidence_never_uses_the_unreviewed_draft_as_fallback():
     state = new_agent_state(message="查询营养", user_id=1)
     state["intent"] = "NUTRITION_QUERY"
@@ -130,10 +202,7 @@ def test_only_a_successful_empty_search_supports_an_explanation_without_cards(st
         "tool_name": "search_meals", "status": status, "data": {"hits": []},
     }] if status else []
     draft = RecommendationDraft(message="没有找到同时符合这些条件的菜品。")
-    issues = prose_issues(
-        draft, canonical_answer(state, draft), state,
-        {"tool_results": state["tool_results"], "slots": state["slots"]},
-    )
+    issues = prose_issues(draft, canonical_answer(state, draft), state)
     assert ("NO_CURRENT_MEAL_EVIDENCE" not in issues) is (status == "success")
 
 
@@ -149,7 +218,7 @@ def test_prose_safety_does_not_parse_natural_count_phrasing(message):
     draft = RecommendationDraft(message=message)
     assert not any(
         issue.startswith(("MEAL_COUNT_MISMATCH", "UNSUPPORTED_QUALITATIVE_CLAIM"))
-        for issue in prose_issues(draft, canonical_answer(state, draft), state, {})
+        for issue in prose_issues(draft, canonical_answer(state, draft), state)
     )
 
 
@@ -190,24 +259,25 @@ async def test_final_safety_filter_cannot_keep_plural_approved_prose_for_one_sur
     assert checked.payload["approved_prose_applied"] is False
 
 
-def test_number_guard_allows_list_indices_and_rounded_verified_estimates():
-    state = new_agent_state(message="解释营养", user_id=1)
-    state["intent"] = "FOOD_QUESTION"
+def test_quantity_hints_allow_list_indices_and_rounded_verified_estimates():
     draft = RecommendationDraft(message="1）按整菜估算约295.4千卡。\n2）不是个人摄入量。")
-    assert not prose_issues(draft, canonical_answer(state, draft), state, {
-        "tool_results": [{
+    assert answer_quantity_hints(draft, {
+        "source_facts": [{
+            "status": "success",
             "nutrition": {"calories_kcal": 295.432},
             "source_hash": "1234567890123456789012345678901234567890",
         }],
-    })
+    }) == {"unmatched_quantities": []}
 
 
-def test_number_feedback_identifies_the_unsupported_quantity_for_correction():
+def test_unmatched_quantity_is_a_hint_and_does_not_preempt_semantic_review():
     state = new_agent_state(message="怎么不柴", user_id=1)
     state["intent"] = "FOOD_QUESTION"
     draft = RecommendationDraft(message="加热到99℃就行。")
-    issues = prose_issues(draft, canonical_answer(state, draft), state, {})
-    assert any("UNSUPPORTED_NUMBER: 99" in issue for issue in issues)
+    assert answer_quantity_hints(draft, {}) == {
+        "unmatched_quantities": [{"value": "99", "unit": "℃"}],
+    }
+    assert not prose_issues(draft, canonical_answer(state, draft), state)
 
 
 def test_fractional_recipe_estimate_and_close_coarse_nutrition_rounding_are_supported():
@@ -221,24 +291,23 @@ def test_fractional_recipe_estimate_and_close_coarse_nutrition_rounding_are_supp
         }]},
     }]
     draft = RecommendationDraft(message="假设均分后取一半配方，约860千卡、43克蛋白质。")
-    assert not prose_issues(draft, canonical_answer(state, draft), state, {})
+    evidence = {"nutrition_calculations": answer_nutrition_calculations(state)}
+    assert answer_quantity_hints(draft, evidence) == {"unmatched_quantities": []}
     draft.message = "半份500千卡，煮99分钟就行。"
-    assert any("UNSUPPORTED_NUMBER" in issue for issue in prose_issues(
-        draft, canonical_answer(state, draft), state, {},
-    ))
+    assert answer_quantity_hints(draft, evidence) == {"unmatched_quantities": [
+        {"value": "99", "unit": "分钟"}, {"value": "500", "unit": "kcal"},
+    ]}
 
 
-def test_general_question_numbers_are_not_treated_as_specific_recipe_facts():
+@pytest.mark.parametrize("context", ["general", "meals"])
+def test_question_context_does_not_turn_a_numeric_hint_into_an_error(context):
     state = new_agent_state(message="鸡胸肉为什么发柴", user_id=1)
-    state.update(intent="FOOD_QUESTION", answer_task={"context": "general"})
+    state.update(intent="FOOD_QUESTION", answer_task={"context": context})
     draft = RecommendationDraft(message="鸡胸肉脂肪比例较低，常见约2%，加热会失水。")
-    assert not any(issue.startswith("UNSUPPORTED_NUMBER") for issue in prose_issues(
-        draft, canonical_answer(state, draft), state, {},
-    ))
-    state["answer_task"] = {"context": "meals"}
-    assert any(issue.startswith("UNSUPPORTED_NUMBER") for issue in prose_issues(
-        draft, canonical_answer(state, draft), state, {},
-    ))
+    assert answer_quantity_hints(draft, {}) == {
+        "unmatched_quantities": [{"value": "2", "unit": "%"}],
+    }
+    assert not prose_issues(draft, canonical_answer(state, draft), state)
 
 
 def test_general_chicken_safety_citation_is_registered_and_traceable():
@@ -249,7 +318,10 @@ def test_general_chicken_safety_citation_is_registered_and_traceable():
         source_ids=[CHICKEN_SAFETY_REFERENCE["source_id"]],
     )
     response = canonical_answer(state, draft)
-    assert not prose_issues(draft, response, state, {})
+    assert not prose_issues(draft, response, state)
+    assert answer_quantity_hints(draft, {
+        "food_safety_reference": CHICKEN_SAFETY_REFERENCE,
+    }) == {"unmatched_quantities": []}
     assert response.citations[0].uri == CHICKEN_SAFETY_REFERENCE["uri"]
     assert response.citations[0].source_type == "guideline"
     assert "165°F" in response.citations[0].excerpt
@@ -260,47 +332,113 @@ def test_thanks_cannot_cite_historical_food_sources():
     state["intent"] = "CONVERSATION"
     draft = RecommendationDraft(message="不客气", source_ids=["recipe:1"])
     assert "CONVERSATION_MUST_NOT_CITE" in prose_issues(
-        draft, canonical_answer(state, draft), state, {},
+        draft, canonical_answer(state, draft), state,
     )
 
 
 @pytest.mark.parametrize("message", ["脂肪低于1%。", "加热2分钟。", "加入5克盐。"])
 def test_quantities_cannot_borrow_step_numbers_history_or_another_unit(message):
-    state = new_agent_state(message="解释", user_id=1)
-    state["intent"] = "FOOD_QUESTION"
     draft = RecommendationDraft(message=message)
-    issues = prose_issues(draft, canonical_answer(state, draft), state, {
+    hints = answer_quantity_hints(draft, {
         "conversation_summary": "先前误说脂肪低于1%，加热2分钟，加入5克盐。",
-        "tool_results": [{"data": {
+        "source_facts": [{"status": "success", "data": {
             "instructions": ["1. 准备食材", "2. 搅拌"], "sodium_mg": 5,
         }}],
     })
-    assert any(issue.startswith("UNSUPPORTED_NUMBER") for issue in issues)
+    assert hints["unmatched_quantities"]
 
 
 def test_quantity_checks_allow_source_ranges_and_rounded_structured_nutrients():
-    state = new_agent_state(message="做法", user_id=1)
-    state["intent"] = "RECIPE_QUERY"
     draft = RecommendationDraft(message="煮5–7分钟，用量20毫升，整菜约45.4克蛋白质。")
-    assert not prose_issues(draft, canonical_answer(state, draft), state, {
-        "tool_results": [{"data": {
+    assert answer_quantity_hints(draft, {
+        "source_facts": [{"status": "success", "data": {
             "instructions": ["煮5–7分钟，加入20 ml料酒"],
             "nutrient_ranges": {"protein_g": {"minimum": 45.3744, "maximum": 45.3744}},
         }}],
-    })
+    }) == {"unmatched_quantities": []}
 
 
 def test_percent_encoded_source_urls_do_not_support_fabricated_percentages():
-    state = new_agent_state(message="为什么柴", user_id=1)
-    state["intent"] = "FOOD_QUESTION"
     draft = RecommendationDraft(message="脂肪低于1%。")
-    issues = prose_issues(draft, canonical_answer(state, draft), state, {
-        "conversation_evidence": [{"data": {
+    hints = answer_quantity_hints(draft, {
+        "source_facts": [{"status": "success", "data": {
             "citation": {"uri": "https://example.test/%E1%82%89.md"},
             "instructions": "来源 https://example.test/%E1%82%89.md",
         }}],
     })
-    assert any(issue.startswith("UNSUPPORTED_NUMBER: 1 %") for issue in issues)
+    assert hints == {"unmatched_quantities": [{"value": "1", "unit": "%"}]}
+
+
+@pytest.mark.parametrize(("source", "message", "unmatched"), [
+    ("蒸60分钟", "蒸1小时。", []),
+    ("豆腐300克", "豆腐0.3千克。", []),
+    ("盐500毫克", "盐0.5克。", []),
+    ("加水1升", "加水1000毫升。", []),
+    ("厚1厘米", "厚10毫米。", []),
+    ("豆腐300克", "豆腐1千克。", [{"value": "1", "unit": "kg"}]),
+    ("豆腐1盒", "豆腐约300克。", [{"value": "300", "unit": "g"}]),
+    ("豆腐1盒", "原文没说豆腐是300克。", [{"value": "300", "unit": "g"}]),
+    ("煮5–7分钟", "煮5–7分钟。", []),
+    ("煮5–7分钟", "煮6分钟。", [{"value": "6", "unit": "分钟"}]),
+])
+def test_quantity_hints_normalize_exact_units_without_inferring_weights_or_range_midpoints(
+    source, message, unmatched,
+):
+    assert answer_quantity_hints(RecommendationDraft(message=message), {
+        "source_facts": [{"status": "success", "data": {"instructions": source}}],
+    }) == {"unmatched_quantities": unmatched}
+
+
+@pytest.mark.parametrize(("source", "message"), [
+    ("豆腐300克，葱10克", "使用葱300克。"),
+    ({"fat_g": 10, "protein_g": 30}, "脂肪30克。"),
+    ("豆腐1盒", "豆腐一盒，约三百克。"),
+])
+def test_empty_quantity_hints_do_not_prove_attribution_or_cover_chinese_numerals(source, message):
+    assert answer_quantity_hints(RecommendationDraft(message=message), {
+        "source_facts": [{"status": "success", "data": source}],
+    }) == {"unmatched_quantities": []}
+
+
+def test_numeric_constraints_failed_results_and_unrelated_state_are_not_recipe_facts():
+    draft = RecommendationDraft(message="这道菜600千卡，用300克豆腐，冷藏10分钟。")
+    assert answer_quantity_hints(draft, {
+        "slots": {"max_calories_kcal": 600},
+        "tool_results": [{"status": "success", "data": {"instructions": "豆腐300克"}}],
+        "answer_to_revise": {"message": "冷藏10分钟"},
+        "source_facts": [
+            {"status": "success", "data": {"calories_kcal": 500}},
+            {"status": "error", "data": {"instructions": "豆腐300克，冷藏10分钟"}},
+            {"status": "success", "tool_name": "get_user_profile", "data": {
+                "preferences": "冷藏10分钟", "daily_calorie_target": 600,
+            }},
+        ],
+    }) == {"unmatched_quantities": [
+        {"value": "10", "unit": "分钟"}, {"value": "300", "unit": "g"},
+        {"value": "600", "unit": "kcal"},
+    ]}
+
+
+@pytest.mark.parametrize(("data", "message"), [
+    ({"raw_quantities": "豆腐0.3千克"}, "豆腐1千克。"),
+    ({"raw_quantities": "盐2.4克"}, "盐2克。"),
+    ({"prep_minutes": 5.5}, "加热6分钟。"),
+    ({"serving_weight_g": 295.4}, "成品295克。"),
+])
+def test_nutrient_rounding_does_not_extend_to_weights_or_cooking_times(data, message):
+    assert answer_quantity_hints(RecommendationDraft(message=message), {
+        "source_facts": [{"status": "success", "data": data}],
+    })["unmatched_quantities"]
+
+
+def test_quantity_hints_include_card_reasons_and_ignore_nonfinite_source_values():
+    draft = RecommendationDraft(
+        message="可以选测试菜。",
+        recommendations=[{"meal_id": 1, "name": "测试菜", "reason": "含99克蛋白质。"}],
+    )
+    assert answer_quantity_hints(draft, {"candidate_nutrition": [{
+        "nutrition": {"protein_g": float("nan"), "fat_g": float("inf")},
+    }]}) == {"unmatched_quantities": [{"value": "99", "unit": "g"}]}
 
 
 @pytest.mark.parametrize("message", ["这道菜不含常见过敏原。", "没有任何过敏原。"])
@@ -309,7 +447,7 @@ def test_empty_food_allergen_list_cannot_support_absolute_absence_claims(message
     state["intent"] = "FOOD_QUESTION"
     draft = RecommendationDraft(message=message)
     assert any(issue.startswith("ALLERGEN_ABSENCE_NOT_VERIFIED") for issue in prose_issues(
-        draft, canonical_answer(state, draft), state, {"tool_results": [{"allergens": []}]},
+        draft, canonical_answer(state, draft), state,
     ))
 
 
@@ -323,7 +461,7 @@ def test_subjective_meal_phrasing_is_left_to_semantic_review(message):
     state["intent"] = "FOOD_QUESTION"
     draft = RecommendationDraft(message=message)
     assert "UNSUPPORTED_QUALITATIVE_CLAIM" not in prose_issues(
-        draft, canonical_answer(state, draft), state, {},
+        draft, canonical_answer(state, draft), state,
     )
 
 
