@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     agent_max_steps: int = Field(default=8, ge=1, le=20)
     agent_deadline_seconds: float = Field(default=90, gt=0, le=600)
     agent_token_budget: int = Field(default=24000, ge=1, le=1_000_000)
+    model_context_window: int = Field(default=32768, ge=1024, le=2_000_000)
     run_store_path: str | None = None
     chat_queue: str = Field(default="default", min_length=1, max_length=100)
     chat_concurrency: int = Field(default=4, ge=1, le=32)

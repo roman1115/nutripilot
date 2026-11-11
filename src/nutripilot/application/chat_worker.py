@@ -10,7 +10,10 @@ from functools import partial
 from typing import Any, cast
 
 from anyio import CancelScope
+from psycopg import InterfaceError as CheckpointInterfaceError
+from psycopg import OperationalError as CheckpointOperationalError
 from sqlalchemy import text
+from sqlalchemy.exc import InterfaceError, OperationalError
 
 from nutripilot.agent.state import AgentState
 from nutripilot.api.schemas import ChatResponse
@@ -23,6 +26,7 @@ from nutripilot.domain.execution import (
     current_execution,
 )
 from nutripilot.infrastructure.chat_tasks import ChatTaskStore
+from nutripilot.memory.nodes import finalized_update
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +151,18 @@ class ChatWorker:
                 prepared["current_date"] = state["current_date"]
                 state = prepared
             if completed_checkpoint:
-                pass
+                if previous.get("memory_finalized_run_id") != row["id"]:
+                    previous["response_kind"] = (
+                        "confirmation" if row["kind"] == "confirmation" else "response"
+                    )
+                    await self.chat.graph.compiled.aupdate_state(
+                        config,
+                        {
+                            **finalized_update(cast("AgentState", previous)),
+                            "response_kind": previous["response_kind"],
+                        },
+                        as_node="memory_finalize",
+                    )
             elif row["status"] == "cancelling":
                 await self.chat.graph._terminate(state, config, "CANCELLED")
             elif row["attempts"] > self.settings.chat_max_attempts:
@@ -204,7 +219,7 @@ class ChatWorker:
             pass
         except Exception:
             logger.exception("Chat execution failed: %s", row["id"])
-            if not execution.suspend:
+            if not execution.suspend and not execution.finishing:
                 with CancelScope(shield=True):
                     try:
                         await self.chat.graph._terminate(state, config, "EXECUTION_FAILED")
@@ -215,9 +230,32 @@ class ChatWorker:
             current_execution.reset(handle)
 
     async def _finish(self, row: dict[str, Any]) -> None:
-        state = await self.chat.graph.aget_state(self.chat._config(row["thread_id"]))
-        if state is None:
-            raise RuntimeError("Missing execution checkpoint.")
+        delay = 0.1
+        while True:
+            try:
+                await self._finish_once(row)
+                return
+            except (
+                OperationalError, InterfaceError,
+                CheckpointOperationalError, CheckpointInterfaceError,
+            ) as exc:
+                logger.warning(
+                    "Final result persistence failed; retrying: %s (%s)",
+                    row["id"], type(exc).__name__,
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 5)
+
+    async def _finish_once(self, row: dict[str, Any]) -> None:
+        checkpoint = await self.chat.graph.compiled.aget_state(
+            self.chat._config(row["thread_id"]),
+        )
+        state = checkpoint.values
+        if (
+            not state or state.get("run_id") != row["id"] or checkpoint.next
+            or state.get("memory_finalized_run_id") != row["id"]
+        ):
+            raise RuntimeError("Missing completed execution checkpoint or memory finalization.")
         status = (
             "cancelled"
             if (state.get("error") or {}).get("code") == "CANCELLED"

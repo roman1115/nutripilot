@@ -51,6 +51,7 @@ class FakeModelGateway:
             },
             "answer_review": self._answer_review,
             "evaluation": self._evaluation,
+            "memory_summary": self._memory_summary,
         }
         self.call_history: list[dict[str, Any]] = []
 
@@ -97,6 +98,22 @@ class FakeModelGateway:
             model=self.model_name,
             usage=ModelUsage(input_tokens=input_tokens, output_tokens=output_tokens),
         )
+
+    @staticmethod
+    def _memory_summary(payload: dict[str, Any]) -> dict[str, Any]:
+        # This deterministic projection tests the contract, not semantic summarization.
+        entries = [
+            *payload.get("old_summary", []),
+            *[
+                {
+                    "kind": "assistant" if message["role"] == "ai" else "user",
+                    "text": str(message["content"])[:100] or "(empty)",
+                    "source_message_ids": [message["id"]],
+                }
+                for message in payload["messages"]
+            ],
+        ]
+        return {"entries": entries[-24:]}
 
     @staticmethod
     def _answer_review(payload: dict[str, Any]) -> dict[str, Any]:
@@ -331,6 +348,15 @@ class FakeModelGateway:
                     "limit": 20 if intent == Intent.MEAL_PLAN.value else 3,
                 }
             elif intent == Intent.MEAL_PLAN.value and "create_meal_plan" not in called:
+                if payload.get("verified_plan"):
+                    return {
+                        "complete": False,
+                        "tool_calls": [{
+                            "call_id": f"{turn_id}:{len(results) + 1}:create_meal_plan",
+                            "name": "create_meal_plan", "arguments": payload["verified_plan"],
+                        }],
+                        "plan_summary": "保存已验证餐单",
+                    }
                 try:
                     plan = PlanBuilder().build(
                         PlanSpec.from_slots(

@@ -101,6 +101,7 @@ async def start_container(container: ApplicationContainer) -> None:
             max_tool_steps=container.settings.agent_max_steps,
             deadline_seconds=container.settings.agent_deadline_seconds,
             token_budget=container.settings.agent_token_budget,
+            context_window=container.settings.model_context_window,
         )
         tasks = ChatTaskStore.create(container.settings.database_url, container.settings.chat_queue)
         await asyncio.to_thread(tasks.initialize)

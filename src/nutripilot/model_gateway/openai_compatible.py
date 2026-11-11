@@ -23,7 +23,11 @@ from nutripilot.model_gateway.base import (
     ModelOutputT,
     ModelUsage,
 )
-from nutripilot.model_gateway.budget import ExecutionLimitExceeded, current_budget
+from nutripilot.model_gateway.budget import (
+    ExecutionLimitExceeded,
+    current_budget,
+    structured_request,
+)
 
 
 class OpenAICompatibleModelGateway:
@@ -76,11 +80,10 @@ class OpenAICompatibleModelGateway:
                 try:
                     budget = current_budget()
                     completion_options: dict[str, Any] = {}
-                    model_request = {
-                        "prompt": system_prompt, "payload": payload,
-                        "schema": response_model.model_json_schema(),
-                        "schema_feedback": schema_feedback,
-                    }
+                    model_request = structured_request(
+                        worker, system_prompt, payload, response_model, prompt_version,
+                        schema_feedback,
+                    )
                     if budget:
                         completion_options["max_tokens"] = budget.completion_limit(model_request)
                     execution = current_execution.get()
@@ -94,32 +97,7 @@ class OpenAICompatibleModelGateway:
                         await execution.reserve(reserved)
                     completion = await self.client.chat.completions.create(
                         model=model,
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": (
-                                    f"{system_prompt}\nReturn exactly one valid JSON object that "
-                                    "matches output_schema. Do not include Markdown fences."
-                                ),
-                            },
-                            {
-                                "role": "user",
-                                "content": json.dumps(
-                                    {
-                                        "worker": worker,
-                                        "prompt_version": prompt_version,
-                                        "input": payload,
-                                        "output_schema": response_model.model_json_schema(),
-                                        "schema_feedback": schema_feedback,
-                                    },
-                                    ensure_ascii=False,
-                                    default=str,
-                                    separators=(",", ":"),
-                                ),
-                            },
-                        ],
-                        response_format={"type": "json_object"},
-                        temperature=0,
+                        **model_request,
                         **completion_options,
                     )
                     usage = getattr(completion, "usage", None)

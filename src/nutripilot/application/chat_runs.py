@@ -86,6 +86,9 @@ class ChatRunService:
                 user_id=user_id,
                 phase="AWAITING_CONFIRMATION",
                 confirmation_decision=approved,
+                response_kind="confirmation",
+                response_created_at=0,
+                memory_finalized_run_id=None,
             )
             history = ConversationMessage(
                 id=f"{previous['turn_id']}:decision",
@@ -140,7 +143,7 @@ def response_message(state: AgentState, kind: str, created_at: float) -> Convers
                 else "本轮请求已结束。"
             )
         ),
-        created_at=datetime.fromtimestamp(created_at, UTC),
+        created_at=datetime.fromtimestamp(state.get("response_created_at") or created_at, UTC),
         trace_id=state["trace_id"],
         response=response,
     )

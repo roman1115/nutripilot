@@ -94,6 +94,7 @@ def build_container(
         max_tool_steps=selected_settings.agent_max_steps,
         deadline_seconds=selected_settings.agent_deadline_seconds,
         token_budget=selected_settings.agent_token_budget,
+        context_window=selected_settings.model_context_window,
     )
     chat_service = ChatService(
         graph,

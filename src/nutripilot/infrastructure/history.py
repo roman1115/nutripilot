@@ -7,6 +7,7 @@ from threading import Lock
 from nutripilot.application.history import (
     ConversationMessage,
     ConversationSummary,
+    HistoryMatch,
 )
 from nutripilot.infrastructure.run_store import SQLiteRunStore
 
@@ -21,7 +22,13 @@ class InMemoryConversationStore:
             owner, items = self._items.setdefault(thread_id, (user_id, []))
             if owner != user_id:
                 raise PermissionError("Conversation owner mismatch")
-            if all(item.id != message.id for item in items):
+            existing = next((item for item in items if item.id == message.id), None)
+            if existing:
+                if existing.model_dump(exclude={"position"}) != message.model_dump(
+                    exclude={"position"},
+                ):
+                    raise ValueError("Message ID is already occupied by different content")
+            else:
                 items.append(message.model_copy(deep=True))
 
     def list_threads(
@@ -55,7 +62,33 @@ class InMemoryConversationStore:
             owner, items = self._items.get(thread_id, (user_id, []))
             if owner != user_id:
                 return []
-            return [item.model_copy(deep=True) for item in items[offset : offset + limit]]
+            return [
+                item.model_copy(deep=True, update={"position": index + 1})
+                for index, item in enumerate(items)
+                if offset <= index < offset + limit
+            ]
+
+    def after_position(
+        self, user_id: int, thread_id: str, after: int, limit: int
+    ) -> list[ConversationMessage]:
+        return self.messages(user_id, thread_id, limit, after)
+
+    def search_messages(
+        self, user_id: int, thread_id: str | None, query: str, limit: int
+    ) -> list[HistoryMatch]:
+        if not query.strip():
+            return []
+        with self._lock:
+            matches = [
+                HistoryMatch(thread_id=key, message=message.model_copy(
+                    deep=True, update={"position": index + 1},
+                ))
+                for key, (owner, messages) in self._items.items()
+                if owner == user_id and (thread_id is None or key == thread_id)
+                for index, message in enumerate(messages)
+                if query.casefold() in message.content.casefold()
+            ]
+        return sorted(matches, key=lambda match: match.message.created_at, reverse=True)[:limit]
 
 
 class SQLiteConversationStore:
@@ -94,6 +127,15 @@ class SQLiteConversationStore:
             ).fetchone()
             if not owner or owner[0] != user_id:
                 raise PermissionError("Conversation owner mismatch")
+            existing = connection.execute(
+                "SELECT thread_id,payload FROM conversation_messages WHERE id=?", (message.id,),
+            ).fetchone()
+            if existing:
+                if existing[0] != thread_id or ConversationMessage.model_validate_json(
+                    existing[1],
+                ).model_dump(exclude={"position"}) != message.model_dump(exclude={"position"}):
+                    raise ValueError("Message ID is already occupied by different content")
+                return
             inserted = connection.execute(
                 "INSERT INTO conversation_messages(id, thread_id, content, payload) "
                 "VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
@@ -130,9 +172,50 @@ class SQLiteConversationStore:
     ) -> list[ConversationMessage]:
         with self.store._connect() as connection:
             rows = connection.execute(
-                "SELECT m.payload FROM conversation_messages m "
+                "SELECT m.payload, m.sequence FROM conversation_messages m "
                 "JOIN conversations c ON c.thread_id=m.thread_id "
                 "WHERE c.user_id=? AND c.thread_id=? ORDER BY m.sequence LIMIT ? OFFSET ?",
                 (user_id, thread_id, limit, offset),
             ).fetchall()
-        return [ConversationMessage.model_validate_json(row[0]) for row in rows]
+        return [
+            ConversationMessage.model_validate_json(row[0]).model_copy(
+                update={"position": row[1]}
+            ) for row in rows
+        ]
+
+    def after_position(
+        self, user_id: int, thread_id: str, after: int, limit: int
+    ) -> list[ConversationMessage]:
+        with self.store._connect() as connection:
+            rows = connection.execute(
+                "SELECT m.payload, m.sequence FROM conversation_messages m "
+                "JOIN conversations c ON c.thread_id=m.thread_id "
+                "WHERE c.user_id=? AND c.thread_id=? AND m.sequence>? "
+                "ORDER BY m.sequence LIMIT ?",
+                (user_id, thread_id, after, limit),
+            ).fetchall()
+        return [
+            ConversationMessage.model_validate_json(row[0]).model_copy(
+                update={"position": row[1]}
+            ) for row in rows
+        ]
+
+    def search_messages(
+        self, user_id: int, thread_id: str | None, query: str, limit: int
+    ) -> list[HistoryMatch]:
+        if not query.strip():
+            return []
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self.store._connect() as connection:
+            rows = connection.execute(
+                "SELECT c.thread_id,m.payload,m.sequence FROM conversation_messages m "
+                "JOIN conversations c ON c.thread_id=m.thread_id "
+                "WHERE c.user_id=? AND (? IS NULL OR c.thread_id=?) "
+                "AND m.content LIKE ? ESCAPE '\\' ORDER BY m.sequence DESC LIMIT ?",
+                (user_id, thread_id, thread_id, f"%{escaped}%", limit),
+            ).fetchall()
+        return [
+            HistoryMatch(thread_id=row[0], message=ConversationMessage.model_validate_json(
+                row[1],
+            ).model_copy(update={"position": row[2]})) for row in rows
+        ]

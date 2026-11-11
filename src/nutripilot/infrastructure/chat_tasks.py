@@ -15,13 +15,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from pydantic import BaseModel
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 
 from nutripilot.application.chat_service import ThreadBusyError, ThreadNotFoundError
-from nutripilot.application.history import ConversationMessage, ConversationSummary
+from nutripilot.application.history import ConversationMessage, ConversationSummary, HistoryMatch
 from nutripilot.domain.execution import ExecutionOwnershipLost
 
 ACTIVE = ("queued", "running", "cancelling")
@@ -73,7 +74,12 @@ class QueueFullError(RuntimeError):
 
 
 def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    return json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"),
+        default=lambda item: (
+            item.model_dump(mode="json") if isinstance(item, BaseModel) else str(item)
+        ),
+    )
 
 
 class ChatTaskStore:
@@ -239,10 +245,12 @@ class ChatTaskStore:
             )
         self._owner(connection, user_id, thread_id)
         existing = connection.execute(
-            text("SELECT payload FROM chat_messages WHERE id=:id"), {"id": message.id}
-        ).scalar()
+            text("SELECT thread_id,payload FROM chat_messages WHERE id=:id"), {"id": message.id},
+        ).first()
         if existing is not None:
-            if ConversationMessage.model_validate_json(existing) != message:
+            if existing[0] != thread_id or ConversationMessage.model_validate_json(
+                existing[1],
+            ).model_dump(exclude={"position"}) != message.model_dump(exclude={"position"}):
                 raise RequestConflictError("消息编号已被不同内容占用。")
             return
         position = connection.execute(
@@ -339,15 +347,63 @@ class ChatTaskStore:
             rows = (
                 connection.execute(
                     text(
-                        "SELECT payload FROM chat_messages WHERE thread_id=:id "
+                        "SELECT payload,position FROM chat_messages WHERE thread_id=:id "
                         "ORDER BY position LIMIT :limit OFFSET :offset"
                     ),
                     {"id": thread_id, "limit": limit, "offset": offset},
                 )
-                .scalars()
                 .all()
             )
-        return [ConversationMessage.model_validate_json(row) for row in rows]
+        return [
+            ConversationMessage.model_validate_json(row[0]).model_copy(
+                update={"position": row[1]}
+            ) for row in rows
+        ]
+
+    def after_position(
+        self, user_id: int, thread_id: str, after: int, limit: int
+    ) -> list[ConversationMessage]:
+        with self.transaction() as connection:
+            self._owner(connection, user_id, thread_id)
+            rows = connection.execute(
+                text(
+                    "SELECT payload,position FROM chat_messages "
+                    "WHERE thread_id=:id AND position>:after ORDER BY position LIMIT :limit"
+                ),
+                {"id": thread_id, "after": after, "limit": limit},
+            ).all()
+        return [
+            ConversationMessage.model_validate_json(row[0]).model_copy(
+                update={"position": row[1]}
+            ) for row in rows
+        ]
+
+    def search_messages(
+        self, user_id: int, thread_id: str | None, query: str, limit: int
+    ) -> list[HistoryMatch]:
+        if not query.strip():
+            return []
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self.transaction() as connection:
+            if thread_id is not None:
+                self._owner(connection, user_id, thread_id)
+            rows = connection.execute(
+                text(
+                    "SELECT m.thread_id,m.payload,m.position FROM chat_messages m "
+                    "JOIN chat_threads t ON t.thread_id=m.thread_id WHERE t.user_id=:user "
+                    "AND NOT EXISTS (SELECT 1 FROM chat_thread_trash x "
+                    "WHERE x.thread_id=t.thread_id) "
+                    + ("AND t.thread_id=:thread " if thread_id is not None else "")
+                    + "AND m.content LIKE :query ESCAPE '\\' "
+                    "ORDER BY t.updated_at DESC,m.position DESC LIMIT :limit"
+                ),
+                {"user": user_id, "thread": thread_id, "query": f"%{escaped}%", "limit": limit},
+            ).all()
+        return [
+            HistoryMatch(thread_id=row[0], message=ConversationMessage.model_validate_json(
+                row[1],
+            ).model_copy(update={"position": row[2]})) for row in rows
+        ]
 
     def delete_thread(self, user_id: int, thread_id: str) -> None:
         with self.transaction() as connection:

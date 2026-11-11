@@ -15,6 +15,7 @@ class ConversationMessage(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     trace_id: str | None = None
     response: dict[str, Any] | None = None
+    position: int | None = Field(default=None, ge=1)
 
 
 class ConversationSummary(BaseModel):
@@ -27,6 +28,11 @@ class ConversationSummary(BaseModel):
     expires_at: datetime | None = None
 
 
+class HistoryMatch(BaseModel):
+    thread_id: str
+    message: ConversationMessage
+
+
 class ConversationStore(Protocol):
     def append(self, user_id: int, thread_id: str, message: ConversationMessage) -> None: ...
 
@@ -37,3 +43,11 @@ class ConversationStore(Protocol):
     def messages(
         self, user_id: int, thread_id: str, limit: int, offset: int
     ) -> list[ConversationMessage]: ...
+
+    def after_position(
+        self, user_id: int, thread_id: str, after: int, limit: int
+    ) -> list[ConversationMessage]: ...
+
+    def search_messages(
+        self, user_id: int, thread_id: str | None, query: str, limit: int
+    ) -> list[HistoryMatch]: ...

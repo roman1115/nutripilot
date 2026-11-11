@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from nutripilot.agent.state import AgentState
@@ -45,6 +46,7 @@ def compact_tool_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Project model context; grounding and safety still use the original results."""
 
     compact = []
+    seen: set[str] = set()
     for result in results:
         item = {key: result[key] for key in ("tool_name", "status", "error") if key in result}
         data = result.get("data")
@@ -67,7 +69,10 @@ def compact_tool_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
             item["data"] = {"excluded_meal_ids": data.get("excluded_meal_ids", [])}
         else:
             item["data"] = data
-        compact.append(item)
+        fingerprint = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+        if fingerprint not in seen:
+            seen.add(fingerprint)
+            compact.append(item)
     return compact
 
 

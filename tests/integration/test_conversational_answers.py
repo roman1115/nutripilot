@@ -320,7 +320,8 @@ async def test_answer_context_is_bounded_and_thread_and_user_isolated(container)
         if item["worker"] == "recommendation"
     )
     assert payload["conversation_summary"] is None
-    assert payload["recent_messages"] == [{"role": "user", "content": "推荐午餐"}]
+    assert [item["role"] for item in payload["recent_messages"]] == ["user", "assistant"]
+    assert payload["recent_messages"][0]["content"] == "推荐午餐"
     assert not payload["discussed_meals"]
     assert all(
         item["tool_name"] == "get_user_profile" for item in payload["conversation_evidence"]
@@ -591,7 +592,9 @@ async def test_recipe_profile_constraints_are_fresh_for_direct_and_followup_answ
             if call["worker"] == "recommendation"
         )
         assert payload["dietary_constraints"]["allergens"] == ["花生"]
-        assert all(item["role"] == "user" for item in payload["recent_messages"])
+        assert [item["role"] for item in payload["recent_messages"]] == (
+            ["user", "assistant"] if index else []
+        )
         assert all(item["tool_name"] in {"get_recipe", "get_user_profile"}
                    for item in payload["tool_results"] + payload["conversation_evidence"])
 
@@ -785,7 +788,8 @@ async def test_explicit_thanks_cannot_be_reclassified_as_the_previous_question(c
         if call["worker"] == "recommendation"
     )
     assert "conversation_evidence" not in answer
-    assert "conversation_summary" not in answer
+    assert answer["conversation_summary"] is None
+    assert [item["role"] for item in answer["recent_messages"]] == ["user", "assistant"]
 
 
 @pytest.mark.asyncio

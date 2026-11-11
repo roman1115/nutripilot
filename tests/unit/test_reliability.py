@@ -383,7 +383,7 @@ async def test_token_budget_stops_before_another_model_call() -> None:
     container = build_container(gateway=gateway, settings=_settings(agent_token_budget=1))
     state = await container.chat_service.chat(user_id=1, message="推荐晚餐")
     assert state["error"]["code"] == "TOKEN_BUDGET_EXCEEDED"
-    assert len(gateway.call_history) == 1
+    assert not gateway.call_history
 
 
 def test_completion_reservation_rejects_oversized_input() -> None:

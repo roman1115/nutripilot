@@ -87,6 +87,7 @@ class IntentOutput(BaseModel):
     missing_slots: list[str] = Field(default_factory=list)
     notes: str = ""
     answer_task: AnswerTask = Field(default_factory=AnswerTask)
+    history_query: str | None = Field(default=None, min_length=1, max_length=80)
 
     @model_validator(mode="before")
     @classmethod

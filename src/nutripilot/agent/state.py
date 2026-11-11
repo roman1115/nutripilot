@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 from uuid import uuid4
+
+from langchain_core.messages import AnyMessage
+from langgraph.graph.message import add_messages
 
 from nutripilot.domain.enums import Phase
 
@@ -27,6 +30,20 @@ class AgentState(TypedDict, total=False):
     discussed_meals: list[dict[str, Any]]
     recent_messages: list[dict[str, str]]
     conversation_evidence: list[dict[str, Any]]
+    messages: Annotated[list[AnyMessage], add_messages]
+    memory_summary: dict[str, Any]
+    history_loaded_through: int
+    context_snapshot: dict[str, Any]
+    active_constraints: dict[str, Any]
+    history_query: str | None
+    history_recalled: bool
+    input_token_ratio: float
+    compression_requested: bool
+    compression_attempted: bool
+    compression_candidate_ids: list[str]
+    memory_finalized_run_id: str | None
+    response_kind: str
+    response_created_at: float
     approved_answer: dict[str, Any] | None
     clarification_intent: str | None
     execution_plan: list[dict[str, Any]]
@@ -80,6 +97,16 @@ def new_agent_state(
         discussed_meals=[],
         recent_messages=[],
         conversation_evidence=[],
+        messages=[],
+        memory_summary={},
+        history_loaded_through=0,
+        context_snapshot={},
+        compression_requested=False,
+        compression_attempted=False,
+        memory_finalized_run_id=None,
+        response_kind="response",
+        history_query=None,
+        history_recalled=False,
         approved_answer=None,
         clarification_intent=None,
         execution_plan=[],

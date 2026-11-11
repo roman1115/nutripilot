@@ -35,6 +35,7 @@ from nutripilot.domain.enums import Intent, Phase
 from nutripilot.domain.execution import current_execution
 from nutripilot.domain.models import FinalResponse
 from nutripilot.infrastructure.checkpointer import FencedCheckpointer
+from nutripilot.memory.nodes import MemoryNodes, finalized_update
 from nutripilot.model_gateway import ModelGateway
 from nutripilot.model_gateway.budget import (
     BudgetedModelGateway,
@@ -55,17 +56,25 @@ class AgentGraph:
         recorder: TraceRecorder,
         deadline_seconds: float,
         token_budget: int,
+        memory: MemoryNodes,
+        recursion_limit: int,
     ) -> None:
         self.compiled = compiled
         self.recorder = recorder
         self.deadline_seconds = deadline_seconds
         self.token_budget = token_budget
+        self.memory = memory
+        self.recursion_limit = recursion_limit
 
     async def ainvoke(self, state: AgentState, config: dict[str, Any]) -> AgentState:
-        with execution_budget(seconds=self.deadline_seconds, tokens=self.token_budget):
+        config = {"recursion_limit": self.recursion_limit, **config}
+        with execution_budget(
+            seconds=self.deadline_seconds, tokens=self.token_budget,
+            context_window=self.memory.context_window,
+        ):
             try:
                 async with asyncio.timeout(self.deadline_seconds):
-                    result = await self.compiled.ainvoke(state, config=config)
+                    result = await self.compiled.ainvoke(state, config=config, durability="sync")
                 return cast("AgentState", result)
             except (TimeoutError, ExecutionLimitExceeded) as exc:
                 code = exc.code if isinstance(exc, ExecutionLimitExceeded) else "DEADLINE_EXCEEDED"
@@ -89,13 +98,16 @@ class AgentGraph:
         tokens: int,
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
         """Resume a checkpoint without creating another turn or treating shutdown as stop."""
+        config = {"recursion_limit": self.recursion_limit, **config}
         snapshot = await self.compiled.aget_state(config)
         previous = getattr(snapshot, "values", {}) or {}
         same_run = previous.get("run_id") == state["run_id"]
         if same_run and not snapshot.next:
             return
         graph_input = None if same_run else state
-        with execution_budget(seconds=seconds, tokens=tokens):
+        with execution_budget(
+            seconds=seconds, tokens=tokens, context_window=self.memory.context_window,
+        ):
             try:
                 async with asyncio.timeout(seconds):
                     async for chunk in self.compiled.astream(
@@ -120,11 +132,15 @@ class AgentGraph:
         state: AgentState,
         config: dict[str, Any],
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
-        with execution_budget(seconds=self.deadline_seconds, tokens=self.token_budget):
+        config = {"recursion_limit": self.recursion_limit, **config}
+        with execution_budget(
+            seconds=self.deadline_seconds, tokens=self.token_budget,
+            context_window=self.memory.context_window,
+        ):
             try:
                 async with asyncio.timeout(self.deadline_seconds):
                     async for chunk in self.compiled.astream(
-                        state, config=config, stream_mode="updates"
+                        state, config=config, stream_mode="updates", durability="sync"
                     ):
                         if not isinstance(chunk, dict):
                             continue
@@ -153,6 +169,13 @@ class AgentGraph:
         )
 
     async def _terminate(self, state: AgentState, config: dict[str, Any], code: str) -> AgentState:
+        current = await self.aget_state(config)
+        if current and current.get("run_id") == state.get("run_id") and (
+            current.get("turn_id") == state.get("turn_id")
+        ):
+            state = current
+        elif current:
+            state = cast("AgentState", {**current, **state})
         self._record_termination(state, code)
         response = FinalResponse(
             status="degraded",
@@ -163,6 +186,10 @@ class AgentGraph:
                 if code == "DEADLINE_EXCEEDED"
                 else "本次请求达到 Token 预算，已停止继续调用。"
                 if code == "TOKEN_BUDGET_EXCEEDED"
+                else "本次资料超出模型上下文容量，请缩小问题范围后重试。"
+                if code == "CONTEXT_WINDOW_EXCEEDED"
+                else "历史资料尚未完整载入，本次未继续生成，请缩小历史范围后重试。"
+                if code == "CONTEXT_HISTORY_INCOMPLETE"
                 else "本次任务恢复次数已达上限，请重试。"
                 if code == "RECOVERY_LIMIT_EXCEEDED"
                 else "本次任务执行失败，请重试；已完成的数据写入仍保留。"
@@ -179,7 +206,16 @@ class AgentGraph:
         }
         if state.get("run_id"):
             update["run_id"] = state["run_id"]
-        await self.compiled.aupdate_state(config, update, as_node="budget")
+        final_state = cast("AgentState", {**state, **update})
+        memory_update = finalized_update(final_state)
+        await self.compiled.aupdate_state(
+            config,
+            {
+                **state, **update, **memory_update,
+                "messages": [*state.get("messages", []), *memory_update["messages"]],
+            },
+            as_node="memory_finalize",
+        )
         final = await self.aget_state(config)
         assert final is not None
         return final
@@ -194,6 +230,7 @@ def create_agent_graph(
     max_tool_steps: int = 8,
     deadline_seconds: float = 90,
     token_budget: int = 24000,
+    context_window: int = 32768,
 ) -> AgentGraph:
     """Build the deterministic graph with three online LLM Worker Agents."""
 
@@ -209,8 +246,15 @@ def create_agent_graph(
     confirmation = ConfirmationNode(recorder)
     output = OutputGuardNode(OutputGuard(), recorder)
     budget = BudgetExceededNode(recorder)
+    memory = MemoryNodes(gateway, recorder, context_window=context_window)
 
     graph = StateGraph(AgentState)
+    graph.add_node("memory_load", memory.load)
+    graph.add_node("context_prepare", memory.prepare)
+    graph.add_node("summarize", memory.summarize)
+    graph.add_node("context_freeze", memory.freeze)
+    graph.add_node("memory_finalize", memory.finalize)
+    graph.add_node("history_recall", memory.recall)
     graph.add_node("risk", risk.run)
     graph.add_node("blocked", blocked.run)
     graph.add_node("intent", intent.run)
@@ -224,18 +268,29 @@ def create_agent_graph(
     graph.add_node("budget", budget.run)
     graph.add_node("tool_failure", tool_failure)
 
+    graph.add_edge(START, "memory_load")
     graph.add_conditional_edges(
-        START, route_entry, {"risk": "risk", "confirmation": "confirmation"}
+        "memory_load", route_entry, {"risk": "risk", "confirmation": "confirmation"}
     )
     graph.add_conditional_edges(
-        "risk", route_after_risk, {"blocked": "blocked", "intent": "intent"}
+        "risk", route_after_risk, {"blocked": "blocked", "intent": "context_prepare"}
     )
+    graph.add_conditional_edges(
+        "context_prepare",
+        lambda state: "summarize" if state.get("compression_requested") else "context_freeze",
+        {"summarize": "summarize", "context_freeze": "context_freeze"},
+    )
+    graph.add_edge("summarize", "context_freeze")
+    graph.add_edge("context_freeze", "intent")
     graph.add_conditional_edges(
         "intent",
-        route_after_intent,
+        lambda state: "history_recall"
+        if state.get("history_query") and not state.get("history_recalled")
+        else route_after_intent(state),
         {"scope": "scope", "clarify": "clarify", "planner": "planner",
-         "recommendation": "recommendation"},
+         "recommendation": "recommendation", "history_recall": "history_recall"},
     )
+    graph.add_edge("history_recall", "intent")
     graph.add_conditional_edges(
         "planner",
         partial(route_after_planner, max_tool_steps=max_tool_steps),
@@ -260,21 +315,20 @@ def create_agent_graph(
     graph.add_conditional_edges(
         "confirmation",
         route_after_confirmation,
-        {"tool": "tool", "end": END},
+        {"tool": "tool", "end": "memory_finalize"},
     )
     graph.add_edge("recommendation", "output_guard")
-    graph.add_edge("blocked", END)
-    graph.add_edge("scope", END)
-    graph.add_edge("clarify", END)
-    graph.add_edge("output_guard", END)
-    graph.add_edge("budget", END)
-    graph.add_edge("tool_failure", END)
+    for node in ("blocked", "scope", "clarify", "output_guard", "budget", "tool_failure"):
+        graph.add_edge(node, "memory_finalize")
+    graph.add_edge("memory_finalize", END)
 
     return AgentGraph(
         graph.compile(checkpointer=FencedCheckpointer(checkpointer or InMemorySaver())),
         recorder,
         deadline_seconds,
         token_budget,
+        memory,
+        3 * max_tool_steps + 16,
     )
 
 

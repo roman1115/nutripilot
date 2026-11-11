@@ -42,7 +42,9 @@ def test_history_search_pagination_and_ownership(tmp_path: Path, persistent: boo
     assert not store.messages(2, "a", 100, 0)
     with pytest.raises(PermissionError):
         store.append(2, "a", ConversationMessage(id="4", role="user", content="越权"))
-    store.append(1, "a", ConversationMessage(id="1", role="user", content="不应重复"))
+    store.append(1, "a", store.messages(1, "a", 1, 0)[0])
+    with pytest.raises(ValueError):
+        store.append(1, "a", ConversationMessage(id="1", role="user", content="不应重复"))
     assert len(store.messages(1, "a", 100, 0)) == 2
 
 

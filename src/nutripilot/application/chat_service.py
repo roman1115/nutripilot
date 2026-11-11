@@ -6,11 +6,13 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from anyio import CancelScope
+from langchain_core.messages import HumanMessage
 
 from nutripilot.agent.agents.base import compact_tool_results
 from nutripilot.agent.graph import AgentGraph
@@ -22,7 +24,6 @@ from nutripilot.application.history import (
     ConversationSummary,
 )
 from nutripilot.domain.enums import Intent, Phase
-from nutripilot.memory.context import compact_messages
 
 
 class ThreadNotFoundError(LookupError):
@@ -50,6 +51,15 @@ class ChatService:
         self.timezone_name = timezone_name
         ZoneInfo(timezone_name)
         self._active: dict[str, tuple[int, asyncio.Task[Any]]] = {}
+
+    @property
+    def history(self) -> ConversationStore | None:
+        return self._history
+
+    @history.setter
+    def history(self, value: ConversationStore | None) -> None:
+        self._history = value
+        self.graph.memory.history = value
 
     @contextmanager
     def _claim(self, user_id: int, thread_id: str) -> Iterator[None]:
@@ -172,6 +182,17 @@ class ChatService:
             trace_id=trace_id,
             current_date=today_in_timezone(self.timezone_name),
         )
+        # Existing thread memory is updated by the graph, never overwritten by turn defaults.
+        for field in (
+            "memory_summary", "messages", "history_loaded_through",
+            "recent_messages", "conversation_summary",
+        ):
+            cast("dict[str, Any]", state).pop(field, None)
+        state["messages"] = [HumanMessage(
+            id=f"{state['turn_id']}:user", content=message.strip(),
+            additional_kwargs={"turn_id": state["turn_id"]},
+        )]
+        state["response_created_at"] = 0
         if self.history and persist:
             await asyncio.to_thread(
                 self.history.append,
@@ -182,13 +203,6 @@ class ChatService:
         if previous:
             state["slots"] = dict(previous.get("slots", {}))
             response = previous.get("final_response") or {}
-            recent = [
-                *previous.get("recent_messages", []),
-                {"role": "user", "content": previous.get("user_message", "")[:2000]},
-                {"role": "assistant", "content": str(response.get("message", ""))[:3000]},
-            ][-8:]
-            state["recent_messages"] = recent
-            state["conversation_summary"] = compact_messages(recent)
             state["discussed_meals"] = [
                 {"name": item["name"], "meal_id": item["meal_id"],
                  "reason": str(item.get("reason", ""))[:300]}
@@ -272,10 +286,6 @@ class ChatService:
                     )
             if previous.get("phase") == Phase.CLARIFY.value:
                 state["clarification_intent"] = previous.get("intent")
-                state["conversation_summary"] = (
-                    f"上一轮意图：{previous.get('intent')}。"
-                    f"上一轮追问：{(previous.get('final_response') or {}).get('message', '')}"
-                )
         return state, config
 
     async def confirm(
@@ -321,6 +331,9 @@ class ChatService:
             user_id=user_id,
             phase=Phase.AWAITING_CONFIRMATION.value,
             confirmation_decision=approved,
+            response_kind="confirmation",
+            response_created_at=0,
+            memory_finalized_run_id=None,
         )
         if self.history:
             await asyncio.to_thread(
@@ -387,5 +400,7 @@ class ChatService:
                 content=str(content),
                 trace_id=state["trace_id"],
                 response=response,
+                created_at=datetime.fromtimestamp(state["response_created_at"], UTC)
+                if state.get("response_created_at") else datetime.now(UTC),
             ),
         )

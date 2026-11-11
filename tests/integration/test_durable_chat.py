@@ -444,3 +444,36 @@ async def test_postgres_queue_single_worker_fence_and_process_recreation() -> No
             await worker.close()
             await task
             store.close()
+
+
+@pytest.mark.asyncio
+async def test_final_archive_retry_keeps_success_and_does_not_regenerate(monkeypatch) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    async with runtime() as (container, _):
+        service = container.chat_runs
+        finish = service.store.finish
+        attempts = 0
+
+        def transient_failure(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OperationalError("commit", {}, RuntimeError("temporary outage"))
+            return finish(*args, **kwargs)
+
+        monkeypatch.setattr(service.store, "finish", transient_failure)
+        run = await service.submit(
+            user_id=1, thread_id=uuid4().hex, message="你好", request_key=uuid4().hex,
+        )
+        done = await finished(service, run)
+        assert done["status"] == "completed"
+        assert attempts == 2
+        state = service.store.final_state(run["id"], 1)
+        assert state["memory_finalized_run_id"] == run["id"]
+        assert all(isinstance(message, dict) for message in state["messages"])
+        assert len(service.store.messages(1, run["thread_id"], 10, 0)) == 2
+        calls = container.gateway.call_history
+        assert [call["worker"] for call in calls] == ["intent", "recommendation"]
+        events = service.store.events(run["id"], 1, 0)
+        assert sum(event["type"] == "completed" for event in events) == 1
