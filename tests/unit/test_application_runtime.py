@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from apps.nutrition_mcp.service import (
     ExternalNutritionMCPService,
@@ -23,6 +25,32 @@ async def test_demo_runtime_does_not_open_external_resources() -> None:
 
     assert container.resource_stack is None
     assert container.runtime_mode == "demo"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drains_evaluation_before_closing_chat_resources(monkeypatch) -> None:
+    container = build_container(settings=Settings(_env_file=None))
+    await start_container(container)
+    store = container.chat_runs.store
+    started = asyncio.Event()
+    drained = asyncio.Event()
+
+    async def evaluate(*args, **kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            assert not container.chat_worker.stopping.is_set()
+            await asyncio.to_thread(store.list_threads, 1, "", 10, 0)
+            drained.set()
+
+    monkeypatch.setattr(container.evaluation_service.runner, "run", evaluate)
+    container.evaluation_service.start([], dataset_version="shutdown-test")
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+    finally:
+        await stop_container(container)
+    assert drained.is_set()
 
 
 @pytest.mark.asyncio

@@ -8,7 +8,7 @@ from contextlib import AbstractContextManager, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 
-from anyio import CancelScope
+from anyio import CancelScope, CapacityLimiter, to_thread
 
 
 class ExecutionOwnershipLost(RuntimeError):
@@ -36,6 +36,8 @@ async def execution_fence() -> AsyncIterator[None]:
     if execution.suspend:
         raise ExecutionOwnershipLost("The worker no longer owns this execution.")
     guard = execution.fence()
+    # Lock waiters can exhaust asyncio's executor; unlocking needs independent capacity.
+    exit_limiter = CapacityLimiter(1)
     # Ownership must remain locked until an in-flight checkpoint/write has finished.
     with CancelScope(shield=True):
         entering = asyncio.create_task(asyncio.to_thread(guard.__enter__))
@@ -43,9 +45,9 @@ async def execution_fence() -> AsyncIterator[None]:
             await asyncio.shield(entering)
         except asyncio.CancelledError:
             await entering
-            await asyncio.to_thread(guard.__exit__, None, None, None)
+            await to_thread.run_sync(guard.__exit__, None, None, None, limiter=exit_limiter)
             raise
         try:
             yield
         finally:
-            await asyncio.to_thread(guard.__exit__, None, None, None)
+            await to_thread.run_sync(guard.__exit__, None, None, None, limiter=exit_limiter)

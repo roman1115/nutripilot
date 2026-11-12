@@ -132,6 +132,7 @@ async def start_container(container: ApplicationContainer) -> None:
 
 
 async def stop_container(container: ApplicationContainer) -> None:
+    await container.evaluation_service.close()
     if container.chat_worker is not None:
         await container.chat_worker.close()
     if container.chat_worker_task is not None:
@@ -140,7 +141,6 @@ async def stop_container(container: ApplicationContainer) -> None:
     if container.chat_runs is not None and not container.settings.uses_external_infrastructure:
         container.chat_runs.store.close()
     container.chat_runs = None
-    await container.evaluation_service.close()
     stack = container.resource_stack
     container.resource_stack = None
     if stack is not None:

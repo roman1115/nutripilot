@@ -7,6 +7,7 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -15,7 +16,7 @@ jobs:
       - run: uv sync --frozen --extra dev
       - run: uv run --extra dev ruff check .
       - run: MYPYPATH=src uv run --extra dev mypy --explicit-package-bases src/nutripilot apps
-      - run: uv run --extra dev pytest --cov=nutripilot --cov-report=xml
+      - run: uv run --extra dev pytest -vv -o faulthandler_timeout=60 --cov=nutripilot --cov-report=xml
 
   frontend:
     runs-on: ubuntu-latest
@@ -34,6 +35,7 @@ jobs:
 
   browser:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -53,5 +55,7 @@ jobs:
         if: always()
         with:
           name: browser-regression
-          path: .runtime/web-regression
+          path: |
+            .runtime/web-regression
+            .runtime/*.log
 

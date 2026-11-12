@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 from uuid import uuid4
 
@@ -201,7 +202,12 @@ def main() -> None:
             expect(page.locator(".meal-result-basis").first).to_have_text("整道菜 · 营养估算")
             for nutrient in ("蛋白质", "碳水", "脂肪"):
                 expect(page.locator(".meal-result .nutrition-row").first).to_contain_text(nutrient)
-            expect(page.get_by_text("餐食记录标注的过敏原", exact=False).first).to_be_visible()
+            expect(page.get_by_text(
+                "餐食过敏原标注不涵盖制作过程中的交叉接触，请核对实际食材。", exact=True
+            )).to_be_visible()
+            expect(page.get_by_text(re.compile(
+                r"餐食记录标注的过敏原：|未标注过敏原，不代表实际制作时无过敏风险"
+            )).first).to_be_visible()
             page.screenshot(path=str(args.output_dir / "recommendation.png"), full_page=True)
             checks.append("recommendation includes authoritative nutrition/allergen explanations")
             checks.append("cards contain objective nutrients without recommendation reasons")
@@ -346,6 +352,10 @@ def main() -> None:
                 encoding="utf-8",
             )
             print(json.dumps(result, ensure_ascii=False, indent=2))
+        except Exception:
+            page.screenshot(path=str(args.output_dir / "failure.png"), full_page=True)
+            (args.output_dir / "failure.html").write_text(page.content(), encoding="utf-8")
+            raise
         finally:
             browser.close()
 

@@ -347,13 +347,14 @@ async def test_total_deadline_cancels_model_and_persists_termination() -> None:
     gateway = SlowGateway()
     container = build_container(
         gateway=gateway,
-        settings=_settings(agent_deadline_seconds=0.02),
+        settings=_settings(agent_deadline_seconds=0.2),
     )
     state = await container.chat_service.chat(
         user_id=1,
         message="推荐晚餐",
         thread_id="timeout",
     )
+    assert gateway.started.is_set()
     assert gateway.cancelled.is_set()
     assert state["error"]["code"] == "DEADLINE_EXCEEDED"
     restored = await container.chat_service.get_thread(thread_id="timeout", user_id=1)

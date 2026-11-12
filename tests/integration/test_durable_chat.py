@@ -83,7 +83,7 @@ async def test_three_conversations_run_concurrently_and_fourth_queues() -> None:
             for _ in range(4)
         ]
         await until(lambda: gateway.started == 3)
-        assert service.store.get(runs[3]["id"], 1)["status"] == "queued"
+        assert (await asyncio.to_thread(service.store.get, runs[3]["id"], 1))["status"] == "queued"
         fifth = await service.submit(
             user_id=2, thread_id=uuid4().hex, message="推荐午餐", request_key=uuid4().hex
         )
@@ -102,6 +102,7 @@ async def test_three_conversations_run_concurrently_and_fourth_queues() -> None:
 async def test_request_idempotency_busy_ownership_and_event_replay() -> None:
     gateway = GatedGateway()
     async with runtime(gateway) as (container, client):
+        service = container.chat_runs
         thread, key = uuid4().hex, uuid4().hex
         path = f"/api/v1/threads/{thread}/runs"
         payload = {"message": "推荐晚餐", "request_id": key}
@@ -131,14 +132,14 @@ async def test_request_idempotency_busy_ownership_and_event_replay() -> None:
         event = await anext(subscription)
         await subscription.aclose()
         await until(lambda: gateway.started == 1)
-        assert container.chat_runs.store.get(run["id"], 1)["status"] == "running"
+        assert (await asyncio.to_thread(service.store.get, run["id"], 1))["status"] == "running"
         gateway.gate.set()
         done = await finished(container.chat_runs, run)
         replay = await client.get(f"/api/v1/runs/{run['id']}/events?after={event['id']}")
         assert "event: completed" in replay.text
         assert f"id: {event['id']}\n" not in replay.text
         assert done["last_event"] > event["id"]
-        assert len(container.chat_runs.store.messages(1, thread, 100, 0)) == 2
+        assert len(await asyncio.to_thread(service.store.messages, 1, thread, 100, 0)) == 2
 
 
 @pytest.mark.asyncio
@@ -156,7 +157,7 @@ async def test_cancel_is_persisted_and_only_stops_requested_conversation() -> No
         response = await client.post(f"/api/v1/runs/{first['id']}/cancel")
         assert response.json()["status"] == "cancelling"
         assert (await finished(service, first))["status"] == "cancelled"
-        assert service.store.get(second["id"], 1)["status"] == "running"
+        assert (await asyncio.to_thread(service.store.get, second["id"], 1))["status"] == "running"
         gateway.gate.set()
         assert (await finished(service, second))["status"] == "completed"
         assert (await client.post(f"/api/v1/runs/{first['id']}/cancel")).json()[
@@ -176,7 +177,7 @@ async def test_worker_shutdown_resumes_checkpoint_without_repeating_completed_in
         await until(lambda: gateway.started == 1)
         await container.chat_worker.close()
         await container.chat_worker_task
-        assert service.store.get(run["id"], 1)["status"] == "running"
+        assert (await asyncio.to_thread(service.store.get, run["id"], 1))["status"] == "running"
         assert gateway.intent_calls == 1
         gateway.gate.set()
         worker = ChatWorker(container.chat_service, service.store, container.settings)
@@ -187,7 +188,9 @@ async def test_worker_shutdown_resumes_checkpoint_without_repeating_completed_in
         assert done["status"] == "completed"
         assert done["attempts"] == 2
         assert gateway.intent_calls == 1
-        assert len(service.store.messages(1, run["thread_id"], 100, 0)) == 2
+        assert len(await asyncio.to_thread(
+            service.store.messages, 1, run["thread_id"], 100, 0
+        )) == 2
 
 
 @pytest.mark.asyncio
@@ -255,8 +258,12 @@ async def test_queue_bound_and_obsolete_owner_fence() -> None:
         ).status_code == 429
         await until(lambda: gateway.started == 1)
         store = container.chat_runs.store
-        with pytest.raises(ExecutionOwnershipLost), store.fence(first.json()["id"], 999):
-            pytest.fail("Obsolete owner acquired the fence")
+        def obsolete_owner() -> None:
+            with store.fence(first.json()["id"], 999):
+                pytest.fail("Obsolete owner acquired the fence")
+
+        with pytest.raises(ExecutionOwnershipLost):
+            await asyncio.to_thread(obsolete_owner)
         gateway.gate.set()
         await finished(container.chat_runs, first.json())
 
@@ -273,14 +280,16 @@ async def test_cancel_queued_run_creates_terminal_checkpoint_without_model_calls
             for _ in range(2)
         ]
         await until(lambda: gateway.started == 1)
-        service.store.cancel(queued["id"], 1)
+        await asyncio.to_thread(service.store.cancel, queued["id"], 1)
         gateway.gate.set()
         await finished(service, running)
         stopped = await finished(service, queued)
         assert stopped["status"] == "cancelled"
         assert gateway.intent_calls == 1
         assert stopped["result"]["phase"] == "FAILED"
-        assert len(service.store.messages(1, queued["thread_id"], 100, 0)) == 2
+        assert len(await asyncio.to_thread(
+            service.store.messages, 1, queued["thread_id"], 100, 0
+        )) == 2
 
 
 @pytest.mark.asyncio
@@ -304,7 +313,11 @@ async def test_evaluation_uses_the_same_queue_as_interactive_chats() -> None:
                 dataset_version="durable-test",
             )
         )
-        await until(lambda: len(service.store.list_threads(1, "", 100, 0)) == 2)
+        async def evaluation_queued() -> bool:
+            threads = await asyncio.to_thread(service.store.list_threads, 1, "", 100, 0)
+            return len(threads) == 2
+
+        await until(evaluation_queued)
         assert gateway.started == 1
         gateway.gate.set()
         await finished(service, run)
@@ -370,7 +383,9 @@ async def test_completed_checkpoint_is_finalized_even_after_recovery_limit() -> 
         result = await finished(service, run)
         assert result["status"] == "completed"
         assert result["attempts"] == 2
-        assert len(service.store.messages(1, run["thread_id"], 100, 0)) == 2
+        assert len(await asyncio.to_thread(
+            service.store.messages, 1, run["thread_id"], 100, 0
+        )) == 2
 
 
 @pytest.mark.asyncio
@@ -379,7 +394,8 @@ async def test_imported_messages_restore_without_a_graph_checkpoint() -> None:
 
     async with runtime() as (container, client):
         thread = uuid4().hex
-        container.chat_runs.store.append(
+        await asyncio.to_thread(
+            container.chat_runs.store.append,
             1, thread, ConversationMessage(id=uuid4().hex, role="user", content="迁移前的消息")
         )
         snapshot = await client.get(f"/api/v1/threads/{thread}/snapshot")
@@ -472,8 +488,10 @@ async def test_final_archive_retry_keeps_success_and_does_not_regenerate(monkeyp
         state = service.store.final_state(run["id"], 1)
         assert state["memory_finalized_run_id"] == run["id"]
         assert all(isinstance(message, dict) for message in state["messages"])
-        assert len(service.store.messages(1, run["thread_id"], 10, 0)) == 2
+        assert len(await asyncio.to_thread(
+            service.store.messages, 1, run["thread_id"], 10, 0
+        )) == 2
         calls = container.gateway.call_history
         assert [call["worker"] for call in calls] == ["intent", "recommendation"]
-        events = service.store.events(run["id"], 1, 0)
+        events = await asyncio.to_thread(service.store.events, run["id"], 1, 0)
         assert sum(event["type"] == "completed" for event in events) == 1
