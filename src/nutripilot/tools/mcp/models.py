@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
+from nutripilot.domain.models import IngredientGroup, IngredientIdentity, IngredientTerm
 from nutripilot.retrieval.models import NutritionFacts
 
 
@@ -11,19 +12,23 @@ class SearchMealsMCPArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     query: str = Field(min_length=1, max_length=500)
+    food_name: str | None = Field(default=None, min_length=1, max_length=120)
     meal_type: str | None = None
+    meal_role: Literal["complete_meal", "dish", "staple", "soup", "snack"] | None = None
     cuisines: list[str] = Field(default_factory=list)
     tastes: list[str] = Field(default_factory=list)
     health_goals: list[str] = Field(default_factory=list)
     dietary_tags: list[str] = Field(default_factory=list)
     excluded_allergens: list[str] = Field(default_factory=list)
     excluded_ingredients: list[str] = Field(default_factory=list)
+    required_ingredients: list[IngredientTerm] = Field(default_factory=list, max_length=10)
+    ingredient_any_groups: list[IngredientGroup] = Field(default_factory=list, max_length=10)
     excluded_meal_ids: list[int] = Field(default_factory=list)
     max_calories_kcal: float | None = Field(default=None, gt=0)
     min_protein_g: float | None = Field(default=None, ge=0)
     max_prep_minutes: int | None = Field(default=None, ge=0)
     max_price_cny: float | None = Field(default=None, ge=0)
-    limit: int = Field(default=5, ge=1, le=10)
+    limit: int = Field(default=5, ge=1, le=20)
 
 
 class MCPMealHit(BaseModel):
@@ -31,14 +36,21 @@ class MCPMealHit(BaseModel):
 
     meal_id: int
     name: str
+    aliases: list[str] = Field(default_factory=list)
     description: str
     meal_types: list[str] = Field(min_length=1)
     score: float
     nutrition: NutritionFacts
     ingredients: list[str]
+    ingredient_records: list[IngredientIdentity] = Field(default_factory=list)
     allergens: list[str]
-    prep_minutes: int
-    price_cny: float
+    prep_minutes: int | None
+    price_cny: float | None
+    recipe_id: int | None = None
+    meal_role: Literal["complete_meal", "dish", "staple", "soup", "snack"] = "complete_meal"
+    tastes: list[str] = Field(default_factory=list)
+    cuisines: list[str] = Field(default_factory=list)
+    dietary_tags: list[str] = Field(default_factory=list)
     reasons: list[str]
     citation: dict[str, Any]
 
@@ -47,9 +59,11 @@ class SearchMealsMCPResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     query: str
-    hits: list[MCPMealHit] = Field(max_length=10)
+    hits: list[MCPMealHit] = Field(max_length=20)
     total_candidates: int
     retrieval_version: str
+    filter_diagnostics: dict[str, int] = Field(default_factory=dict)
+    match_evidence: dict[int, list[dict[str, str]]] = Field(default_factory=dict)
 
 
 class GetNutritionMCPArgs(BaseModel):
@@ -78,6 +92,8 @@ class GetNutritionMCPResult(BaseModel):
     nutrition: NutritionFacts
     ingredients: list[str]
     allergens: list[str]
+    recipe_id: int | None = None
+    meal_role: Literal["complete_meal", "dish", "staple", "soup", "snack"] = "complete_meal"
     serving_note: str
     citation: dict[str, Any]
 
@@ -87,6 +103,18 @@ class QueryDietaryGuidelinesMCPArgs(BaseModel):
 
     query: str = Field(min_length=1, max_length=500)
     limit: int = Field(default=3, ge=1, le=5)
+
+
+class GetRecipeMCPResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    meal_id: int
+    name: str
+    raw_ingredients: str = Field(min_length=1, max_length=4000)
+    raw_quantities: str = Field(max_length=4000)
+    instructions: str = Field(min_length=1, max_length=4000)
+    allergens: list[str]
+    citation: dict[str, Any]
 
 
 class MCPGuidelineHit(BaseModel):
@@ -129,6 +157,11 @@ MCP_TOOL_CONTRACTS: dict[str, tuple[type[BaseModel], type[BaseModel], str]] = {
         GetNutritionMCPArgs,
         GetNutritionMCPResult,
         "Read the nutrition estimate and ingredients for one authoritative meal record.",
+    ),
+    "get_recipe": (
+        GetNutritionMCPArgs,
+        GetRecipeMCPResult,
+        "Read sourced ingredients, original quantities and cooking steps for one named dish.",
     ),
     "query_dietary_guidelines": (
         QueryDietaryGuidelinesMCPArgs,

@@ -14,6 +14,7 @@ export interface RuntimeStatus {
   rerankModel: string;
   storage: string;
   mcpTransport: string;
+  authRequired: boolean;
 }
 
 export interface Citation {
@@ -28,11 +29,11 @@ export interface Citation {
 export interface MealRecommendation {
   mealId?: string | number;
   name: string;
-  reason?: string;
   calories?: number;
   protein?: number;
   carbs?: number;
   fat?: number;
+  nutrientRanges?: Record<string, { minimum: number; maximum: number }>;
   tags?: string[];
 }
 
@@ -65,10 +66,12 @@ export interface PendingConfirmation {
   description: string;
   operation?: string;
   payload?: Record<string, unknown>;
+  mealPreview?: MealPlanItem[];
   idempotencyKey: string;
 }
 
 export interface ChatStreamEvent {
+  id?: number;
   type: string;
   data: Record<string, unknown>;
   rawEvent?: string;
@@ -84,6 +87,7 @@ export interface UserProfile {
   allergens: string[];
   dietaryRestrictions: string[];
   dailyCalorieTarget?: number;
+  dailyProteinTarget?: number;
   location: string;
   updatedAt?: string;
 }
@@ -95,7 +99,22 @@ export interface MealPlanItem {
   mealType?: string;
   mealName: string;
   calories?: number;
+  protein?: number;
+  nutrientRanges?: Record<string, { minimum: number; maximum: number }>;
+  servingSize?: string;
+  sourceUri?: string;
+  archived?: boolean;
   status?: string;
+}
+
+export interface ConversationSummary {
+  threadId: string;
+  title: string;
+  updatedAt: string;
+  messageCount: number;
+  runStatus?: string;
+  deletedAt?: string;
+  expiresAt?: string;
 }
 
 export interface MealPlan {
@@ -106,6 +125,8 @@ export interface MealPlan {
   endDate?: string;
   createdAt?: string;
   totalCalories?: number;
+  qualityWarnings: string[];
+  nutritionBasis?: string;
   items: MealPlanItem[];
 }
 

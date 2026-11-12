@@ -1,0 +1,106 @@
+{
+  "sources": [
+    {
+      "id": "mext-2023-20260327",
+      "name": "文部科学省 日本食品標準成分表（八訂）増補2023年",
+      "uri": "https://www.mext.go.jp/content/20260327-mxt_kagsei-mext-000029402_02.xlsx",
+      "license": "MEXT-attribution-required",
+      "version": "2023年增补；2026-03-27发布文件；2026-10-28提取",
+      "sha256": "0d5a77077dd6cd91cbc2e6e317b8b218a38728c409eed452f1c10635a0d3099c",
+      "checksum_scope": "archive"
+    },
+    {
+      "id": "cj-msg-2018-01-18",
+      "name": "PT. CJ Indonesia Monosodium L-Glutamate 原始规格书（供应商托管副本）",
+      "uri": "https://5.imimg.com/data5/SELLER/Doc/2023/5/309866525/JS/SU/MQ/621227/ajinomoto-mono-sodium-glutamate-.pdf",
+      "license": "factual-extract-only; no-document-redistribution",
+      "version": "2018-01-18签署；第2页营养表；2026-10-28提取",
+      "sha256": "316d50017b501777ce556b140612284449b0d51bd3bc041c2b9b30617f31e346",
+      "checksum_scope": "document"
+    }
+  ],
+  "ingredients": [
+    {
+      "id": "mext:02017", "name": "去皮生土豆", "aliases": ["去皮马铃薯"],
+      "source_id": "mext-2023-20260327", "source_record_id": "02017",
+      "source_description": "＜いも類＞ じゃがいも 塊茎 皮なし 生",
+      "source_uri": "https://fooddb.mext.go.jp/details/details.pl?ITEM_NO=2_02017_7",
+      "nutrients_per_100g": {"calories_kcal": 59, "protein_g": 1.8, "carbohydrates_g": 17.3, "fat_g": 0.1, "fiber_g": 8.9, "sodium_mg": 1},
+      "source_nutrient_values": {"calories_kcal": "59", "protein_g": "1.8", "carbohydrates_g": "17.3", "fat_g": "0.1", "fiber_g": "8.9", "sodium_mg": "1"},
+      "allergens": [], "mapping_note": "官方表可食部100克；去皮生投料。原表纤维含抗性淀粉测定口径，与其他来源未统一；不据此推断熟土豆纤维。出处：日本食品標準成分表（八訂）増補2023年。"
+    },
+    {
+      "id": "mext:02034", "name": "土豆淀粉", "aliases": ["马铃薯淀粉"],
+      "source_id": "mext-2023-20260327", "source_record_id": "02034",
+      "source_description": "＜でん粉・でん粉製品＞ （でん粉類） じゃがいもでん粉",
+      "source_uri": "https://fooddb.mext.go.jp/details/details.pl?ITEM_NO=2_02034_7",
+      "nutrients_per_100g": {"calories_kcal": 338, "protein_g": 0.1, "carbohydrates_g": 81.6, "fat_g": 0.1, "fiber_g": 0, "sodium_mg": 2},
+      "source_nutrient_values": {"calories_kcal": "338", "protein_g": "0.1", "carbohydrates_g": "81.6", "fat_g": "0.1", "fiber_g": "(0)", "sodium_mg": "2"},
+      "allergens": [], "mapping_note": "官方干淀粉记录，非土豆全粉；纤维原值(0)为来源推定零，不是缺失值填零。出处：日本食品標準成分表（八訂）増補2023年。"
+    },
+    {
+      "id": "mext:04035", "name": "充填嫩豆腐估算记录", "aliases": [],
+      "source_id": "mext-2023-20260327", "source_record_id": "04035",
+      "source_description": "だいず ［豆腐・油揚げ類］ 充てん豆腐",
+      "source_uri": "https://fooddb.mext.go.jp/details/details.pl?ITEM_NO=4_04035_7",
+      "nutrients_per_100g": {"calories_kcal": 56, "protein_g": 5, "carbohydrates_g": 2.5, "fat_g": 3.1, "fiber_g": 0.3, "sodium_mg": 10},
+      "source_nutrient_values": {"calories_kcal": "56", "protein_g": "5.0", "carbohydrates_g": "2.5", "fat_g": "3.1", "fiber_g": "0.3", "sodium_mg": "10"},
+      "allergens": ["大豆"], "mapping_note": "项目用日本充填嫩豆腐估算原菜谱盒装内酯豆腐；非具体品牌，不声称所有凝固剂或含水率相同。出处：日本食品標準成分表（八訂）増補2023年。"
+    },
+    {
+      "id": "mext:05033", "name": "烘熟松子仁", "aliases": ["熟松仁"],
+      "source_id": "mext-2023-20260327", "source_record_id": "05033",
+      "source_description": "まつ いり",
+      "source_uri": "https://fooddb.mext.go.jp/details/details.pl?ITEM_NO=5_05033_7",
+      "nutrients_per_100g": {"calories_kcal": 724, "protein_g": 14.6, "carbohydrates_g": 8.1, "fat_g": 72.5, "fiber_g": 6.9, "sodium_mg": 4},
+      "source_nutrient_values": {"calories_kcal": "724", "protein_g": "14.6", "carbohydrates_g": "8.1", "fat_g": "72.5", "fiber_g": "6.9", "sodium_mg": "4"},
+      "allergens": ["坚果", "松子"], "mapping_note": "采用官方烘熟松子仁，不用干生记录冒充熟松仁；保留品种差异限制。出处：日本食品標準成分表（八訂）増補2023年。"
+    },
+    {
+      "id": "mext:06207", "name": "生韭菜", "aliases": ["韭菜"],
+      "source_id": "mext-2023-20260327", "source_record_id": "06207",
+      "source_description": "（にら類） にら 葉 生",
+      "source_uri": "https://fooddb.mext.go.jp/details/details.pl?ITEM_NO=6_06207_7",
+      "nutrients_per_100g": {"calories_kcal": 18, "protein_g": 1.7, "carbohydrates_g": 4, "fat_g": 0.3, "fiber_g": 2.7, "sodium_mg": 1},
+      "source_nutrient_values": {"calories_kcal": "18", "protein_g": "1.7", "carbohydrates_g": "4.0", "fat_g": "0.3", "fiber_g": "2.7", "sodium_mg": "1"},
+      "allergens": [], "mapping_note": "官方にら叶生记录，区别于USDA细香葱；不声称产地品种完全一致。出处：日本食品標準成分表（八訂）増補2023年。"
+    },
+    {
+      "id": "mext:09003", "name": "干紫菜", "aliases": ["干海苔"],
+      "source_id": "mext-2023-20260327", "source_record_id": "09003",
+      "source_description": "あまのり ほしのり",
+      "source_uri": "https://fooddb.mext.go.jp/details/details.pl?ITEM_NO=9_09003_7",
+      "nutrients_per_100g": {"calories_kcal": 276, "protein_g": 39.4, "carbohydrates_g": 38.7, "fat_g": 3.7, "fiber_g": 31.2, "sodium_mg": 610},
+      "source_nutrient_values": {"calories_kcal": "276", "protein_g": "39.4", "carbohydrates_g": "38.7", "fat_g": "3.7", "fiber_g": "31.2", "sodium_mg": "610"},
+      "allergens": [], "mapping_note": "使用干制あまのり，非鲜紫菜或干琼脂；存在海域、品种及加工差异，不包含交叉接触保证。出处：日本食品標準成分表（八訂）増補2023年。"
+    },
+    {
+      "id": "mext:10328", "name": "去头壳生小型海虾", "aliases": [],
+      "source_id": "mext-2023-20260327", "source_record_id": "10328",
+      "source_description": "＜えび・かに類＞ （えび類） しばえび 生",
+      "source_uri": "https://fooddb.mext.go.jp/details/details.pl?ITEM_NO=10_10328_7",
+      "nutrients_per_100g": {"calories_kcal": 78, "protein_g": 18.7, "carbohydrates_g": 0.1, "fat_g": 0.4, "fiber_g": 0, "sodium_mg": 250},
+      "source_nutrient_values": {"calories_kcal": "78", "protein_g": "18.7", "carbohydrates_g": "0.1", "fat_g": "0.4", "fiber_g": "(0)", "sodium_mg": "250"},
+      "allergens": ["甲壳类", "虾"], "mapping_note": "项目选择官方しばえび作泛称海虾估算；原表废弃率50%为头壳尾，不把带壳购买重量直接作为可食克重。纤维原值(0)为来源推定零。出处：日本食品標準成分表（八訂）増補2023年。"
+    },
+    {
+      "id": "mext:12020", "name": "鸭皮蛋", "aliases": ["皮蛋", "松花蛋"],
+      "source_id": "mext-2023-20260327", "source_record_id": "12020",
+      "source_description": "あひる卵 ピータン",
+      "source_uri": "https://fooddb.mext.go.jp/details/details.pl?ITEM_NO=12_12020_7",
+      "nutrients_per_100g": {"calories_kcal": 188, "protein_g": 13.7, "carbohydrates_g": 0, "fat_g": 16.5, "fiber_g": 0, "sodium_mg": 780},
+      "source_nutrient_values": {"calories_kcal": "188", "protein_g": "13.7", "carbohydrates_g": "0", "fat_g": "16.5", "fiber_g": "(0)", "sodium_mg": "780"},
+      "allergens": ["鸡蛋", "蛋"], "mapping_note": "采用官方鸭皮蛋可食记录，非生鸡蛋；现有过滤兼容鸡蛋及蛋类声明，但不推断用户过敏。原值纤维(0)为来源推定零。出处：日本食品標準成分表（八訂）増補2023年。"
+    },
+    {
+      "id": "cj:msg-2018", "name": "纯味精（CJ规格书估算）", "aliases": ["味精", "味素"],
+      "source_id": "cj-msg-2018-01-18", "source_record_id": "MSG-Jombang-spec-2018-01-18-p2",
+      "source_description": "PT. CJ Indonesia Monosodium L-Glutamate Product Specification; Nutritional Information per 100 g, page 2",
+      "source_uri": "https://5.imimg.com/data5/SELLER/Doc/2023/5/309866525/JS/SU/MQ/621227/ajinomoto-mono-sodium-glutamate-.pdf",
+      "nutrients_per_100g": {"calories_kcal": 288, "protein_g": 0, "carbohydrates_g": 0, "fat_g": 0, "fiber_g": 0, "sodium_mg": 12300},
+      "source_nutrient_values": {"calories_kcal": "1205 kJ [288 Cal]", "protein_g": "Crude protein 0; single amino acid 78.6", "carbohydrates_g": "0", "fat_g": "0", "fiber_g": "0", "sodium_mg": "12300"},
+      "allergens": [], "mapping_note": "仅提取原始厂商规格书第2页的数值事实，不再发布原PDF或其安全声明。文档实际厂商是CJ，不能按托管文件名标为味之素。288 Cal按营养大卡读取；游离谷氨酸78.6克不当作蛋白质。历史单一产品作项目纯味精估算，非所有味精品牌检测值；该产品原表所列项目关注过敏原为Absent，不作绝对无过敏保证。"
+    }
+  ],
+  "recipes": []
+}

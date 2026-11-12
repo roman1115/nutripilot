@@ -45,6 +45,7 @@ class ConfirmationNode:
             status="confirmation_required",
             message=f"即将执行写操作：{names}。确认后才会保存数据。",
             suggested_actions=["确认", "取消"],
+            warnings=(state.get("plan_quality") or {}).get("warnings", []),
         )
         self._trace(state, "confirmation.requested", Phase.AWAITING_CONFIRMATION.value)
         return {

@@ -20,7 +20,7 @@ services:
       - ${BGE_MODEL_ROOT:-./.models}:/models:ro
 
   api:
-    environment:
+    environment: &real_environment
       MODEL_PROVIDER: openai
       MODEL_NAME: ${MODEL_NAME:-qwen-plus}
       MODEL_FALLBACK_NAME: ${MODEL_FALLBACK_NAME:-qwen-turbo}
@@ -28,6 +28,9 @@ services:
       MODEL_API_KEY: ${MODEL_API_KEY:?MODEL_API_KEY is required for the showcase stack}
       EMBEDDING_PROVIDER: bge
       RERANK_PROVIDER: bge
+
+  worker:
+    environment: *real_environment
 
 volumes:
   huggingface_cache:

@@ -32,6 +32,7 @@ class ModelGatewayError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+        self.usage = ModelUsage()
 
 
 class ModelGateway(Protocol):

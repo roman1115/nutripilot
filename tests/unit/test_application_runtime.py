@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from apps.nutrition_mcp.service import (
     ExternalNutritionMCPService,
@@ -5,6 +7,7 @@ from apps.nutrition_mcp.service import (
     _build_reranker,
     build_default_service,
 )
+from pydantic import ValidationError
 
 from nutripilot.application import build_container
 from nutripilot.application.runtime import _psycopg_url, start_container, stop_container
@@ -25,6 +28,32 @@ async def test_demo_runtime_does_not_open_external_resources() -> None:
 
 
 @pytest.mark.asyncio
+async def test_shutdown_drains_evaluation_before_closing_chat_resources(monkeypatch) -> None:
+    container = build_container(settings=Settings(_env_file=None))
+    await start_container(container)
+    store = container.chat_runs.store
+    started = asyncio.Event()
+    drained = asyncio.Event()
+
+    async def evaluate(*args, **kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            assert not container.chat_worker.stopping.is_set()
+            await asyncio.to_thread(store.list_threads, 1, "", 10, 0)
+            drained.set()
+
+    monkeypatch.setattr(container.evaluation_service.runner, "run", evaluate)
+    container.evaluation_service.start([], dataset_version="shutdown-test")
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+    finally:
+        await stop_container(container)
+    assert drained.is_set()
+
+
+@pytest.mark.asyncio
 async def test_external_mcp_service_exposes_contracts_before_connecting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -34,6 +63,7 @@ async def test_external_mcp_service_exposes_contracts_before_connecting(
     assert isinstance(service, ExternalNutritionMCPService)
     assert {tool.name for tool in await service.list_tools()} == {
         "get_nutrition",
+        "get_recipe",
         "query_dietary_guidelines",
         "search_meals",
     }
@@ -47,6 +77,11 @@ def test_asyncpg_url_is_converted_for_langgraph_psycopg_checkpointer() -> None:
     assert _psycopg_url("postgresql://user:pass@postgres/db") == (
         "postgresql://user:pass@postgres/db"
     )
+
+
+def test_settings_reject_unknown_user_timezone() -> None:
+    with pytest.raises(ValidationError, match="USER_TIMEZONE"):
+        Settings(_env_file=None, user_timezone="Mars/Olympus")
 
 
 def test_bge_provider_wiring_is_lazy_and_uses_configured_models(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -18,6 +18,7 @@ class UserProfile(BaseModel):
     health_goals: list[str] = Field(default_factory=list)
     dietary_tags: list[str] = Field(default_factory=list)
     daily_calorie_target: float | None = Field(default=None, gt=0, le=10_000)
+    daily_protein_target_g: float | None = Field(default=None, ge=0, le=1_000)
     location: str | None = Field(default=None, max_length=100)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -76,6 +77,7 @@ class CreateMealPlanArgs(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     start_date: date
     items: list[MealPlanItemInput] = Field(min_length=1, max_length=28)
+    quality: dict[str, Any] | None = None
 
 
 class MealPlan(BaseModel):
@@ -87,6 +89,7 @@ class MealPlan(BaseModel):
     start_date: date
     items: list[MealPlanItemInput]
     created_at: datetime
+    quality: dict[str, Any] | None = None
 
 
 class RecordFeedbackArgs(BaseModel):
@@ -130,7 +133,15 @@ class UpdateUserProfileArgs(BaseModel):
     health_goals: list[str] | None = None
     dietary_tags: list[str] | None = None
     daily_calorie_target: float | None = Field(default=None, gt=0, le=10_000)
+    daily_protein_target_g: float | None = Field(default=None, ge=0, le=1_000)
     location: str | None = Field(default=None, max_length=100)
+
+    def to_patch(self) -> dict[str, Any]:
+        patch = self.model_dump(exclude_none=True)
+        for field in ("daily_calorie_target", "daily_protein_target_g"):
+            if field in self.model_fields_set and getattr(self, field) is None:
+                patch[field] = None
+        return patch
 
     @field_validator(
         "preferences",

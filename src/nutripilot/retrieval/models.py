@@ -1,8 +1,19 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from nutripilot.domain.models import (
+    IngredientGroup,
+    IngredientIdentity,
+    IngredientTerm,
+    NumericRange,
+)
+
+NutrientField = Literal[
+    "calories_kcal", "protein_g", "carbohydrates_g", "fat_g", "fiber_g", "sodium_mg"
+]
 
 
 def _normalise_terms(values: list[str]) -> list[str]:
@@ -10,7 +21,7 @@ def _normalise_terms(values: list[str]) -> list[str]:
 
 
 class NutritionFacts(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     calories_kcal: float = Field(ge=0)
     protein_g: float = Field(ge=0)
@@ -18,14 +29,51 @@ class NutritionFacts(BaseModel):
     fat_g: float = Field(ge=0)
     fiber_g: float = Field(default=0, ge=0)
     sodium_mg: float = Field(default=0, ge=0)
-    serving_size: str = "1 serving"
+    serving_size: str = Field(default="1 serving", min_length=1)
+    serving_weight_g: float | None = Field(default=None, gt=0)
+    source_status: Literal["unverified_estimate", "calculated_estimate", "verified"] = (
+        "unverified_estimate"
+    )
+    source_uri: str | None = None
+    weight_basis: Literal["as_served", "ingredient_input"] = "as_served"
+    ingredient_source_uris: list[str] = Field(default_factory=list)
+    calculation_note: str | None = None
+    # Scalar fields retain the upper bound for older consumers, never a hidden midpoint.
+    nutrient_ranges: dict[NutrientField, NumericRange] = Field(default_factory=dict)
+    input_weight_range_g: NumericRange | None = None
+
+    def bounds(self, field: NutrientField) -> NumericRange:
+        return self.nutrient_ranges.get(
+            field, NumericRange(minimum=getattr(self, field), maximum=getattr(self, field))
+        )
+
+    @model_validator(mode="after")
+    def validate_verified_source(self) -> NutritionFacts:
+        for field, bounds in self.nutrient_ranges.items():
+            if getattr(self, field) != bounds.maximum:
+                raise ValueError("Scalar nutrition fields must equal their range upper bounds.")
+        if self.source_status == "verified" and (
+            not self.source_uri or self.serving_weight_g is None
+        ):
+            raise ValueError("Verified nutrition requires a source URI and serving weight.")
+        if self.source_status == "calculated_estimate" and (
+            not self.source_uri
+            or self.serving_weight_g is None
+            or not self.ingredient_source_uris
+            or not self.calculation_note
+            or self.weight_basis != "ingredient_input"
+        ):
+            raise ValueError("Calculated nutrition requires recipe and ingredient provenance.")
+        return self
 
 
 class Meal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: int = Field(gt=0)
+    is_active: bool = True
     name: str = Field(min_length=1, max_length=120)
+    aliases: list[str] = Field(default_factory=list)
     description: str = Field(min_length=1, max_length=1000)
     meal_types: list[str] = Field(min_length=1)
     cuisines: list[str] = Field(default_factory=list)
@@ -34,10 +82,13 @@ class Meal(BaseModel):
     dietary_tags: list[str] = Field(default_factory=list)
     allergens: list[str] = Field(default_factory=list)
     ingredients: list[str] = Field(default_factory=list)
+    ingredient_records: list[IngredientIdentity] = Field(default_factory=list)
+    recipe_id: int | None = Field(default=None, ge=1000)
+    meal_role: Literal["complete_meal", "dish", "staple", "soup", "snack"] = "complete_meal"
     nutrition: NutritionFacts
-    prep_minutes: int = Field(ge=0, le=1440)
-    price_cny: float = Field(ge=0)
-    source: str
+    prep_minutes: int | None = Field(default=None, ge=0, le=1440)
+    price_cny: float | None = Field(default=None, ge=0)
+    source: str = Field(min_length=1)
     source_uri: str | None = None
     data_version: str = "2026.07"
 
@@ -84,13 +135,17 @@ class DietaryGuideline(BaseModel):
 class MealSearchFilters(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    food_name: str | None = Field(default=None, min_length=1, max_length=120)
     meal_type: str | None = None
+    meal_role: Literal["complete_meal", "dish", "staple", "soup", "snack"] | None = None
     cuisines: list[str] = Field(default_factory=list)
     tastes: list[str] = Field(default_factory=list)
     health_goals: list[str] = Field(default_factory=list)
     dietary_tags: list[str] = Field(default_factory=list)
     excluded_allergens: list[str] = Field(default_factory=list)
     excluded_ingredients: list[str] = Field(default_factory=list)
+    required_ingredients: list[IngredientTerm] = Field(default_factory=list, max_length=10)
+    ingredient_any_groups: list[IngredientGroup] = Field(default_factory=list, max_length=10)
     excluded_meal_ids: list[int] = Field(default_factory=list)
     max_calories_kcal: float | None = Field(default=None, gt=0)
     min_protein_g: float | None = Field(default=None, ge=0)
@@ -104,6 +159,7 @@ class MealSearchFilters(BaseModel):
         "dietary_tags",
         "excluded_allergens",
         "excluded_ingredients",
+        "required_ingredients",
         mode="after",
     )
     @classmethod
@@ -147,6 +203,8 @@ class MealSearchResponse(BaseModel):
     total_candidates: int = Field(ge=0)
     relaxed_filters: list[str] = Field(default_factory=list)
     retrieval_version: str = "hybrid-rrf-v1"
+    filter_diagnostics: dict[str, int] = Field(default_factory=dict)
+    match_evidence: dict[int, list[dict[str, str]]] = Field(default_factory=dict)
 
 
 class GuidelineSearchHit(BaseModel):

@@ -117,7 +117,12 @@ class PostgresDataStore:
         from sqlalchemy import text
 
         async with self.engine.connect() as connection:
-            result = await connection.execute(text("SELECT payload FROM meals ORDER BY id"))
+            result = await connection.execute(
+                text(
+                    "SELECT payload FROM meals "
+                    "WHERE COALESCE((payload->>'is_active')::boolean, true) ORDER BY id"
+                )
+            )
             return [Meal.model_validate(_payload(row[0])) for row in result]
 
     async def get_meal(self, meal_id: int) -> Meal | None:
@@ -133,8 +138,17 @@ class PostgresDataStore:
     async def get_meals(self, meal_ids: list[int]) -> list[Meal]:
         if not meal_ids:
             return []
-        meals = await self.list_meals()
-        by_id = {meal.id: meal for meal in meals}
+        from sqlalchemy import bindparam, text
+
+        async with self.engine.connect() as connection:
+            result = await connection.execute(
+                text("SELECT payload FROM meals WHERE id IN :ids").bindparams(
+                    bindparam("ids", expanding=True)
+                ),
+                {"ids": list(set(meal_ids))},
+            )
+            meals = [Meal.model_validate(_payload(row[0])) for row in result]
+            by_id = {meal.id: meal for meal in meals}
         return [by_id[meal_id] for meal_id in meal_ids if meal_id in by_id]
 
     async def list_guidelines(self) -> list[DietaryGuideline]:
@@ -161,7 +175,7 @@ class PostgresDataStore:
         from sqlalchemy import text
 
         current = await self.get_user_profile(user_id)
-        patch = update.model_dump(exclude_none=True)
+        patch = update.to_patch()
         patch["updated_at"] = datetime.now(UTC)
         profile = UserProfile.model_validate(current.model_copy(update=patch))
         async with self.engine.begin() as connection:
@@ -200,14 +214,32 @@ class PostgresDataStore:
     ) -> MealPlan:
         from sqlalchemy import text
 
-        unknown_ids = [
-            item.meal_id for item in request.items if await self.get_meal(item.meal_id) is None
-        ]
+        async with self.engine.connect() as connection:
+            existing = await connection.execute(
+                text(
+                    "SELECT payload FROM meal_plans "
+                    "WHERE user_id = :user_id AND idempotency_key = :key"
+                ),
+                {"user_id": user_id, "key": idempotency_key},
+            )
+            row = existing.first()
+            if row:
+                return MealPlan.model_validate(_payload(row[0]))
+        meals = await self.get_meals([item.meal_id for item in request.items])
+        by_id = {meal.id: meal for meal in meals}
+        unknown_ids = [item.meal_id for item in request.items if item.meal_id not in by_id]
         if unknown_ids:
             raise ToolRuntimeError(
                 "MEAL_NOT_FOUND",
                 "One or more selected meals no longer exist.",
                 details={"meal_ids": sorted(set(unknown_ids))},
+            )
+        retired_ids = sorted(meal.id for meal in meals if not meal.is_active)
+        if retired_ids:
+            raise ToolRuntimeError(
+                "MEAL_RETIRED",
+                "已退役的餐食只能查看历史，不能加入新餐单。",
+                details={"meal_ids": retired_ids},
             )
         plan = MealPlan(
             id=str(uuid.uuid4()),
@@ -216,6 +248,7 @@ class PostgresDataStore:
             start_date=request.start_date,
             items=request.items,
             created_at=datetime.now(UTC),
+            quality=request.quality,
         )
         async with self.engine.begin() as connection:
             await connection.execute(

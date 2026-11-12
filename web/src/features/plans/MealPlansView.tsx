@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { CalendarDays, CheckCircle2, ChevronRight, MessageSquareText, RefreshCw, Star, Utensils } from "lucide-react";
+import { CalendarDays, CheckCircle2, ChevronRight, CircleAlert, MessageSquareText, RefreshCw, Star, Utensils } from "lucide-react";
 import { EmptyState, ErrorNotice, LoadingState, PageHeader, StatusBadge } from "../../components/Common";
 import { FeedbackDialog } from "../feedback/FeedbackDialog";
 import { getMealPlans } from "../../lib/api";
-import { formatDate } from "../../lib/format";
+import { formatDate, nutrientLabel, planNutrientTotal } from "../../lib/format";
 import type { ConnectionState, MealFeedback, MealPlan, MealPlanItem } from "../../types";
 
 const mealTypeLabels: Record<string, string> = {
@@ -33,24 +33,38 @@ export function MealPlansView({
   const [submittedFeedback, setSubmittedFeedback] = useState<Record<string, MealFeedback>>({});
   const [feedbackNotice, setFeedbackNotice] = useState<string | null>(null);
 
-  const load = async () => {
-    setLoading(true);
-    setError(null);
+  const load = async (background = false) => {
+    if (!background) {
+      setLoading(true);
+      setError(null);
+    }
     try {
-      const values = await getMealPlans();
+      const values = (await getMealPlans()).sort(
+        (left, right) => (right.createdAt || "").localeCompare(left.createdAt || ""),
+      );
       setPlans(values);
+      setError(null);
       setSelectedId((current) => current && values.some((plan) => plan.id === current) ? current : values[0]?.id ?? null);
     } catch (caught) {
+      if (background) return;
       setPlans([]);
       setSelectedId(null);
       setError(caught instanceof Error ? caught.message : "无法读取饮食计划");
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   };
 
   useEffect(() => {
     if (connection !== "checking") void load();
+    if (connection !== "online") return;
+    const refresh = () => void load(true);
+    const timer = window.setInterval(refresh, 3000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
   }, [connection]);
 
   const selected = useMemo(() => plans.find((plan) => plan.id === selectedId) ?? null, [plans, selectedId]);
@@ -65,17 +79,11 @@ export function MealPlansView({
   }, [selected]);
   const planStats = useMemo(() => {
     if (!selected) return null;
-    const calories = selected.items
-      .map((item) => item.calories)
-      .filter((value): value is number => typeof value === "number");
-    const totalCalories = calories.reduce((total, value) => total + value, 0);
-    const dayCount = Math.max(groupedItems.length, 1);
     return {
       dayCount: groupedItems.length,
       mealCount: selected.items.length,
-      measuredMeals: calories.length,
-      totalCalories,
-      dailyAverage: totalCalories / dayCount,
+      calories: planNutrientTotal(selected.items, "calories_kcal"),
+      protein: planNutrientTotal(selected.items, "protein_g"),
     };
   }, [groupedItems.length, selected]);
 
@@ -83,15 +91,15 @@ export function MealPlansView({
     <div className="page-container">
       <PageHeader
         eyebrow="Saved decisions"
-        title="饮食计划"
-        description="查看已经由 Agent 生成、经你确认并由服务端持久化的饮食计划。"
+        title="菜品餐单"
+        description=""
         action={
           <div className="page-action-group">
             <button className="button button-secondary" type="button" onClick={() => void load()} disabled={loading || connection === "checking"}>
               <RefreshCw size={16} className={loading ? "spin" : ""} />刷新
             </button>
             <button className="button button-primary" type="button" onClick={onNavigateChat}>
-              <MessageSquareText size={16} />在对话中制定
+              <MessageSquareText size={16} />制定餐单
             </button>
           </div>
         }
@@ -110,7 +118,7 @@ export function MealPlansView({
         <EmptyState
           icon={<CalendarDays size={24} />}
           title="还没有已保存的计划"
-          description="计划只有在 Agent 提出写入请求并得到你的明确确认后才会显示在这里。"
+          description="确认后的餐单会保存在这里。"
           action={<button className="button button-primary" type="button" onClick={onNavigateChat}><MessageSquareText size={16} />开始制定</button>}
         />
       ) : (
@@ -137,19 +145,22 @@ export function MealPlansView({
                 </div>
                 {planStats ? (
                   <div className="plan-calories">
-                    <span>{planStats.dayCount} 天 · {planStats.mealCount} 餐</span>
-                    {planStats.measuredMeals ? (
-                      <>
-                        <strong>{Math.round(planStats.dailyAverage).toLocaleString()} kcal / 日</strong>
-                        <small>总计 {Math.round(planStats.totalCalories).toLocaleString()} kcal · 已统计 {planStats.measuredMeals}/{planStats.mealCount} 餐</small>
-                      </>
-                    ) : (
-                      <strong>热量未提供</strong>
-                    )}
+                    <span>{planStats.dayCount} 天 · {planStats.mealCount} 个餐次</span>
+                    <strong>{planStats.calories} kcal</strong>
+                    <small>{selected.nutritionBasis === "whole_recipe" ? "所选整菜合计" : "历史记录份量合计"}
+                      {" · 蛋白质 "}{planStats.protein} g</small>
                   </div>
                 ) : null}
               </div>
 
+              {selected.nutritionBasis !== "whole_recipe" ? <div className="notice notice-warning">
+                <CircleAlert size={18} aria-hidden="true" />
+                <div><p>历史餐单按原记录份量展示，旧餐食已退出新推荐，原编号和反馈保留。</p></div>
+              </div> : null}
+              {selected.qualityWarnings.length ? <div className="notice notice-warning" role="status">
+                <CircleAlert size={18} aria-hidden="true" />
+                <div>{selected.qualityWarnings.map((warning) => <p key={warning}>{warning}</p>)}</div>
+              </div> : null}
               {groupedItems.length ? (
                 <div className="plan-days">
                   {groupedItems.map(([date, items]) => (
@@ -158,15 +169,20 @@ export function MealPlansView({
                         <CalendarDays size={16} />
                         <strong>{date}</strong>
                         <span>
-                          {items.length} 餐 · {Math.round(items.reduce((sum, item) => sum + (item.calories ?? 0), 0))} kcal
+                          {selected.nutritionBasis === "whole_recipe" ? "整菜合计" : "原记录合计"}
+                          {" · "}{planNutrientTotal(items, "calories_kcal")} kcal
+                          {" · 蛋白质 "}
+                          {planNutrientTotal(items, "protein_g")} g
                         </span>
                       </div>
                       <div className="plan-meals">
                         {items.map((item, index) => (
                           <div className="plan-meal-row" key={String(item.id ?? `${date}-${index}`)}>
                             <div className="meal-slot"><Utensils size={15} /><span>{mealTypeLabel(item.mealType)}</span></div>
-                            <strong>{item.mealName}</strong>
-                            {item.calories !== undefined ? <span>{Math.round(item.calories)} kcal</span> : <span>热量未提供</span>}
+                            <strong>{item.mealName}{item.archived ? "（已退役）" : ""}
+                              {item.sourceUri ? <a href={item.sourceUri} target="_blank" rel="noreferrer" className="plan-source">菜谱来源</a> : null}
+                            </strong>
+                            <span>{nutrientLabel(item, "calories_kcal", item.calories)} kcal</span>
                             <button
                               className={`meal-feedback-button${submittedFeedback[String(item.mealId)] ? " is-submitted" : ""}`}
                               type="button"

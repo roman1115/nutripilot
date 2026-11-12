@@ -31,6 +31,7 @@ def test_docker_container_registers_remote_mcp_without_network_discovery() -> No
     }
     assert definitions["search_meals"].source == "mcp"
     assert definitions["get_nutrition"].source == "mcp"
+    assert definitions["get_recipe"].source == "mcp"
     assert definitions["query_dietary_guidelines"].source == "mcp"
 
 
@@ -40,6 +41,7 @@ def test_container_can_disable_mcp_tools() -> None:
     names = set(container.tool_executor.registry.names())
     assert "search_meals" not in names
     assert "get_nutrition" not in names
+    assert "get_recipe" not in names
     assert "query_dietary_guidelines" not in names
 
 
@@ -76,13 +78,51 @@ async def test_docker_container_calls_mcp_over_authenticated_http() -> None:
             ToolCall(
                 call_id="remote-container-call",
                 name="get_nutrition",
-                arguments={"meal_id": 1},
+                arguments={"meal_id": 1008},
             ),
             ToolContext(),
         )
 
         assert result.ok
-        assert result.data["meal_id"] == 1
+        assert result.data["meal_id"] == 1008
+        calculated = await container.tool_executor.execute(
+            ToolCall(
+                call_id="remote-calculated-recipe",
+                name="get_nutrition",
+                arguments={"meal_id": 1004},
+            ),
+            ToolContext(),
+        )
+        assert calculated.ok
+        assert calculated.data["recipe_id"] == 1004
+        assert calculated.data["nutrition"]["source_status"] == "calculated_estimate"
+        assert len(calculated.data["nutrition"]["ingredient_source_uris"]) == 2
+        recipe = await container.tool_executor.execute(
+            ToolCall(
+                call_id="remote-cooking-steps",
+                name="get_recipe",
+                arguments={"name": "西葫芦炒鸡蛋"},
+            ),
+            ToolContext(),
+        )
+        assert recipe.ok
+        assert recipe.data["meal_id"] == 1008
+        assert "中火翻炒 15 秒" in recipe.data["instructions"]
+        assert recipe.data["citation"]["license"]
+        chicken = await container.tool_executor.execute(
+            ToolCall(
+                call_id="remote-required-ingredient",
+                name="search_meals",
+                arguments={"query": "烤鸡翅", "required_ingredients": ["鸡胸肉"]},
+            ),
+            ToolContext(),
+        )
+        assert chicken.ok
+        assert chicken.data["hits"]
+        assert all(
+            any("鸡胸肉" in ingredient for ingredient in hit["ingredients"])
+            for hit in chicken.data["hits"]
+        )
     finally:
         server.should_exit = True
         await asyncio.wait_for(server_task, timeout=5)

@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from nutripilot.agent.planning import candidate_meals_from_results
 from nutripilot.agent.state import AgentState
 from nutripilot.domain.models import FinalResponse
 from nutripilot.evaluation.models import EvalCase, EvalReport
@@ -16,6 +17,18 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4_000)
     user_id: int = Field(default=1, gt=0)
     thread_id: str | None = None
+    request_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class RunRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4_000, pattern=r"\S")
+    request_id: str = Field(min_length=1, max_length=100)
+
+
+class RunConfirmationRequest(BaseModel):
+    approved: bool
+    confirmation_id: str = Field(min_length=1, max_length=200)
+    request_id: str = Field(min_length=1, max_length=100)
 
 
 class ConfirmationRequest(BaseModel):
@@ -32,9 +45,11 @@ class PendingAction(BaseModel):
     operation: str
     payload: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str
+    meal_preview: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
+    run: dict[str, Any] | None = None
     thread_id: str
     turn_id: str
     trace_id: str
@@ -45,6 +60,7 @@ class ChatResponse(BaseModel):
     requires_confirmation: bool = False
     pending_action: PendingAction | None = None
     final_response: FinalResponse | None = None
+    plan_quality: dict[str, Any] | None = None
 
     @classmethod
     def from_state(cls, state: AgentState) -> ChatResponse:
@@ -55,13 +71,39 @@ class ChatResponse(BaseModel):
             call = pending_calls[0]
             call_id = str(call.get("call_id", ""))
             operation = str(call.get("name", "write_operation"))
+            arguments = dict(call.get("arguments") or {})
+            meals = {
+                meal.get("meal_id") or meal.get("id"): meal
+                for meal in candidate_meals_from_results(state.get("tool_results", []))
+            }
+            preview = []
+            if operation == "create_meal_plan":
+                for item in arguments.get("items", []):
+                    meal = meals.get(item.get("meal_id"), {})
+                    nutrition = meal.get("nutrition") or {}
+                    preview.append(
+                        {
+                            **item,
+                            "meal_name": meal.get("name", f"餐食 {item.get('meal_id')}"),
+                            "calories": nutrition.get("calories_kcal"),
+                            "protein_g": nutrition.get("protein_g"),
+                            "nutrition": nutrition,
+                            "recipe_id": meal.get("recipe_id"),
+                            "meal_role": meal.get("meal_role"),
+                        }
+                    )
             pending_action = PendingAction(
                 id=call_id,
-                title="确认数据写入",
-                description="请核对以下内容；只有确认后 Agent 才会执行持久化写入。",
+                title="确认菜品安排" if operation == "create_meal_plan" else "确认数据写入",
+                description=(
+                    "请核对日期、餐次与菜品，确认后保存。营养为整道菜估算，不代表个人摄入。"
+                    if operation == "create_meal_plan"
+                    else "请核对以下内容，确认后保存。"
+                ),
                 operation=operation,
-                payload=dict(call.get("arguments") or {}),
+                payload=arguments,
                 idempotency_key=call_id,
+                meal_preview=preview,
             )
         return cls(
             thread_id=state["thread_id"],
@@ -74,13 +116,14 @@ class ChatResponse(BaseModel):
             requires_confirmation=state.get("requires_confirmation", False),
             pending_action=pending_action,
             final_response=FinalResponse.model_validate(raw) if raw else None,
+            plan_quality=state.get("plan_quality"),
         )
 
 
 class EvaluationRequest(BaseModel):
     dataset_version: str | None = None
     prompt_version: str | None = None
-    cases: list[EvalCase] | None = None
+    cases: list[EvalCase] | None = Field(default=None, max_length=200)
 
 
 class EvaluationResponse(BaseModel):
@@ -96,6 +139,7 @@ class ProfileUpdateRequest(BaseModel):
     allergens: list[str] = Field(default_factory=list)
     dietary_restrictions: list[str] = Field(default_factory=list)
     daily_calorie_target: float | None = Field(default=None, gt=0)
+    daily_protein_target_g: float | None = Field(default=None, ge=0, le=1_000)
     location: str | None = None
 
     def to_domain(self) -> UpdateUserProfileArgs:
@@ -108,5 +152,6 @@ class ProfileUpdateRequest(BaseModel):
             health_goals=self.goals,
             dietary_tags=self.dietary_restrictions,
             daily_calorie_target=self.daily_calorie_target,
+            daily_protein_target_g=self.daily_protein_target_g,
             location=self.location,
         )

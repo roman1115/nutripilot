@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from nutripilot.agent.contracts import PlanSpec
@@ -11,8 +12,10 @@ from nutripilot.agent.planning import (
     candidate_meals_from_results,
 )
 from nutripilot.agent.state import AgentState
-from nutripilot.domain.enums import Phase
+from nutripilot.domain.enums import Intent, Phase
+from nutripilot.model_gateway.budget import current_budget
 from nutripilot.safety import has_dietary_conflict, merge_dietary_terms
+from nutripilot.safety.dietary import meets_ingredient_requirements
 from nutripilot.tools import (
     ToolCall,
     ToolContext,
@@ -31,6 +34,46 @@ class ToolExecutionNode:
 
     async def run(self, state: AgentState) -> dict[str, Any]:
         calls = [ToolCall.model_validate(item) for item in state.get("pending_tool_calls", [])]
+        if state.get("intent") == Intent.MEAL_PLAN.value:
+            spec = plan_spec_from_results(
+                state.get("slots", {}),
+                state.get("tool_results", []),
+                current_date=date.fromisoformat(state["current_date"]),
+            )
+            search_calls = [call for call in calls if call.name == "search_meals"]
+            if search_calls:
+                expanded_searches = []
+                for meal_type in spec.meal_types:
+                    selected = next(
+                        (
+                            call
+                            for call in search_calls
+                            if call.arguments.get("meal_type") == meal_type
+                        ),
+                        search_calls[0],
+                    )
+                    expanded_searches.append(
+                        selected.model_copy(
+                            update={
+                                "call_id": f"{selected.call_id}:{meal_type}",
+                                "arguments": {
+                                    **selected.arguments,
+                                    "meal_type": meal_type,
+                                    "meal_role": None,
+                                    "limit": 8,
+                                },
+                            }
+                        )
+                    )
+                calls = [
+                    expanded
+                    for call in calls
+                    for expanded in (
+                        expanded_searches
+                        if call is search_calls[0]
+                        else [] if call.name == "search_meals" else [call]
+                    )
+                ]
         execution_state = ToolExecutionState(
             step_count=state.get("step_count", 0),
             signatures=dict(state.get("tool_signatures", {})),
@@ -40,10 +83,63 @@ class ToolExecutionNode:
         requires_confirmation = False
         dietary_constraints = dict(state.get("dietary_constraints", {}))
         plan_validation_error: PlanBuildError | None = None
+        plan_quality = state.get("plan_quality")
+        pending_calls: list[dict[str, Any]] = []
 
         for call in calls:
+            if (
+                (call.name, state.get("intent")) in {
+                    ("get_nutrition", Intent.NUTRITION_QUERY.value),
+                    ("get_recipe", Intent.RECIPE_QUERY.value),
+                }
+                and state.get("slots", {}).get("food_name")
+            ):
+                call = call.model_copy(
+                    update={"arguments": {"name": state["slots"]["food_name"]}}
+                )
             call = _apply_profile_constraints(call, results, state.get("slots", {}))
             if call.name == "search_meals":
+                targets = state.get("answer_task", {}).get("meal_ids", [])
+                if state.get("intent") == Intent.MEAL_ADJUSTMENT.value and targets:
+                    call = call.model_copy(update={"arguments": {
+                        **call.arguments,
+                        "excluded_meal_ids": sorted({
+                            *call.arguments.get("excluded_meal_ids", []), *targets,
+                        }),
+                    }})
+                elif (
+                    state.get("intent") == Intent.MEAL_ADJUSTMENT.value
+                    and any(term in state["user_message"] for term in (
+                        "换一批", "换一个", "不想吃这个", "再来", "换几道",
+                    ))
+                ) or state.get(
+                    "replacing_plan"
+                ):
+                    call = call.model_copy(
+                        update={
+                            "arguments": {
+                                **call.arguments,
+                                "excluded_meal_ids": sorted(
+                                    {
+                                        *call.arguments.get("excluded_meal_ids", []),
+                                        *state.get("previous_candidate_ids", []),
+                                    }
+                                ),
+                            }
+                        }
+                    )
+                if state.get("intent") == Intent.MEAL_PLAN.value:
+                    arguments = dict(call.arguments)
+                    slots = state.get("slots", {})
+                    for field in (
+                        "min_protein_g",
+                        "max_calories_kcal",
+                        "max_price_cny",
+                        "max_prep_minutes",
+                    ):
+                        if slots.get(field) is None:
+                            arguments.pop(field, None)
+                    call = call.model_copy(update={"arguments": arguments})
                 if not _has_successful_profile(results):
                     execution_state.step_count += 1
                     results.append(
@@ -58,10 +154,20 @@ class ToolExecutionNode:
                         ).model_dump(mode="json")
                     )
                     break
+                if not any(
+                    result.get("tool_name") == "get_user_feedback"
+                    and result.get("status") == "success" for result in results
+                ):
+                    execution_state.step_count += 1
+                    results.append(ToolResult.failure(
+                        call_id=call.call_id, tool_name=call.name, code="FEEDBACK_REQUIRED",
+                        message="Verified feedback is required before meal retrieval.",
+                    ).model_dump(mode="json"))
+                    break
                 dietary_constraints = {
-                    "allergens": merge_dietary_terms(
-                        call.arguments.get("excluded_allergens")
-                    ),
+                    "required_ingredients": call.arguments.get("required_ingredients", []),
+                    "ingredient_any_groups": call.arguments.get("ingredient_any_groups", []),
+                    "allergens": merge_dietary_terms(call.arguments.get("excluded_allergens")),
                     "excluded_ingredients": merge_dietary_terms(
                         call.arguments.get("excluded_ingredients")
                     ),
@@ -73,6 +179,15 @@ class ToolExecutionNode:
                         state=state,
                         results=results,
                         dietary_constraints=dietary_constraints,
+                    )
+                    plan_quality = PlanBuilder().assess(
+                        plan_spec_from_results(
+                            state.get("slots", {}),
+                            results,
+                            current_date=date.fromisoformat(state["current_date"]),
+                        ),
+                        PlanBuilder.parse_request(call.arguments),
+                        candidate_meals_from_results(results),
                     )
                 except PlanBuildError as exc:
                     plan_validation_error = exc
@@ -87,8 +202,10 @@ class ToolExecutionNode:
                         ).model_dump(mode="json")
                     )
                     break
-            context = ToolContext.with_timeout(
-                20,
+            budget = current_budget()
+            if budget:
+                budget.check()
+            context = ToolContext(
                 user_id=state["user_id"],
                 trace_id=state["trace_id"],
                 thread_id=state["thread_id"],
@@ -97,14 +214,31 @@ class ToolExecutionNode:
                     {"profile:read", "meal_plan:write", "profile:write", "feedback:write"}
                 ),
                 confirmed=call.call_id in confirmed_ids,
-                idempotency_key=call.call_id,
+                idempotency_key=f"{state['turn_id']}:{call.call_id}",
+                deadline_monotonic=budget.deadline if budget else None,
             )
             result = await self.executor.execute(call, context, execution_state)
             if result.status is ToolStatus.CONFIRMATION_REQUIRED:
                 requires_confirmation = True
+                pending_calls = [call.model_dump(mode="json")]
                 break
             results.append(result.model_dump(mode="json"))
+            if result.error and not result.error.retryable:
+                break
 
+        dietary_constraints = {
+            **dietary_constraints,
+            "allergens": merge_dietary_terms(
+                dietary_constraints.get("allergens"), _profile_terms(results, "allergens"),
+                state.get("slots", {}).get("allergens"),
+            ),
+            "excluded_ingredients": merge_dietary_terms(
+                dietary_constraints.get("excluded_ingredients"),
+                _profile_terms(results, "dislikes"),
+                state.get("slots", {}).get("dislikes"),
+                state.get("slots", {}).get("excluded_ingredients"),
+            ),
+        }
         candidate_ids, citations, filtered_meal_ids = _extract_grounding(
             results,
             dietary_constraints,
@@ -148,9 +282,8 @@ class ToolExecutionNode:
                 )
             ),
             "tool_results": results,
-            "pending_tool_calls": state.get("pending_tool_calls", [])
-            if requires_confirmation
-            else [],
+            "pending_tool_calls": pending_calls,
+            "plan_quality": plan_quality,
             "candidate_ids": candidate_ids,
             "citations": citations,
             "dietary_constraints": dietary_constraints,
@@ -167,10 +300,10 @@ def _extract_grounding(
     citations: list[dict[str, Any]] = []
     filtered_meal_ids: set[int] = set()
     declared_allergens = merge_dietary_terms(dietary_constraints.get("allergens"))
-    excluded_ingredients = merge_dietary_terms(
-        dietary_constraints.get("excluded_ingredients")
-    )
-    constraints_active = bool(declared_allergens or excluded_ingredients)
+    excluded_ingredients = merge_dietary_terms(dietary_constraints.get("excluded_ingredients"))
+    required = dietary_constraints.get("required_ingredients", [])
+    groups = dietary_constraints.get("ingredient_any_groups", [])
+    constraints_active = bool(declared_allergens or excluded_ingredients or required or groups)
 
     for result in results:
         if result.get("status") != ToolStatus.SUCCESS.value:
@@ -199,7 +332,9 @@ def _extract_grounding(
                     meal_ingredients=meal_ingredients,
                     declared_allergens=declared_allergens,
                     excluded_ingredients=excluded_ingredients,
+                    ingredient_records=meal.get("ingredient_records", []),
                 )
+                or not meets_ingredient_requirements(meal, required, groups)
             ):
                 filtered_meal_ids.add(meal_id)
                 continue
@@ -223,12 +358,10 @@ def _apply_profile_constraints(
     profile_allergens = _profile_terms(results, "allergens")
     profile_dislikes = _profile_terms(results, "dislikes")
     declared_allergens = merge_dietary_terms(
-        arguments.get("excluded_allergens"),
         profile_allergens,
         slots.get("allergens"),
     )
     excluded_ingredients = merge_dietary_terms(
-        arguments.get("excluded_ingredients"),
         profile_dislikes,
         profile_allergens,
         slots.get("dislikes"),
@@ -246,10 +379,25 @@ def _apply_profile_constraints(
         }
     )
     arguments.update(
+        food_name=slots.get("food_name"),
         excluded_allergens=declared_allergens,
         excluded_ingredients=excluded_ingredients,
         excluded_meal_ids=excluded_meal_ids,
+        required_ingredients=slots.get("required_ingredients", []),
+        ingredient_any_groups=slots.get("ingredient_any_groups", []),
     )
+    if slots.get("meal_type"):
+        arguments["meal_type"] = (
+            "snack" if slots["meal_type"] == "late_snack" else slots["meal_type"]
+        )
+    for field in ("max_calories_kcal", "max_price_cny", "max_prep_minutes", "min_protein_g"):
+        if field not in slots:
+            continue
+        value = slots.get(field)
+        if value is None:
+            arguments.pop(field, None)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            arguments[field] = value
     return call.model_copy(update={"arguments": arguments})
 
 
@@ -261,18 +409,52 @@ def _validate_meal_plan_call(
     dietary_constraints: dict[str, Any],
 ) -> ToolCall:
     request = PlanBuilder.parse_request(call.arguments)
-    spec = PlanSpec.from_slots(state.get("slots", {}), start_date=request.start_date)
+    spec = plan_spec_from_results(
+        state.get("slots", {}),
+        results,
+        current_date=date.fromisoformat(state["current_date"]),
+    )
     PlanBuilder().validate_prewrite(
         spec=spec,
         request=request,
         candidates=candidate_meals_from_results(results),
         allowed_meal_ids=set(state.get("candidate_ids", [])),
         declared_allergens=merge_dietary_terms(dietary_constraints.get("allergens")),
-        excluded_ingredients=merge_dietary_terms(
-            dietary_constraints.get("excluded_ingredients")
-        ),
+        excluded_ingredients=merge_dietary_terms(dietary_constraints.get("excluded_ingredients")),
     )
-    return call.model_copy(update={"arguments": request.model_dump(mode="json")})
+    # Safe model selections are canonicalised before confirmation, not after the user approves.
+    safe_candidates = [
+        meal
+        for meal in candidate_meals_from_results(results)
+        if (meal.get("meal_id") or meal.get("id")) in set(state.get("candidate_ids", []))
+    ]
+    canonical = PlanBuilder().build(spec, safe_candidates)
+    PlanBuilder().validate_prewrite(
+        spec=spec,
+        request=canonical,
+        candidates=safe_candidates,
+        allowed_meal_ids=set(state.get("candidate_ids", [])),
+        declared_allergens=merge_dietary_terms(dietary_constraints.get("allergens")),
+        excluded_ingredients=merge_dietary_terms(dietary_constraints.get("excluded_ingredients")),
+    )
+    canonical.quality = PlanBuilder().assess(spec, canonical, safe_candidates)
+    return call.model_copy(update={"arguments": canonical.model_dump(mode="json")})
+
+
+def plan_spec_from_results(
+    slots: dict[str, Any], results: list[dict[str, Any]], *, current_date: date
+) -> PlanSpec:
+    profile: dict[str, Any] = next(
+        (
+            result["data"]
+            for result in reversed(results)
+            if result.get("tool_name") == "get_user_profile"
+            and result.get("status") == "success"
+            and isinstance(result.get("data"), dict)
+        ),
+        {},
+    )
+    return PlanSpec.from_slots(slots, start_date=current_date, profile=profile)
 
 
 def _profile_terms(results: list[dict[str, Any]], field: str) -> list[str]:
@@ -304,9 +486,5 @@ def _feedback_excluded_ids(results: list[dict[str, Any]]) -> set[int]:
             continue
         data = result.get("data")
         if isinstance(data, dict) and isinstance(data.get("excluded_meal_ids"), list):
-            return {
-                meal_id
-                for meal_id in data["excluded_meal_ids"]
-                if isinstance(meal_id, int)
-            }
+            return {meal_id for meal_id in data["excluded_meal_ids"] if isinstance(meal_id, int)}
     return set()

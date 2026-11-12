@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import unicodedata
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -10,8 +13,9 @@ from pydantic import BaseModel, ValidationError
 from nutripilot.infrastructure import PostgresDataStore, QdrantMealIndex
 from nutripilot.infrastructure.memory import load_seed_store
 from nutripilot.paths import project_root
+from nutripilot.retrieval.catalog import FoodCatalog
 from nutripilot.retrieval.embedding import BGEEmbedder, HashingEmbedder
-from nutripilot.retrieval.models import MealSearchFilters, MealSearchRequest
+from nutripilot.retrieval.models import Meal, MealSearchFilters, MealSearchRequest
 from nutripilot.retrieval.ports import GuidelineRepository, MealRepository
 from nutripilot.retrieval.rerank import BGEReranker, LexicalReranker
 from nutripilot.retrieval.service import GuidelineSearchService, RetrievalService
@@ -20,6 +24,7 @@ from nutripilot.tools.mcp.models import (
     MCP_TOOL_CONTRACTS,
     GetNutritionMCPArgs,
     GetNutritionMCPResult,
+    GetRecipeMCPResult,
     MCPGuidelineHit,
     MCPMealHit,
     QueryDietaryGuidelinesMCPArgs,
@@ -45,15 +50,22 @@ class NutritionMCPService:
 
     version = "1.0.0"
 
-    def __init__(self, store: NutritionDataStore, retrieval: RetrievalService) -> None:
+    def __init__(
+        self,
+        store: NutritionDataStore,
+        retrieval: RetrievalService,
+        *,
+        catalog: FoodCatalog | None = None,
+    ) -> None:
         self.store = store
         self.retrieval = retrieval
         self.guidelines = GuidelineSearchService(store)
+        self.catalog = catalog
 
     @classmethod
     def from_seed_data(cls, data_directory: str | Path) -> NutritionMCPService:
         store = load_seed_store(data_directory)
-        return cls(store, RetrievalService(store))
+        return cls(store, RetrievalService(store), catalog=store.catalog)
 
     async def list_tools(self) -> list[RemoteToolSpec]:
         return [
@@ -76,6 +88,8 @@ class NutritionMCPService:
                 )
             elif name == "get_nutrition":
                 result = await self.get_nutrition(GetNutritionMCPArgs.model_validate(arguments))
+            elif name == "get_recipe":
+                result = await self.get_recipe(GetNutritionMCPArgs.model_validate(arguments))
             elif name == "query_dietary_guidelines":
                 result = await self.query_dietary_guidelines(
                     QueryDietaryGuidelinesMCPArgs.model_validate(arguments)
@@ -97,13 +111,17 @@ class NutritionMCPService:
             MealSearchRequest(
                 query=request.query,
                 filters=MealSearchFilters(
+                    food_name=request.food_name,
                     meal_type=request.meal_type,
+                    meal_role=request.meal_role,
                     cuisines=request.cuisines,
                     tastes=request.tastes,
                     health_goals=request.health_goals,
                     dietary_tags=request.dietary_tags,
                     excluded_allergens=request.excluded_allergens,
                     excluded_ingredients=request.excluded_ingredients,
+                    required_ingredients=request.required_ingredients,
+                    ingredient_any_groups=request.ingredient_any_groups,
                     excluded_meal_ids=request.excluded_meal_ids,
                     max_calories_kcal=request.max_calories_kcal,
                     min_protein_g=request.min_protein_g,
@@ -119,14 +137,21 @@ class NutritionMCPService:
                 MCPMealHit(
                     meal_id=hit.meal.id,
                     name=hit.meal.name,
+                    aliases=hit.meal.aliases,
                     description=hit.meal.description,
                     meal_types=hit.meal.meal_types,
                     score=hit.score,
                     nutrition=hit.meal.nutrition,
                     ingredients=hit.meal.ingredients,
+                    ingredient_records=hit.meal.ingredient_records,
                     allergens=hit.meal.allergens,
                     prep_minutes=hit.meal.prep_minutes,
                     price_cny=hit.meal.price_cny,
+                    recipe_id=hit.meal.recipe_id,
+                    meal_role=hit.meal.meal_role,
+                    tastes=hit.meal.tastes,
+                    cuisines=hit.meal.cuisines,
+                    dietary_tags=hit.meal.dietary_tags,
                     reasons=hit.reasons,
                     citation=hit.citation,
                 )
@@ -134,24 +159,18 @@ class NutritionMCPService:
             ],
             total_candidates=response.total_candidates,
             retrieval_version=response.retrieval_version,
+            filter_diagnostics=response.filter_diagnostics,
+            match_evidence=response.match_evidence,
         )
 
     async def get_nutrition(self, request: GetNutritionMCPArgs) -> GetNutritionMCPResult:
         meal = None
         if request.meal_id is not None:
             meal = await self.store.get_meal(request.meal_id)
+        if request.meal_id is not None and (meal is None or not meal.is_active):
+            raise ToolRuntimeError("MEAL_NOT_FOUND", "没有找到该餐食编号的营养记录。")
         if meal is None and request.name:
-            requested_name = request.name.casefold().strip()
-            meals = await self.store.list_meals()
-            meal = next(
-                (
-                    candidate
-                    for candidate in meals
-                    if requested_name == candidate.name.casefold()
-                    or requested_name in candidate.name.casefold()
-                ),
-                None,
-            )
+            meal = _resolve_meal_name(request.name, await self.store.list_meals())
         if meal is None:
             raise ToolRuntimeError(
                 "MEAL_NOT_FOUND", "No authoritative nutrition record matched the request."
@@ -162,13 +181,49 @@ class NutritionMCPService:
             nutrition=meal.nutrition,
             ingredients=meal.ingredients,
             allergens=meal.allergens,
-            serving_note="营养值按种子数据中的标准份量估算，实际值会随食材和烹调方式变化。",
+            recipe_id=meal.recipe_id,
+            meal_role=meal.meal_role,
+            serving_note=meal.nutrition.calculation_note
+            or "营养值按记录中的标准份量估算，实际值会随食材和烹调方式变化。",
             citation={
                 "source_id": f"meal:{meal.id}",
                 "title": meal.name,
                 "source": meal.source,
                 "uri": meal.source_uri,
                 "data_version": meal.data_version,
+            },
+        )
+
+    async def get_recipe(self, request: GetNutritionMCPArgs) -> GetRecipeMCPResult:
+        meal = await self.get_nutrition(request)
+        if self.catalog is None:
+            raise ToolRuntimeError(
+                "RECIPE_NOT_FOUND", "这道菜尚未收录有来源的做法，暂时无法提供可靠步骤。"
+            )
+        recipe = next(
+            (item for item in self.catalog.recipes if item.id == meal.recipe_id),
+            None,
+        )
+        if recipe is None or not recipe.instructions.strip():
+            raise ToolRuntimeError(
+                "RECIPE_NOT_FOUND", "这道菜尚未收录有来源的做法，暂时无法提供可靠步骤。"
+            )
+        source = next(item for item in self.catalog.sources if item.id == recipe.source_id)
+        return GetRecipeMCPResult(
+            meal_id=meal.meal_id,
+            name=recipe.name,
+            raw_ingredients=recipe.raw_ingredients,
+            raw_quantities=recipe.raw_quantities,
+            instructions=recipe.instructions,
+            allergens=meal.allergens,
+            citation={
+                "source_id": f"recipe:{recipe.id}",
+                "title": f"{source.name} · {recipe.name}",
+                "uri": str(recipe.source_uri),
+                "source": source.name,
+                "version": source.version,
+                "license": source.license,
+                "source_sha256": recipe.source_sha256,
             },
         )
 
@@ -194,6 +249,41 @@ class NutritionMCPService:
             ],
             disclaimer=disclaimer,
         )
+
+
+def _normalise_meal_name(value: str) -> str:
+    return re.sub(r"[\s\W_]+", "", unicodedata.normalize("NFKC", value).casefold())
+
+
+def _resolve_meal_name(name: str, meals: list[Meal]) -> Meal:
+    requested = _normalise_meal_name(name)
+    exact = [
+        meal
+        for meal in meals
+        if requested
+        and requested in {_normalise_meal_name(value) for value in (meal.name, *meal.aliases)}
+    ]
+    if len(exact) == 1:
+        return exact[0]
+    candidates = exact or [
+        meal
+        for meal in meals
+        if requested
+        and any(
+            requested in _normalise_meal_name(value)
+            or SequenceMatcher(None, requested, _normalise_meal_name(value)).ratio() >= 0.72
+            for value in (meal.name, *meal.aliases)
+        )
+    ]
+    if candidates:
+        raise ToolRuntimeError(
+            "MEAL_NAME_AMBIGUOUS",
+            "请确认你要查询的餐食名称。",
+            details={
+                "candidates": [{"meal_id": meal.id, "name": meal.name} for meal in candidates[:5]]
+            },
+        )
+    raise ToolRuntimeError("MEAL_NOT_FOUND", "没有找到该菜名的可靠记录，请提供完整菜名。")
 
 
 class ExternalNutritionMCPService:
@@ -235,7 +325,7 @@ class ExternalNutritionMCPService:
             await store.initialize()
             seed = load_seed_store(self.data_directory)
             meals = await seed.list_meals()
-            await store.seed(meals, await seed.list_guidelines())
+            await store.seed(await seed.all_meals(), await seed.list_guidelines())
 
             embedder = _build_embedder()
             reranker = _build_reranker()
@@ -246,6 +336,7 @@ class ExternalNutritionMCPService:
             )
             vectors = await embedder.embed([meal.searchable_text() for meal in meals])
             await index.ensure_collection(embedder.dimension)
+            await index.delete([meal.id for meal in await seed.all_meals() if not meal.is_active])
             await index.upsert(
                 [
                     (
@@ -271,6 +362,7 @@ class ExternalNutritionMCPService:
                     embedder=embedder,
                     reranker=reranker,
                 ),
+                catalog=seed.catalog,
             )
             return self._delegate
 

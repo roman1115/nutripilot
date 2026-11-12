@@ -11,7 +11,19 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 from nutripilot.domain.enums import Intent
 
 
-class EvalCase(BaseModel):
+class RecommendationExpectation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_slots: dict[str, Any] = Field(default_factory=dict)
+    min_recommendations: int | None = Field(default=None, ge=0, le=3)
+    max_recommendations: int | None = Field(default=None, ge=0, le=3)
+    expected_required_ingredients: list[str] = Field(default_factory=list)
+    expected_ingredient_any_groups: list[list[str]] = Field(default_factory=list)
+    expected_excluded_ingredients: list[str] = Field(default_factory=list)
+    check_reason_evidence: bool = False
+
+
+class EvalCase(RecommendationExpectation):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     case_id: str = Field(alias="id")
@@ -20,12 +32,21 @@ class EvalCase(BaseModel):
     expected_intent: Intent
     expected_slots: dict[str, Any] = Field(default_factory=dict)
     expected_tools: list[str] = Field(default_factory=list)
+    optional_tools: list[str] = Field(default_factory=list)
     expected_requires_confirmation: bool = False
     expected_blocked: bool = False
     expected_response_contains: list[str] = Field(default_factory=list)
     user_id: int = 1
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    expected_phase: str | None = None
+    forbidden_response_terms: list[str] = Field(default_factory=list)
+    expected_plan_start_date: str | None = None
+    follow_up_messages: list[str] = Field(default_factory=list, max_length=10)
+    expected_error_code: str | None = None
+    expected_plan_item_count: int | None = Field(default=None, ge=1, le=28)
+    expected_plan_nutrition_basis: str | None = None
+    turn_expectations: list[RecommendationExpectation] = Field(default_factory=list, max_length=11)
 
 
 class EvalResult(BaseModel):
@@ -37,12 +58,17 @@ class EvalResult(BaseModel):
     checks: dict[str, bool] = Field(default_factory=dict)
     phase: str
     trace_id: str
+    trace_ids: list[str] = Field(default_factory=list)
     latency_ms: float = Field(ge=0)
     failure_reasons: list[str] = Field(default_factory=list)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
 
 
 class EvalReport(BaseModel):
     status: str = "completed"
+    owner_user_id: int = 1
+    runtime: dict[str, str] = Field(default_factory=dict)
     run_id: str = Field(default_factory=lambda: str(uuid4()))
     dataset_version: str
     prompt_versions: dict[str, str] = Field(default_factory=dict)

@@ -2,28 +2,56 @@
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from datetime import date
+from typing import Annotated, Any, TypedDict
 from uuid import uuid4
+
+from langchain_core.messages import AnyMessage
+from langgraph.graph.message import add_messages
 
 from nutripilot.domain.enums import Phase
 
 
 class AgentState(TypedDict, total=False):
+    run_id: str
     trace_id: str
     thread_id: str
     turn_id: str
     user_id: int
     phase: str
     user_message: str
+    current_date: str
     intent: str | None
     intent_confidence: float | None
+    answer_task: dict[str, Any]
     slots: dict[str, Any]
     missing_slots: list[str]
     conversation_summary: str | None
+    discussed_meals: list[dict[str, Any]]
+    recent_messages: list[dict[str, str]]
+    conversation_evidence: list[dict[str, Any]]
+    messages: Annotated[list[AnyMessage], add_messages]
+    memory_summary: dict[str, Any]
+    history_loaded_through: int
+    context_snapshot: dict[str, Any]
+    active_constraints: dict[str, Any]
+    history_query: str | None
+    history_recalled: bool
+    input_token_ratio: float
+    compression_requested: bool
+    compression_attempted: bool
+    compression_candidate_ids: list[str]
+    memory_finalized_run_id: str | None
+    response_kind: str
+    response_created_at: float
+    approved_answer: dict[str, Any] | None
+    clarification_intent: str | None
     execution_plan: list[dict[str, Any]]
     pending_tool_calls: list[dict[str, Any]]
     tool_results: list[dict[str, Any]]
     candidate_ids: list[int]
+    previous_candidate_ids: list[int]
+    replacing_plan: bool
     citations: list[dict[str, Any]]
     dietary_constraints: dict[str, list[str]]
     risk_flags: list[str]
@@ -38,6 +66,7 @@ class AgentState(TypedDict, total=False):
     prompt_versions: dict[str, str]
     final_response: dict[str, Any] | None
     error: dict[str, Any] | None
+    plan_quality: dict[str, Any] | None
 
 
 def new_agent_state(
@@ -47,6 +76,7 @@ def new_agent_state(
     thread_id: str | None = None,
     turn_id: str | None = None,
     trace_id: str | None = None,
+    current_date: date | None = None,
 ) -> AgentState:
     """Create explicit defaults so every checkpoint is inspectable."""
 
@@ -57,15 +87,34 @@ def new_agent_state(
         user_id=user_id,
         phase=Phase.RECEIVED.value,
         user_message=message.strip(),
+        current_date=(current_date or date.today()).isoformat(),
         intent=None,
         intent_confidence=None,
+        answer_task={},
         slots={},
         missing_slots=[],
         conversation_summary=None,
+        discussed_meals=[],
+        recent_messages=[],
+        conversation_evidence=[],
+        messages=[],
+        memory_summary={},
+        history_loaded_through=0,
+        context_snapshot={},
+        compression_requested=False,
+        compression_attempted=False,
+        memory_finalized_run_id=None,
+        response_kind="response",
+        history_query=None,
+        history_recalled=False,
+        approved_answer=None,
+        clarification_intent=None,
         execution_plan=[],
         pending_tool_calls=[],
         tool_results=[],
         candidate_ids=[],
+        previous_candidate_ids=[],
+        replacing_plan=False,
         citations=[],
         dietary_constraints={"allergens": [], "excluded_ingredients": []},
         risk_flags=[],
@@ -80,6 +129,7 @@ def new_agent_state(
         prompt_versions={},
         final_response=None,
         error=None,
+        plan_quality=None,
     )
 
 

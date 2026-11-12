@@ -26,6 +26,7 @@ async def test_mcp_dynamic_discovery_and_tool_round_trip() -> None:
 
     assert set(registry.names()) == {
         "get_nutrition",
+        "get_recipe",
         "query_dietary_guidelines",
         "search_meals",
     }
@@ -46,6 +47,34 @@ async def test_mcp_dynamic_discovery_and_tool_round_trip() -> None:
     assert result.ok
     assert result.data["hits"]
     assert all(not {"鱼", "甲壳类"}.intersection(hit["allergens"]) for hit in result.data["hits"])
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_mcp_filters_meal_role_before_truncating_candidates() -> None:
+    service = NutritionMCPService.from_seed_data(DATA_DIR)
+    adapter = MCPToolAdapter(InProcessMCPTransport(service))
+    result = await adapter.call_tool(
+        "search_meals", {"query": "米粥", "meal_role": "staple", "limit": 20}
+    )
+    assert result["hits"]
+    assert all(hit["meal_role"] == "staple" for hit in result["hits"])
+    assert all(hit["recipe_id"] >= 1000 for hit in result["hits"])
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_mcp_preserves_recipe_nutrition_ranges() -> None:
+    service = NutritionMCPService.from_seed_data(DATA_DIR)
+    adapter = MCPToolAdapter(InProcessMCPTransport(service))
+    result = await adapter.call_tool("get_nutrition", {"meal_id": 1008})
+
+    nutrition = result["nutrition"]
+    bounds = nutrition["nutrient_ranges"]["calories_kcal"]
+    assert bounds["minimum"] == pytest.approx(398.828)
+    assert bounds["maximum"] == nutrition["calories_kcal"] == pytest.approx(480.156)
+    assert nutrition["serving_size"] == "整道菜（整份配方）"
+    assert nutrition["input_weight_range_g"]["minimum"] < nutrition["serving_weight_g"]
 
 
 class CountingTransport:
@@ -76,6 +105,7 @@ async def test_mcp_contract_registration_defers_discovery_until_first_call() -> 
     assert transport.discovery_calls == 0
     assert set(registry.names()) == {
         "get_nutrition",
+        "get_recipe",
         "query_dietary_guidelines",
         "search_meals",
     }
@@ -83,7 +113,7 @@ async def test_mcp_contract_registration_defers_discovery_until_first_call() -> 
         ToolCall(
             call_id="lazy-mcp-call",
             name="get_nutrition",
-            arguments={"meal_id": 1},
+            arguments={"meal_id": 1004},
         ),
         ToolContext(),
     )

@@ -1,34 +1,47 @@
-import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, Fragment, KeyboardEvent, useEffect, useRef, useState } from "react";
 import {
   Activity,
-  Bot,
+  Salad,
+  ArrowUpRight,
+  ChevronDown,
+  ChevronRight,
+  Search,
+  Trash2,
   BrainCircuit,
   Check,
   CheckCircle2,
   Circle,
   CircleAlert,
   ExternalLink,
+  History,
   LoaderCircle,
   Plus,
   Quote,
   RotateCcw,
   Send,
   ShieldCheck,
-  Sparkles,
   Square,
   UserRound,
   Utensils,
   Wrench,
   X,
 } from "lucide-react";
-import { EmptyState, ErrorNotice } from "../../components/Common";
-import { ApiError, confirmChat, getThread, getTrace, streamChat } from "../../lib/api";
-import { asArray, asRecord, firstNumber, firstString, formatDuration } from "../../lib/format";
+import { ErrorNotice } from "../../components/Common";
+import {
+  ApiError, cancelRun, deleteConversation, getChatSnapshot, getConversations, getThread,
+  getTrace, restoreConversation, streamChat, subscribeRun, submitConfirmation,
+  normalizePlanItem,
+} from "../../lib/api";
+import {
+  asArray, asRecord, firstNumber, firstString, formatDuration,
+  normalizeNutrientRanges, nutrientLabel,
+} from "../../lib/format";
 import type {
   ChatMessage,
   ChatStreamEvent,
   Citation,
   ConnectionState,
+  ConversationSummary,
   MealRecommendation,
   PendingConfirmation,
   ToolActivity,
@@ -36,9 +49,12 @@ import type {
 } from "../../types";
 
 const promptSuggestions = [
-  "晚餐想吃清淡一点，预算 40 元以内",
-  "帮我制定一个高蛋白的一日饮食计划",
-  "鸡胸肉和豆腐的营养差异是什么？",
+  { title: "今天吃点清爽的", detail: "清淡晚餐", prompt: "晚餐推荐一道清淡的菜",
+    image: "/images/fresh-bowl.jpg", alt: "新鲜蔬菜与谷物组成的餐碗" },
+  { title: "安排明天的菜", detail: "一日菜品安排", prompt: "帮我制定明天的一日三餐菜品餐单",
+    image: "/images/daily-table.jpg", alt: "桌面上摆放的谷物、水果和蔬菜" },
+  { title: "午餐也好好吃", detail: "高蛋白午餐", prompt: "推荐一份高蛋白的午餐",
+    image: "/images/simple-meal.jpg", alt: "一份搭配蔬菜的日常餐碗" },
 ];
 
 const componentLabels: Record<string, string> = {
@@ -56,6 +72,7 @@ const componentLabels: Record<string, string> = {
   tool_executor: "执行工具",
   search_meals: "检索候选餐食",
   get_nutrition: "查询营养数据",
+  get_recipe: "查询菜谱做法",
   get_user_profile: "读取用户画像",
   get_weather_context: "读取天气场景",
   create_meal_plan: "写入饮食计划",
@@ -68,7 +85,9 @@ function makeId(prefix: string): string {
 }
 
 function getInitialThreadId(): string {
-  const stored = localStorage.getItem("nutripilot.threadId");
+  const stored = new URL(window.location.href).searchParams.get("thread")
+    || sessionStorage.getItem("nutripilot.threadId")
+    || localStorage.getItem("nutripilot.threadId");
   if (stored) return stored;
   const created = crypto.randomUUID();
   localStorage.setItem("nutripilot.threadId", created);
@@ -98,11 +117,11 @@ function normalizeRecommendations(value: unknown): MealRecommendation[] {
     recommendations.push({
       mealId: (source.meal_id as string | number | undefined) ?? (source.id as string | number | undefined),
       name,
-      reason: firstString(source.reason, source.recommendation_reason, source.description),
       calories: firstNumber(source.calories, source.calories_kcal, nutrition.calories, nutrition.calories_kcal),
-      protein: firstNumber(source.protein, source.protein_g, nutrition.protein),
-      carbs: firstNumber(source.carbs, source.carbohydrates, source.carbs_g, nutrition.carbs),
-      fat: firstNumber(source.fat, source.fat_g, nutrition.fat),
+      protein: firstNumber(source.protein, source.protein_g, nutrition.protein, nutrition.protein_g),
+      carbs: firstNumber(source.carbs, source.carbohydrates, source.carbohydrates_g, source.carbs_g, nutrition.carbs, nutrition.carbohydrates_g),
+      fat: firstNumber(source.fat, source.fat_g, nutrition.fat, nutrition.fat_g),
+      nutrientRanges: normalizeNutrientRanges(source.nutrient_ranges ?? nutrition.nutrient_ranges),
       tags: asArray(source.tags).filter((tag): tag is string => typeof tag === "string"),
     });
   }
@@ -118,7 +137,9 @@ function normalizeCitations(value: unknown): Citation[] {
     citations.push({
       id: (source.id as string | number | undefined) ?? (source.source_id as string | number | undefined),
       title,
-      source: firstString(source.source, source.source_type, source.publisher),
+      source: firstString(source.source, source.publisher) ?? ({
+        recipe: "来源菜谱", meal: "菜品记录", ingredient: "食材营养数据",
+      } as Record<string, string>)[String(source.source_type)],
       excerpt: firstString(source.excerpt, source.content, source.text),
       score: firstNumber(source.score, source.relevance_score),
       url: firstString(source.url, source.uri),
@@ -175,42 +196,142 @@ function activityIcon(activity: ToolActivity) {
 }
 
 interface ChatViewProps {
+  active: boolean;
   connection: ConnectionState;
   onTraceDiscovered: (traceId: string) => void;
   onOpenTrace: (traceId: string) => void;
 }
 
-export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatViewProps) {
+export function ChatView({ active, connection, onTraceDiscovered, onOpenTrace }: ChatViewProps) {
   const [threadId, setThreadId] = useState(getInitialThreadId);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("thread", threadId);
+    window.history.replaceState({}, "", url);
+    sessionStorage.setItem("nutripilot.threadId", threadId);
+  }, [threadId]);
+  const select = (id: string) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("thread", id);
+    window.history.pushState({}, "", url);
+    sessionStorage.setItem("nutripilot.threadId", id);
+    setThreadId(id);
+  };
+  useEffect(() => {
+    const navigate = () => setThreadId(getInitialThreadId());
+    window.addEventListener("popstate", navigate);
+    return () => window.removeEventListener("popstate", navigate);
+  }, []);
+  return <ChatSession key={threadId} threadId={threadId} select={select}
+    active={active} connection={connection}
+    onTraceDiscovered={onTraceDiscovered} onOpenTrace={onOpenTrace} />;
+}
+
+function ChatSession({
+  threadId, select, active, connection, onTraceDiscovered, onOpenTrace,
+}: ChatViewProps & { threadId: string; select: (id: string) => void }) {
+  const draftKey = `nutripilot.draft.${sessionStorage.getItem("nutripilot.userId") || "1"}.${threadId}`;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [activities, setActivities] = useState<ToolActivity[]>([]);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(() => sessionStorage.getItem(draftKey) || "");
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const [confirmationBusy, setConfirmationBusy] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(() => window.matchMedia("(min-width: 1100px)").matches);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [historyMode, setHistoryMode] = useState<"history" | "trash">("history");
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const historyRequestRef = useRef(0);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const [historyMore, setHistoryMore] = useState(false);
+  const [deletingThreadId, setDeletingThreadId] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const [planWarnings, setPlanWarnings] = useState<string[]>([]);
+  const restoredThreadRef = useRef<string | null>(null);
   const [activePhase, setActivePhase] = useState("等待请求");
   const abortRef = useRef<AbortController | null>(null);
+  const currentRunRef = useRef<string | null>(null);
+  const observedRunRef = useRef("");
+  const [restoreVersion, setRestoreVersion] = useState(0);
+  const mountedRef = useRef(true);
+  const requestRef = useRef<{ content: string; id: string } | null>(null);
+  const confirmationRequestRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages]);
-
-  useEffect(() => () => abortRef.current?.abort(), []);
+    if (draft) sessionStorage.setItem(draftKey, draft);
+    else sessionStorage.removeItem(draftKey);
+  }, [draft, draftKey]);
 
   useEffect(() => {
-    if (connection !== "online" || messages.length || isSending) return;
+    const desktop = window.matchMedia("(min-width: 1100px)");
+    const updateHistory = (event: MediaQueryListEvent) => setHistoryOpen(event.matches);
+    desktop.addEventListener("change", updateHistory);
+    return () => desktop.removeEventListener("change", updateHistory);
+  }, []);
+
+  useEffect(() => {
+    if (pendingConfirmation) setActivityOpen(true);
+  }, [pendingConfirmation]);
+
+  useEffect(() => {
+    if (!active || !activityOpen) return;
+    const close = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setActivityOpen(false);
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [active, activityOpen]);
+
+  useEffect(() => {
+    if (active) messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [active, messages]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!active || connection !== "online" || isSending || restoredThreadRef.current === threadId) return;
     let cancelled = false;
-    void getThread(threadId)
+    let finished = false;
+    restoredThreadRef.current = threadId;
+    setRestoring(true);
+    void getChatSnapshot(threadId)
       .then(async (result) => {
         if (cancelled) return;
+        const history = asArray(result.messages).map(asRecord);
+        setError(null);
         const finalResponse = asRecord(result.final_response);
         const pendingAction = asRecord(result.pending_action);
         const traceId = firstString(result.trace_id);
         const content = extractResponseContent(result);
         const restored: ChatMessage[] = [];
-        if (content || result.requires_confirmation === true) {
+        for (const item of history) {
+          const response = asRecord(item.response);
+          const role = item.role === "user" || item.role === "system" ? item.role : "assistant";
+          restored.push({
+            id: String(item.id),
+            role,
+            content: String(item.content),
+            createdAt: String(item.created_at),
+            traceId: firstString(item.trace_id),
+            recommendations: normalizeRecommendations(response.recommendations),
+            citations: normalizeCitations(response.citations),
+            warnings: normalizeStringList(response.warnings),
+            suggestedActions: normalizeStringList(response.suggested_actions),
+          });
+        }
+        if (!history.length && (content || result.requires_confirmation === true)) {
           restored.push({
             id: makeId("restored"),
             role: "assistant",
@@ -228,8 +349,28 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
             traceId,
           });
         }
-        if (restored.length) setMessages(restored);
-        if (result.requires_confirmation === true && Object.keys(pendingAction).length) {
+        const run = asRecord(result.run);
+        observedRunRef.current = `${String(run.id || "")}:${String(run.status || "")}`;
+        const running = ["queued", "running", "cancelling"].includes(String(run.status));
+        const assistantId = `${String(run.turn_id)}:${run.kind === "confirmation" ? "confirmation" : "response"}`;
+        if (running && !restored.some((item) => item.id === assistantId)) {
+          restored.push({
+            id: assistantId, role: "assistant", content: "", isStreaming: true,
+            createdAt: new Date().toISOString(),
+          });
+        }
+        setMessages(restored);
+        if (running) {
+          currentRunRef.current = String(run.id);
+          setPendingConfirmation(null);
+          setIsSending(true);
+          setActivePhase(run.status === "queued" ? "排队中" : "正在恢复生成");
+          const controller = new AbortController();
+          abortRef.current = controller;
+          void followRun(String(run.id), assistantId, controller);
+        }
+        setPlanWarnings(normalizeStringList(asRecord(result.plan_quality).warnings));
+        if (!running && result.requires_confirmation === true && Object.keys(pendingAction).length) {
           setPendingConfirmation({
             id: firstString(pendingAction.id),
             title: firstString(pendingAction.title) || "确认数据写入",
@@ -238,12 +379,13 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
               "Agent 准备执行一项会修改数据的操作，请核对后确认。",
             operation: firstString(pendingAction.operation),
             payload: asRecord(pendingAction.payload),
+            mealPreview: asArray(pendingAction.meal_preview).map(normalizePlanItem),
             idempotencyKey:
               firstString(pendingAction.idempotency_key, pendingAction.id) ||
               crypto.randomUUID(),
           });
           setActivePhase("已恢复 · 等待人工确认");
-        } else if (restored.length) {
+        } else if (!running && restored.length) {
           setActivePhase("已恢复上次会话");
         }
         if (traceId) {
@@ -258,13 +400,90 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
       })
       .catch((caught) => {
         if (!(caught instanceof ApiError && caught.status === 404) && !cancelled) {
+          restoredThreadRef.current = null;
           setError(caught instanceof Error ? caught.message : "无法恢复上次会话");
         }
+      })
+      .finally(() => {
+        finished = true;
+        if (!cancelled) setRestoring(false);
       });
     return () => {
       cancelled = true;
+      if (!finished) restoredThreadRef.current = null;
     };
-  }, [connection, isSending, messages.length, onTraceDiscovered, threadId]);
+  }, [active, connection, onTraceDiscovered, threadId, restoreVersion]);
+
+  useEffect(() => {
+    if (!active || connection !== "online" || isSending || confirmationBusy) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const result = await getThread(threadId);
+        if (cancelled || abortRef.current) return;
+        const run = asRecord(result.run);
+        const version = `${String(run.id || "")}:${String(run.status || "")}`;
+        if (version !== observedRunRef.current) {
+          observedRunRef.current = version;
+          restoredThreadRef.current = null;
+          setRestoreVersion((current) => current + 1);
+        }
+      } catch {
+        // Polling resumes after reconnect; the existing conversation remains visible.
+      }
+    };
+    const timer = window.setInterval(() => void refresh(), 5000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [active, connection, isSending, confirmationBusy, threadId]);
+
+  useEffect(() => {
+    if (!active || !historyOpen || connection !== "online") return;
+    historyRequestRef.current += 1;
+    let cancelled = false;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    const load = () => {
+      void getConversations(historyQuery.trim(), 0, historyMode === "trash").then((items) => {
+        if (cancelled) return;
+        setConversations(items);
+        setHistoryOffset(items.length);
+        setHistoryMore(items.length === 30);
+      }).catch((caught) => {
+        if (!cancelled) setHistoryError(caught instanceof Error ? caught.message : "历史会话读取失败");
+      }).finally(() => { if (!cancelled) setHistoryLoading(false); });
+    };
+    const timer = window.setTimeout(load, 250);
+    const polling = window.setInterval(load, 5000);
+    return () => {
+      cancelled = true;
+      historyRequestRef.current += 1;
+      window.clearTimeout(timer);
+      window.clearInterval(polling);
+    };
+  }, [active, connection, historyOpen, historyQuery, historyMode, historyVersion, isSending]);
+
+  const loadMoreHistory = async () => {
+    const version = historyRequestRef.current;
+    setHistoryLoading(true);
+    try {
+      const items = await getConversations(historyQuery.trim(), historyOffset, historyMode === "trash");
+      if (version !== historyRequestRef.current) return;
+      setConversations((current) => [...current, ...items]);
+      setHistoryOffset((current) => current + items.length);
+      setHistoryMore(items.length === 30);
+    } catch (caught) {
+      if (version === historyRequestRef.current) {
+        setHistoryError(caught instanceof Error ? caught.message : "历史会话读取失败");
+      }
+    } finally {
+      if (version === historyRequestRef.current) setHistoryLoading(false);
+    }
+  };
 
   const updateAssistant = (
     assistantId: string,
@@ -286,19 +505,24 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
   };
 
   const ingestEvent = (event: ChatStreamEvent, assistantId: string) => {
+    if (!mountedRef.current) return;
     const source = eventPayload(event);
     const type = event.type.toLowerCase().replace(/[\s-]+/g, "_");
     const metadata = asRecord(source.metadata ?? source.meta);
+    if (type === "accepted") {
+      currentRunRef.current = String(source.id);
+      observedRunRef.current = `${String(source.id)}:${String(source.status)}`;
+      setActivePhase(source.status === "queued" ? "排队中" : "正在生成");
+    }
     const traceId = firstString(source.trace_id, metadata.trace_id);
     if (traceId) {
       onTraceDiscovered(traceId);
       updateAssistant(assistantId, (message) => ({ ...message, traceId }));
     }
     const returnedThreadId = firstString(source.thread_id, metadata.thread_id);
-    if (returnedThreadId && returnedThreadId !== threadId) {
-      setThreadId(returnedThreadId);
-      localStorage.setItem("nutripilot.threadId", returnedThreadId);
-    }
+    if (returnedThreadId && returnedThreadId !== threadId) return;
+    if (type === "connection") setActivePhase("连接中断，正在重连");
+    if (source.phase === "QUEUED") setActivePhase("排队中");
 
     const component = firstString(
       source.tool_name,
@@ -354,6 +578,9 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
     }
 
     const finalResponse = asRecord(source.final_response);
+    if (source.plan_quality) {
+      setPlanWarnings(normalizeStringList(asRecord(source.plan_quality).warnings));
+    }
     const recommendations = normalizeRecommendations(
       source.recommendations ?? source.meals ?? finalResponse.recommendations ?? finalResponse.meals,
     );
@@ -384,6 +611,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
           "Agent 准备执行一项会修改数据的操作，请核对后确认。",
         operation: firstString(confirmation.operation, source.operation, source.tool_name),
         payload: asRecord(confirmation.payload ?? source.arguments ?? source.payload),
+        mealPreview: asArray(confirmation.meal_preview).map(normalizePlanItem),
         idempotencyKey: firstString(source.idempotency_key, confirmation.idempotency_key) || crypto.randomUUID(),
       });
       setActivePhase("等待人工确认");
@@ -392,12 +620,40 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
     if (isFailure && !isActivity) {
       setError(firstString(source.message, source.detail, source.error, source.error_message) || "Agent 执行失败");
     }
-    if (isFinal || type === "done") setActivePhase("本轮已完成");
+    if (isFinal || type === "done") {
+      if (source.run_status && currentRunRef.current) {
+        observedRunRef.current = `${currentRunRef.current}:${String(source.run_status)}`;
+      }
+      setActivePhase(source.requires_confirmation === true ? "等待人工确认"
+        : source.run_status === "cancelled" ? "已停止"
+        : source.run_status === "failed" ? "执行失败" : "本轮已完成");
+    }
+  };
+
+  const followRun = async (runId: string, assistantId: string, controller: AbortController) => {
+    try {
+      await subscribeRun(runId, (event) => ingestEvent(event, assistantId), controller.signal);
+      if (!mountedRef.current) return;
+      updateAssistant(assistantId, (message) => ({ ...message, isStreaming: false }));
+    } catch (caught) {
+      if (!controller.signal.aborted && mountedRef.current) {
+        setError(caught instanceof Error ? caught.message : "无法恢复任务连接");
+      }
+    } finally {
+      if (mountedRef.current && abortRef.current === controller) {
+        setIsSending(false);
+        abortRef.current = null;
+      }
+    }
   };
 
   const sendMessage = async (content: string) => {
     const trimmed = content.trim();
-    if (!trimmed || isSending) return;
+    if (!trimmed || isSending || restoring || confirmationBusy) return;
+    restoredThreadRef.current = threadId;
+    if (!requestRef.current || requestRef.current.content !== trimmed) {
+      requestRef.current = { content: trimmed, id: crypto.randomUUID() };
+    }
     const userMessage: ChatMessage = {
       id: makeId("user"),
       role: "user",
@@ -417,7 +673,9 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
     setActivities([]);
     setError(null);
     setPendingConfirmation(null);
+    setPlanWarnings([]);
     setIsSending(true);
+    currentRunRef.current = null;
     setActivePhase("Supervisor 接收请求");
     abortRef.current = new AbortController();
     let confirmationRequested = false;
@@ -425,8 +683,9 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
 
     try {
       await streamChat(
-        { threadId, message: trimmed },
+        { threadId, message: trimmed, requestId: requestRef.current.id },
         (event) => {
+          if (!mountedRef.current) return;
           const type = event.type.toLowerCase();
           const payload = eventPayload(event);
           const metadata = asRecord(payload.metadata ?? payload.meta);
@@ -438,6 +697,8 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
         },
         abortRef.current.signal,
       );
+      if (!mountedRef.current) return;
+      requestRef.current = null;
       updateAssistant(assistantId, (message) => ({
         ...message,
         content:
@@ -456,8 +717,10 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
           // The conversation result remains usable when observability storage is unavailable.
         }
       }
-      setActivePhase((phase) => (confirmationRequested || phase === "等待人工确认" ? "等待人工确认" : "本轮已完成"));
+      setActivePhase((phase) => (confirmationRequested || phase === "等待人工确认"
+        ? "等待人工确认" : ["已停止", "执行失败"].includes(phase) ? phase : "本轮已完成"));
     } catch (caught) {
+      if (!mountedRef.current) return;
       if (caught instanceof DOMException && caught.name === "AbortError") {
         updateAssistant(assistantId, (message) => ({
           ...message,
@@ -474,10 +737,14 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
           isStreaming: false,
         }));
         setActivePhase("请求失败");
+        restoredThreadRef.current = null;
+        setRestoreVersion((current) => current + 1);
       }
     } finally {
-      setIsSending(false);
-      abortRef.current = null;
+      if (mountedRef.current) {
+        setIsSending(false);
+        abortRef.current = null;
+      }
     }
   };
 
@@ -494,16 +761,18 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
   };
 
   const handleConfirmation = async (approved: boolean) => {
-    if (!pendingConfirmation) return;
+    if (!pendingConfirmation?.id || isSending || confirmationBusy) return;
     setConfirmationBusy(true);
     setError(null);
     try {
-      const result = await confirmChat(
-        threadId,
-        approved,
-        pendingConfirmation.id,
-        pendingConfirmation.idempotencyKey,
+      confirmationRequestRef.current ||= crypto.randomUUID();
+      const run = await submitConfirmation(
+        threadId, approved, pendingConfirmation.id, confirmationRequestRef.current,
       );
+      if (!mountedRef.current) return;
+      confirmationRequestRef.current = null;
+      currentRunRef.current = String(run.id);
+      observedRunRef.current = `${String(run.id)}:${String(run.status)}`;
       setMessages((current) => [
         ...current,
         {
@@ -513,41 +782,16 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
           createdAt: new Date().toISOString(),
         },
       ]);
-      const resultContent = extractResponseContent(result);
-      const finalResponse = asRecord(result.final_response);
-      const recommendations = normalizeRecommendations(finalResponse.recommendations);
-      const citations = normalizeCitations(finalResponse.citations);
-      const warnings = normalizeStringList(finalResponse.warnings);
-      const suggestedActions = normalizeStringList(finalResponse.suggested_actions);
-      const resultTraceId = firstString(result.trace_id);
-      if (resultTraceId) onTraceDiscovered(resultTraceId);
-      if (resultContent) {
-        setMessages((current) => [
-          ...current,
-          {
-            id: makeId("assistant"),
-            role: "assistant",
-            content: resultContent,
-            createdAt: new Date().toISOString(),
-            recommendations,
-            citations,
-            warnings,
-            suggestedActions,
-            traceId: resultTraceId,
-          },
-        ]);
-      }
-      if (resultTraceId) {
-        try {
-          const trace = await getTrace(resultTraceId);
-          const tracedActivities = activitiesFromTrace(trace);
-          if (tracedActivities.length) setActivities(tracedActivities);
-        } catch {
-          // Confirmation succeeds independently from Trace retrieval.
-        }
-      }
+      const assistantId = `${String(run.turn_id)}:confirmation`;
+      setMessages((current) => [...current, {
+        id: assistantId, role: "assistant", content: "", isStreaming: true,
+        createdAt: new Date().toISOString(),
+      }]);
       setPendingConfirmation(null);
-      setActivePhase(approved ? "操作已确认" : "操作已取消");
+      setIsSending(true);
+      const controller = new AbortController();
+      abortRef.current = controller;
+      await followRun(String(run.id), assistantId, controller);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "确认请求失败");
     } finally {
@@ -555,16 +799,68 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
     }
   };
 
+  const stopGeneration = async () => {
+    try {
+      if (!currentRunRef.current) return;
+      await cancelRun(currentRunRef.current);
+      setActivePhase("正在停止");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "无法停止服务端请求，请重试");
+    }
+  };
+
   const startNewThread = () => {
-    abortRef.current?.abort();
     const next = crypto.randomUUID();
-    localStorage.setItem("nutripilot.threadId", next);
-    setThreadId(next);
-    setMessages([]);
-    setActivities([]);
-    setPendingConfirmation(null);
-    setError(null);
-    setActivePhase("等待请求");
+    select(next);
+  };
+
+  const selectThread = (id: string) => {
+    if (id === threadId) {
+      if (!window.matchMedia("(min-width: 1100px)").matches) setHistoryOpen(false);
+      return;
+    }
+    select(id);
+  };
+
+  const deleteThread = async (item: ConversationSummary) => {
+    if (deletingThreadId || ["queued", "running", "cancelling"].includes(item.runStatus || "")) return;
+    setDeletingThreadId(item.threadId);
+    setHistoryError(null);
+    try {
+      await deleteConversation(item.threadId);
+      if (!mountedRef.current) return;
+      setConversations((current) => current.filter((conversation) => conversation.threadId !== item.threadId));
+      setHistoryVersion((current) => current + 1);
+      if (item.threadId === threadId) startNewThread();
+    } catch (caught) {
+      setHistoryError(caught instanceof Error ? caught.message : "删除会话失败");
+    } finally {
+      setDeletingThreadId(null);
+    }
+  };
+
+  const restoreThread = async (item: ConversationSummary) => {
+    if (deletingThreadId) return;
+    setDeletingThreadId(item.threadId);
+    setHistoryError(null);
+    try {
+      await restoreConversation(item.threadId);
+      if (!mountedRef.current) return;
+      setConversations([]);
+      setHistoryQuery("");
+      setHistoryMode("history");
+      setHistoryVersion((current) => current + 1);
+      if (item.threadId === threadId) {
+        restoredThreadRef.current = null;
+        setRestoreVersion((current) => current + 1);
+      } else {
+        selectThread(item.threadId);
+      }
+    } catch (caught) {
+      setHistoryError(caught instanceof Error ? caught.message : "恢复会话失败");
+    } finally {
+      setDeletingThreadId(null);
+    }
   };
 
   const retryLast = () => {
@@ -573,47 +869,157 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
   };
 
   return (
-    <div className="chat-layout">
-      <section className="chat-surface" aria-label="Agent 对话">
+    <div className={`chat-layout${historyOpen ? " has-history" : ""}`} hidden={!active}>
+          {historyOpen ? <>
+            <button className="history-scrim" type="button" aria-label="收起历史会话" onClick={() => setHistoryOpen(false)} />
+            <section className="conversation-history" aria-label="历史会话列表">
+              <div className="history-heading">
+                <h2><History size={16} />历史会话</h2>
+                <button className="icon-button" type="button" title="关闭历史会话" aria-label="关闭历史会话"
+                  onClick={() => setHistoryOpen(false)}><X size={18} /></button>
+              </div>
+              <div className="history-tabs" role="tablist" aria-label="会话分类"
+                onKeyDown={(event) => {
+                  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                  event.preventDefault();
+                  const mode = event.key === "Home" ? "history" : event.key === "End" ? "trash"
+                    : historyMode === "history" ? "trash" : "history";
+                  const button = event.currentTarget.querySelector<HTMLButtonElement>(`#history-tab-${mode}`);
+                  button?.click();
+                  button?.focus();
+                }}>
+                {(["history", "trash"] as const).map((mode) => (
+                  <button key={mode} type="button" role="tab" id={`history-tab-${mode}`}
+                    aria-selected={historyMode === mode} aria-controls="conversation-list"
+                    tabIndex={historyMode === mode ? 0 : -1}
+                    disabled={Boolean(deletingThreadId)}
+                    onClick={() => {
+                      setConversations([]);
+                      setHistoryMore(false);
+                      setHistoryQuery("");
+                      setHistoryMode(mode);
+                    }}>
+                    {mode === "history" ? <History size={14} /> : <Trash2 size={14} />}
+                    {mode === "history" ? "历史" : "回收站"}
+                  </button>
+                ))}
+              </div>
+              <label className="history-search">
+                <Search size={15} aria-hidden="true" />
+                <input value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)}
+                  type="search" maxLength={200} aria-label="搜索会话" placeholder="搜索对话…" />
+              </label>
+              {historyError ? <ErrorNotice message={historyError} /> : null}
+              <div className="conversation-items" id="conversation-list" role="tabpanel"
+                aria-labelledby={`history-tab-${historyMode}`}>
+              {conversations.map((item) => {
+                const summary = <>
+                  <strong>{item.title}</strong>
+                  <span>{new Date(item.updatedAt).toLocaleDateString("zh-CN", { month: "long", day: "numeric" })} · {item.messageCount} 条消息
+                    {historyMode === "trash" ? ""
+                      : item.runStatus === "queued" ? " · 排队中"
+                      : item.runStatus === "running" ? " · 生成中"
+                      : item.runStatus === "cancelling" ? " · 正在停止"
+                      : item.runStatus === "awaiting_confirmation" ? " · 待确认" : ""}
+                  </span>
+                  {historyMode === "trash" && item.expiresAt ? <span>
+                    {new Date(item.expiresAt).toLocaleString("zh-CN", {
+                      month: "long", day: "numeric", hour: "2-digit", minute: "2-digit",
+                    })} 到期删除
+                  </span> : null}
+                </>;
+                return (
+                <div key={item.threadId} className={`conversation-row${item.threadId === threadId ? " is-current" : ""}`}>
+                  {historyMode === "trash" ? <div className="conversation-item">{summary}</div> :
+                    <button type="button" className="conversation-item"
+                    aria-current={item.threadId === threadId ? "true" : undefined}
+                    onClick={() => selectThread(item.threadId)}>
+                    {summary}
+                  </button>}
+                  <button className={`icon-button ${historyMode === "trash" ? "conversation-restore" : "conversation-delete"}`} type="button"
+                    title={historyMode === "trash" ? "恢复会话" : "移入回收站"}
+                    aria-label={`${historyMode === "trash" ? "恢复会话" : "删除会话"}：${item.title}`}
+                    disabled={Boolean(deletingThreadId) || ["queued", "running", "cancelling"].includes(item.runStatus || "")}
+                    onClick={() => void (historyMode === "trash" ? restoreThread(item) : deleteThread(item))}>
+                    {deletingThreadId === item.threadId
+                      ? <LoaderCircle className="spin" size={16} />
+                      : historyMode === "trash" ? <RotateCcw size={16} /> : <Trash2 size={16} />}
+                  </button>
+                </div>
+              );})}
+              {!conversations.length && !historyLoading ? <div className="history-empty">
+                <History size={24} strokeWidth={1.5} aria-hidden="true" />
+                <p>{historyQuery ? "没有找到相关对话" : historyMode === "trash" ? "回收站为空" : "还没有历史会话"}</p>
+              </div> : null}
+              {historyLoading ? <p role="status">正在读取历史会话…</p> : null}
+              {historyMore ? <button type="button" className="button button-secondary"
+                onClick={() => void loadMoreHistory()} disabled={historyLoading}>加载更多</button> : null}
+              </div>
+            </section>
+          </> : null}
+      <section className="chat-surface" aria-label="饮食对话">
         <div className="chat-toolbar">
-          <div>
-            <span className="chat-thread-label">当前会话</span>
-            <strong title={threadId}>{threadId.slice(0, 8)}</strong>
+          <div className="chat-toolbar-title">
+            <button className="icon-button" type="button" title="历史会话" aria-label="历史会话"
+              aria-expanded={historyOpen} onClick={() => setHistoryOpen((open) => !open)}>
+              <History size={18} />
+            </button>
+            <strong title={threadId}>{messages.find((message) => message.role === "user")?.content || "新的饮食对话"}</strong>
           </div>
-          <button className="button button-secondary button-compact" type="button" onClick={startNewThread}>
-            <Plus size={16} />
-            新对话
-          </button>
+          <div className="chat-toolbar-actions">
+            <button className={`icon-button${activityOpen ? " is-selected" : ""}`} type="button"
+              title="执行过程" aria-label="执行过程" aria-expanded={activityOpen}
+              aria-controls="chat-activity" onClick={() => setActivityOpen((open) => !open)}>
+              <Activity size={18} />
+              {pendingConfirmation ? <span className="pending-dot" /> : null}
+            </button>
+            <button className="button button-secondary button-compact" type="button" onClick={startNewThread}>
+              <Plus size={16} />新对话
+            </button>
+          </div>
         </div>
 
         <div className="messages" aria-live="polite">
+          {restoring ? <p className="history-loading" role="status">正在恢复会话…</p> : null}
           {messages.length === 0 ? (
-            <EmptyState
-              icon={<Sparkles size={24} />}
-              title="从一个真实饮食目标开始"
-              description="Agent 会补全必要信息、调用餐食与营养工具，并在写入计划前请求确认。"
-              action={
-                <div className="prompt-suggestions">
-                  {promptSuggestions.map((suggestion) => (
-                    <button key={suggestion} type="button" onClick={() => setDraft(suggestion)}>
-                      {suggestion}
-                    </button>
-                  ))}
-                </div>
-              }
-            />
+            <div className="chat-welcome">
+              <div className="welcome-mark"><Salad size={31} strokeWidth={1.5} /></div>
+              <p className="welcome-eyebrow">好好吃饭的每一天</p>
+              <h1>今天，想吃点什么？</h1>
+              <div className="prompt-suggestions">
+                {promptSuggestions.map((suggestion) => (
+                  <button key={suggestion.title} type="button" onClick={() => setDraft(suggestion.prompt)}>
+                    <img src={suggestion.image} alt={suggestion.alt} width="720" height="440" />
+                    <span className="suggestion-copy"><small>{suggestion.detail}</small>
+                      <strong>{suggestion.title}</strong><ArrowUpRight size={17} aria-hidden="true" /></span>
+                  </button>
+                ))}
+              </div>
+              <p className="welcome-footnote">餐桌灵感 · 图片为示意，具体餐食以推荐结果为准</p>
+            </div>
           ) : (
             messages.map((message) => (
               <article className={`message message-${message.role}`} key={message.id}>
                 <div className="message-avatar" aria-hidden="true">
-                  {message.role === "user" ? <UserRound size={17} /> : message.role === "assistant" ? <Bot size={18} /> : <Activity size={17} />}
+                  {message.role === "user" ? <UserRound size={17} /> : message.role === "assistant" ? <Salad size={18} /> : <Activity size={17} />}
                 </div>
                 <div className="message-body">
                   <div className="message-meta">
                     <strong>{message.role === "user" ? "你" : message.role === "assistant" ? "NutriPilot" : "系统"}</strong>
                     {message.isStreaming ? <span><LoaderCircle className="spin" size={13} />生成中</span> : null}
                   </div>
-                  <div className="message-content">{message.content || <span className="stream-placeholder">正在分析请求…</span>}</div>
+                  <div className={`message-content${message.role === "assistant" ? " message-content-prose" : ""}`}>
+                    {message.content ? (
+                      message.role === "assistant"
+                        ? message.content.split(/\n{2,}/).map((paragraph, index) => (
+                          <Fragment key={index}>
+                            {index > 0 ? "\n\n" : null}
+                            <p>{paragraph}</p>
+                          </Fragment>
+                        ))
+                        : message.content
+                    ) : <span className="stream-placeholder">正在分析请求…</span>}
+                  </div>
 
                   {message.recommendations?.length ? (
                     <div className="recommendation-list">
@@ -625,27 +1031,27 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
                               <span>推荐 {index + 1}</span>
                               <strong>{meal.name}</strong>
                             </div>
-                            {meal.calories !== undefined ? <b>{Math.round(meal.calories)} kcal</b> : null}
+                            {meal.calories !== undefined ? <b title="整道菜的估算热量">{nutrientLabel(meal, "calories_kcal", meal.calories)} kcal</b> : null}
                           </div>
-                          {meal.reason ? <p>{meal.reason}</p> : null}
+                          <span className="meal-result-basis">整道菜 · 营养估算</span>
                           {(meal.protein !== undefined || meal.carbs !== undefined || meal.fat !== undefined) ? (
                             <div className="nutrition-row">
-                              {meal.protein !== undefined ? <span>蛋白质 {meal.protein}g</span> : null}
-                              {meal.carbs !== undefined ? <span>碳水 {meal.carbs}g</span> : null}
-                              {meal.fat !== undefined ? <span>脂肪 {meal.fat}g</span> : null}
+                              {meal.protein !== undefined ? <span>蛋白质 {nutrientLabel(meal, "protein_g", meal.protein)}g</span> : null}
+                              {meal.carbs !== undefined ? <span>碳水 {nutrientLabel(meal, "carbohydrates_g", meal.carbs)}g</span> : null}
+                              {meal.fat !== undefined ? <span>脂肪 {nutrientLabel(meal, "fat_g", meal.fat)}g</span> : null}
                             </div>
                           ) : null}
-                          {meal.tags?.length ? <div className="tag-row">{meal.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
                         </div>
                       ))}
                     </div>
                   ) : null}
 
                   {message.citations?.length ? (
-                    <div className="citation-list">
-                      <div className="section-inline-label"><Quote size={14} />回答依据</div>
+                    <details className="citation-list">
+                      <summary className="section-inline-label"><Quote size={14} />回答依据
+                        <span>{message.citations.length} 条来源</span><ChevronDown size={14} /></summary>
                       {message.citations.map((citation, index) => (
-                        <div className="citation-item" key={String(citation.id ?? `${citation.title}-${index}`)}>
+                        <div className="citation-item" key={`${citation.id ?? citation.title}-${index}`}>
                           <div>
                             <strong>{citation.title}</strong>
                             {citation.source ? <span>{citation.source}</span> : null}
@@ -665,7 +1071,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
                           </div>
                         </div>
                       ))}
-                    </div>
+                    </details>
                   ) : null}
 
                   {message.warnings?.length ? (
@@ -680,7 +1086,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
                     <div className="suggested-actions" aria-label="建议的后续操作">
                       {message.suggestedActions.map((action) => (
                         <button key={action} type="button" onClick={() => setDraft(action)}>
-                          <Sparkles size={13} />{action}
+                          <ChevronRight size={13} />{action}
                         </button>
                       ))}
                     </div>
@@ -688,7 +1094,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
 
                   {message.traceId ? (
                     <button className="trace-link" type="button" onClick={() => onOpenTrace(message.traceId!)}>
-                      <Activity size={14} />查看 Trace {message.traceId.slice(0, 8)}
+                      <Activity size={14} />查看执行记录
                     </button>
                   ) : null}
                 </div>
@@ -710,7 +1116,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
             />
           ) : null}
           {connection === "offline" ? (
-            <div className="offline-strip">Agent API 当前不可用，连接恢复后才能发送请求。</div>
+            <div className="offline-strip">暂时无法连接服务，请稍后重试。</div>
           ) : null}
           <form className="composer" onSubmit={handleSubmit}>
             <textarea
@@ -718,16 +1124,17 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={handleComposerKey}
               rows={1}
-              placeholder="描述你的餐次、口味、目标或需要调整的计划…"
+              placeholder="今天想吃什么？"
               aria-label="发送给 NutriPilot 的消息"
-              disabled={connection === "offline"}
+              disabled={connection === "offline" || restoring || confirmationBusy}
             />
             {isSending ? (
-              <button className="composer-send is-stop" type="button" onClick={() => abortRef.current?.abort()} aria-label="停止生成">
+              <button className="composer-send is-stop" type="button" disabled={!currentRunRef.current} onClick={() => void stopGeneration()} aria-label="停止生成">
                 <Square size={16} fill="currentColor" />
               </button>
             ) : (
-              <button className="composer-send" type="submit" disabled={!draft.trim() || connection !== "online"} aria-label="发送消息">
+              <button className="composer-send" type="submit"
+                disabled={!draft.trim() || connection !== "online" || restoring || confirmationBusy} aria-label="发送消息">
                 <Send size={17} />
               </button>
             )}
@@ -736,16 +1143,21 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
         </div>
       </section>
 
-      <aside className="activity-panel" aria-label="Agent 执行状态">
+      {activityOpen ? <button className="activity-scrim" type="button" aria-label="收起执行过程" onClick={() => setActivityOpen(false)} /> : null}
+      <aside id="chat-activity" className="activity-panel" aria-label="Agent 执行状态" hidden={!activityOpen}>
+        {planWarnings.length ? <div className="plan-quality-warnings" role="status">
+          {planWarnings.map((warning) => <p key={warning}>{warning}</p>)}
+        </div> : null}
         <div className="activity-panel-heading">
           <div>
-            <span className="eyebrow">Live run</span>
             <h2>执行过程</h2>
           </div>
           <span className={`run-state${isSending ? " is-running" : ""}`}>
             {isSending ? <LoaderCircle className="spin" size={13} /> : <Check size={13} />}
             {activePhase}
           </span>
+          <button className="icon-button" type="button" title="关闭执行过程" aria-label="关闭执行过程"
+            onClick={() => setActivityOpen(false)}><X size={18} /></button>
         </div>
 
         {pendingConfirmation ? (
@@ -758,8 +1170,30 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
               </div>
             </div>
             <p>{pendingConfirmation.description}</p>
-            {pendingConfirmation.operation ? <code>{pendingConfirmation.operation}</code> : null}
-            {pendingConfirmation.payload && Object.keys(pendingConfirmation.payload).length ? (
+            {pendingConfirmation.mealPreview?.length ? (
+              <div className="confirmation-meals">
+                <p>所选整菜营养合计，不代表个人摄入量，不评定每日营养目标。</p>
+                {asArray(asRecord(pendingConfirmation.payload?.quality).daily_totals).map((value) => {
+                  const day = asRecord(value);
+                  const totals = { nutrientRanges: normalizeNutrientRanges(day.nutrient_ranges) };
+                  return <p key={String(day.date)}>{String(day.date)} 整菜合计：
+                    {" "}{nutrientLabel(totals, "calories_kcal", firstNumber(day.calories_kcal))} kcal
+                    {" · "}{nutrientLabel(totals, "protein_g", firstNumber(day.protein_g))} g 蛋白质</p>;
+                })}
+                <details className="plan-preview">
+                  <summary>餐单明细（{pendingConfirmation.mealPreview.length} 餐）</summary>
+                  <ol>{pendingConfirmation.mealPreview.map((meal, index) => (
+                    <li key={`${meal.date}-${meal.mealType}-${index}`}>
+                      <span>{meal.date} · {({ breakfast: "早餐", lunch: "午餐", dinner: "晚餐", snack: "加餐" } as Record<string, string>)[meal.mealType || ""] || "餐食"}</span>
+                      <strong>{meal.mealName}</strong>
+                      <span>{meal.servingSize || "整道菜"} · {nutrientLabel(meal, "calories_kcal", meal.calories)} kcal
+                        {" · 蛋白质 "}{nutrientLabel(meal, "protein_g", meal.protein)} g</span>
+                      {meal.sourceUri ? <a href={meal.sourceUri} target="_blank" rel="noreferrer">菜谱来源</a> : null}
+                    </li>
+                  ))}</ol>
+                </details>
+              </div>
+            ) : pendingConfirmation.payload && Object.keys(pendingConfirmation.payload).length ? (
               <dl className="confirmation-payload">
                 {Object.entries(pendingConfirmation.payload).slice(0, 6).map(([key, value]) => (
                   <div key={key}>
@@ -774,6 +1208,13 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
                 {confirmationBusy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
                 确认执行
               </button>
+              {pendingConfirmation.operation === "create_meal_plan" ? (
+                <button className="button button-secondary" type="button"
+                  onClick={() => void sendMessage("换一批菜品，重新制定餐单")}
+                  disabled={confirmationBusy || isSending}>
+                  <RotateCcw size={15} />换一批菜品
+                </button>
+              ) : null}
               <button className="button button-secondary" type="button" onClick={() => void handleConfirmation(false)} disabled={confirmationBusy}>
                 <X size={15} />拒绝
               </button>
@@ -800,7 +1241,7 @@ export function ChatView({ connection, onTraceDiscovered, onOpenTrace }: ChatVie
           <div className="activity-empty">
             <BrainCircuit size={24} />
             <strong>尚未开始执行</strong>
-            <p>发送请求后，这里会展示 Agent、工具和安全检查的真实进度。</p>
+            <p>暂无执行记录</p>
           </div>
         )}
 

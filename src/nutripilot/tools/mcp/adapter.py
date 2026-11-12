@@ -10,7 +10,7 @@ from pydantic import BaseModel, ValidationError
 from nutripilot.tools.errors import ToolRuntimeError
 from nutripilot.tools.mcp.models import MCP_TOOL_CONTRACTS, RemoteToolSpec
 from nutripilot.tools.mcp.transport import MCPTransport
-from nutripilot.tools.models import ToolAccess, ToolContext, ToolDefinition
+from nutripilot.tools.models import ToolAccess, ToolContext, ToolDefinition, ToolErrorInfo
 from nutripilot.tools.registry import ToolRegistry
 
 
@@ -21,7 +21,7 @@ class MCPToolAdapter:
         *,
         discovery_ttl_seconds: float = 300.0,
         call_timeout_seconds: float = 6.0,
-        max_payload_bytes: int = 64_000,
+        max_payload_bytes: int = 128_000,
         allowlist: set[str] | None = None,
     ) -> None:
         self.transport = transport
@@ -156,6 +156,14 @@ class MCPToolAdapter:
                 retryable=True,
             ) from exc
         sanitised = _sanitise_json(raw)
+        if isinstance(sanitised, dict) and "_tool_error" in sanitised:
+            try:
+                error = ToolErrorInfo.model_validate(sanitised["_tool_error"])
+            except ValidationError as exc:
+                raise ToolRuntimeError("MCP_INVALID_RESPONSE", "Invalid tool error.") from exc
+            raise ToolRuntimeError(
+                error.code, error.message, retryable=error.retryable, details=error.details
+            )
         encoded = json.dumps(sanitised, ensure_ascii=False, separators=(",", ":"))
         if len(encoded.encode("utf-8")) > self.max_payload_bytes:
             raise ToolRuntimeError(

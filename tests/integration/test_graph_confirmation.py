@@ -166,7 +166,7 @@ async def test_plan_write_preflight_blocks_meal_outside_safe_candidates() -> Non
 
     state = await container.chat_service.chat(
         user_id=1,
-        message="帮我制定一周晚餐饮食计划",
+        message=f"帮我制定从{start_date.isoformat()}开始的一周晚餐饮食计划",
         thread_id="unsafe-plan-preflight",
     )
 

@@ -5,13 +5,23 @@ from __future__ import annotations
 import re
 from collections import defaultdict, deque
 from collections.abc import Callable
+from contextlib import suppress
+from datetime import date, timedelta
 from typing import Any
 
 from pydantic import BaseModel
 
 from nutripilot.agent.contracts import PlanSpec
+from nutripilot.agent.grounding import ground_recommendation_facts
 from nutripilot.agent.planning import PlanBuilder, PlanBuildError, candidate_meals_from_results
+from nutripilot.agent.slots import (
+    explicit_food_request,
+    is_negative_ingredient,
+    is_recipe_request,
+    resolve_recipe_name,
+)
 from nutripilot.domain.enums import Intent
+from nutripilot.domain.models import FinalResponse
 from nutripilot.model_gateway.base import GatewayResult, ModelOutputT, ModelUsage
 from nutripilot.safety import extract_declared_allergens, merge_dietary_terms
 
@@ -35,7 +45,13 @@ class FakeModelGateway:
             "intent": self._intent,
             "planner": self._planner,
             "recommendation": self._recommendation,
+            "answer_boundary": lambda payload: {
+                "facts_match": True, "objects_match": True, "portion_basis_preserved": True,
+                "cooking_conditions_preserved": True, "issues": [],
+            },
+            "answer_review": self._answer_review,
             "evaluation": self._evaluation,
+            "memory_summary": self._memory_summary,
         }
         self.call_history: list[dict[str, Any]] = []
 
@@ -84,27 +100,126 @@ class FakeModelGateway:
         )
 
     @staticmethod
+    def _memory_summary(payload: dict[str, Any]) -> dict[str, Any]:
+        # This deterministic projection tests the contract, not semantic summarization.
+        entries = [
+            *payload.get("old_summary", []),
+            *[
+                {
+                    "kind": "assistant" if message["role"] == "ai" else "user",
+                    "text": str(message["content"])[:100] or "(empty)",
+                    "source_message_ids": [message["id"]],
+                }
+                for message in payload["messages"]
+            ],
+        ]
+        return {"entries": entries[-24:]}
+
+    @staticmethod
+    def _answer_review(payload: dict[str, Any]) -> dict[str, Any]:
+        # Fake checks exercise the contract only, not semantic correctness.
+        return {
+            "supported": True, "issues": [], "coherent": True,
+            "checks": [
+                {
+                    "unit_id": unit_id, "kind": "general_advice", "supported": True,
+                    "has_object_count": False, "object_counts": [],
+                    "conditions_preserved": True, "conditions": [], "evidence": [],
+                    "explanation": "Fake contract check; not a factual assessment.",
+                }
+                for unit_id in payload["review_units"]
+            ],
+        }
+
+    @staticmethod
     def _intent(payload: dict[str, Any]) -> dict[str, Any]:
         message = str(payload.get("message", "")).strip()
         slots = dict(payload.get("slots") or {})
-        slots.update(_extract_slots(message))
+        current_date = (
+            date.fromisoformat(str(payload["current_date"]))
+            if payload.get("current_date")
+            else date.today()
+        )
+        slots.update(_extract_slots(message, current_date=current_date))
+        for field in slots.get("clear_constraints", []):
+            slots.pop(field, None)
+        slots.pop("required_ingredients", None)
+        slots.pop("ingredient_any_groups", None)
+        slots.pop("ingredient_action", None)
+        requested = explicit_food_request(message)
+        # The fake only recognises these regression ingredients; the real model extracts them.
+        ingredients = [
+            term for term in (
+                "鸡胸肉", "鸡翅", "番茄", "鸡蛋", "西红柿", "豆腐", "土豆", "马铃薯",
+                "花菜", "西兰花", "香菇", "香菜", "牛肉", "龙肉",
+            )
+            if term in message
+        ]
+        if ingredients:
+            slots["required_ingredients"] = ingredients
+            if "或" in message and len(ingredients) > 1:
+                slots["ingredient_any_groups"] = [ingredients]
+                slots.pop("required_ingredients")
+        if any(term in message for term in ("不限食材", "食材不限", "取消食材限制")):
+            slots["ingredient_action"] = "clear"
+        elif any(term in message for term in ("再加", "加上", "还要")):
+            slots["ingredient_action"] = "append"
+        elif any(term in message for term in ("改成", "换成")):
+            slots["ingredient_action"] = "replace"
+        excluded = [term for term in ingredients if is_negative_ingredient(message, term)]
+        if excluded:
+            slots["excluded_ingredients"] = merge_dietary_terms(
+                slots.get("excluded_ingredients"), excluded
+            )
 
         if any(word in message for word in ("诊断", "处方", "药物", "催吐", "绝食")):
             intent = Intent.HEALTH_RISK
-        elif any(word in message for word in ("一周", "一星期", "七天", "饮食计划", "餐单")):
+        elif any(
+            word in message
+            for word in (
+                "一周",
+                "一星期",
+                "七天",
+                "7天",
+                "饮食计划",
+                "餐单",
+                "一天",
+                "一日",
+            )
+        ):
             intent = Intent.MEAL_PLAN
             slots["plan_range"] = (
                 "one_day"
                 if any(word in message for word in ("一天", "一日", "今天", "今日"))
                 else "one_week"
             )
-        elif any(word in message for word in ("换一个", "换一批", "不想吃这个", "再来")):
+        elif message.strip("，,。！!？? ") in {
+            "谢谢", "好的，谢谢", "好的", "明白了", "你好", "谢谢你", "不客气",
+        }:
+            intent = Intent.CONVERSATION
+        elif any(term in message for term in (
+            "为什么", "区别", "比较", "怎么做才", "烹饪技巧", "失败补救",
+        )) and (
+            payload.get("discussed_meals")
+            or any(term in message for term in (
+                "鸡胸肉", "做菜", "烹饪", "食材", "第二个", "前两个",
+            ))
+        ):
+            intent = Intent.FOOD_QUESTION
+        elif is_recipe_request(message):
+            intent = Intent.RECIPE_QUERY
+        elif slots.get("clear_constraints") or any(word in message for word in (
+            "换一个", "换一批", "不想吃这个", "再来", "改成", "换成", "再加", "加上", "还要",
+            "不限食材", "食材不限", "取消食材限制",
+        )):
             intent = Intent.MEAL_ADJUSTMENT
         elif any(word in message for word in ("热量", "蛋白质", "营养", "脂肪", "碳水")):
             intent = Intent.NUTRITION_QUERY
         elif any(word in message for word in ("记住", "更新偏好", "以后不要", "我喜欢")):
             intent = Intent.PROFILE_UPDATE
-        elif any(word in message for word in ("吃什么", "推荐", "早餐", "午餐", "晚餐", "夜宵")):
+        elif requested or slots.get("ingredient_any_groups") or any(
+            word in message for word in ("吃什么", "推荐", "早餐", "午餐", "晚餐", "夜宵")
+        ):
             intent = Intent.MEAL_RECOMMENDATION
         else:
             intent = Intent.OTHER
@@ -112,10 +227,36 @@ class FakeModelGateway:
         missing: list[str] = []
         if intent is Intent.MEAL_RECOMMENDATION and "meal_type" not in slots:
             missing.append("meal_type")
-        if intent is Intent.NUTRITION_QUERY and "food_name" not in slots:
+        if (
+            intent is Intent.OTHER
+            and payload.get("clarification_intent") in {
+                Intent.NUTRITION_QUERY.value, Intent.RECIPE_QUERY.value
+            }
+        ):
+            intent = Intent(payload["clarification_intent"])
+            slots["food_name"] = message.strip("，。？? ")
+        elif (
+            intent is Intent.OTHER and payload.get("clarification_intent") == Intent.MEAL_PLAN.value
+        ):
+            intent = Intent.MEAL_PLAN
+        if intent is Intent.NUTRITION_QUERY:
             food_name = _extract_food_name(message)
             if food_name:
                 slots["food_name"] = food_name
+            elif not slots.get("food_name"):
+                missing.append("food_name")
+        if intent is Intent.RECIPE_QUERY:
+            name = resolve_recipe_name(
+                message,
+                message if (
+                    payload.get("clarification_intent") == intent.value
+                    and not is_recipe_request(message)
+                ) else None,
+                payload.get("discussed_meals") or [],
+            )
+            slots.pop("food_name", None)
+            if name:
+                slots["food_name"] = name
             else:
                 missing.append("food_name")
         if intent is Intent.PROFILE_UPDATE and not any(
@@ -128,6 +269,16 @@ class FakeModelGateway:
             "confidence": 0.96 if intent is not Intent.OTHER else 0.65,
             "extracted_slots": slots,
             "missing_slots": missing,
+            "answer_task": {
+                "objective": message,
+                "context": "general" if intent is Intent.FOOD_QUESTION and (
+                    "柴" in message or "补救" in message
+                ) else "auto",
+                "recommendation_count": 1 if any(
+                    term in message for term in ("一份", "一道", "换一个")
+                ) else None,
+                "needs_nutrition": any(term in message for term in ("蛋白", "脂肪", "营养")),
+            },
             "notes": "deterministic fake classification",
         }
 
@@ -135,6 +286,11 @@ class FakeModelGateway:
     def _planner(payload: dict[str, Any]) -> dict[str, Any]:
         intent = str(payload.get("intent") or Intent.OTHER.value)
         slots = dict(payload.get("slots") or {})
+        current_date = (
+            date.fromisoformat(str(payload["current_date"]))
+            if payload.get("current_date")
+            else date.today()
+        )
         results = list(payload.get("tool_results") or [])
         called = [str(item.get("tool_name", "")) for item in results]
         turn_id = str(payload.get("turn_id", "turn"))
@@ -163,6 +319,8 @@ class FakeModelGateway:
                     "tastes": slots.get("tastes", []),
                     "health_goals": slots.get("health_goals", []),
                     "dietary_tags": slots.get("dietary_tags", []),
+                    "required_ingredients": slots.get("required_ingredients", []),
+                    "ingredient_any_groups": slots.get("ingredient_any_groups", []),
                     "excluded_allergens": merge_dietary_terms(
                         profile_allergens,
                         slots.get("allergens"),
@@ -180,16 +338,40 @@ class FakeModelGateway:
                             *_feedback_excluded_ids(results),
                         }
                     )
-                    if intent == Intent.MEAL_ADJUSTMENT.value
+                    if intent == Intent.MEAL_ADJUSTMENT.value and any(
+                        term in str(payload.get("user_message", ""))
+                        for term in ("换一批", "换一个", "不想吃这个", "再来", "换几道")
+                    )
                     else _feedback_excluded_ids(results),
                     "max_calories_kcal": slots.get("max_calories_kcal"),
                     "max_price_cny": slots.get("max_price_cny"),
-                    "limit": 10 if intent == Intent.MEAL_PLAN.value else 3,
+                    "limit": 20 if intent == Intent.MEAL_PLAN.value else 3,
                 }
             elif intent == Intent.MEAL_PLAN.value and "create_meal_plan" not in called:
+                if payload.get("verified_plan"):
+                    return {
+                        "complete": False,
+                        "tool_calls": [{
+                            "call_id": f"{turn_id}:{len(results) + 1}:create_meal_plan",
+                            "name": "create_meal_plan", "arguments": payload["verified_plan"],
+                        }],
+                        "plan_summary": "保存已验证餐单",
+                    }
                 try:
                     plan = PlanBuilder().build(
-                        PlanSpec.from_slots(slots),
+                        PlanSpec.from_slots(
+                            slots,
+                            start_date=current_date,
+                            profile=next(
+                                (
+                                    result["data"]
+                                    for result in results
+                                    if result.get("tool_name") == "get_user_profile"
+                                    and result.get("status") == "success"
+                                ),
+                                {},
+                            ),
+                        ),
                         candidate_meals_from_results(results),
                     )
                 except PlanBuildError:
@@ -199,6 +381,9 @@ class FakeModelGateway:
                     arguments = plan.model_dump(mode="json")
         elif intent == Intent.NUTRITION_QUERY.value and "get_nutrition" not in called:
             next_tool = "get_nutrition"
+            arguments = {"name": slots.get("food_name", "")}
+        elif intent == Intent.RECIPE_QUERY.value and "get_recipe" not in called:
+            next_tool = "get_recipe"
             arguments = {"name": slots.get("food_name", "")}
         elif intent == Intent.PROFILE_UPDATE.value and "update_user_profile" not in called:
             next_tool = "update_user_profile"
@@ -224,62 +409,49 @@ class FakeModelGateway:
 
     @staticmethod
     def _recommendation(payload: dict[str, Any]) -> dict[str, Any]:
-        tool_results = list(payload.get("tool_results") or [])
-        meals = _meals_from_results(tool_results)
-        recommendations: list[dict[str, Any]] = []
-        citations: list[dict[str, Any]] = []
-        for meal in meals[:3]:
-            meal_id = int(meal.get("id") or meal.get("meal_id") or 0)
-            if meal_id <= 0:
-                continue
-            nutrition = meal.get("nutrition") or {}
-            recommendations.append(
-                {
-                    "meal_id": meal_id,
-                    "name": str(meal.get("name", f"餐食 {meal_id}")),
-                    "reason": "符合当前餐次、偏好和安全约束",
-                    "calories_kcal": nutrition.get("calories_kcal", meal.get("calories_kcal")),
-                    "protein_g": nutrition.get("protein_g", meal.get("protein_g")),
-                    "tags": list(meal.get("tags") or meal.get("health_goals") or []),
-                }
+        if payload.get("answer_to_revise"):
+            return {"response": payload["answer_to_revise"]}
+        intent = payload.get("intent")
+        if intent == Intent.CONVERSATION.value:
+            return {"response": {"message": "不客气，有饮食或做菜的问题可以继续聊。"}}
+        if intent == Intent.FOOD_QUESTION.value:
+            message = str(payload.get("user_message", ""))
+            discussed = payload.get("discussed_meals") or []
+            sources = list((payload.get("available_sources") or {}).keys())[:12]
+            if any(term in message for term in ("第二个", "第二道")):
+                text = (
+                    f"第二道是{discussed[1]['name']}。我可以根据刚才的配方食材解释这个选择，"
+                    "不能据此判断它一定适合所有人。"
+                    if len(discussed) > 1 else "你指的是哪道菜？可以告诉我菜名。"
+                )
+            elif any(term in message for term in ("比较", "区别")) and len(discussed) > 1:
+                text = (
+                    f"可以比较{discussed[0]['name']}和{discussed[1]['name']}。\n\n"
+                    "先看配方使用的食材，再看整道菜的营养估算，不能直接当成人均摄入比较。"
+                )
+            elif "柴" in message:
+                text = (
+                    "鸡胸肉容易做柴，通常与加热后失水有关。\n\n"
+                    "一般烹饪建议是切得厚薄均匀，避免在已经熟透后继续长时间加热；"
+                    "嫩度不能代替熟度判断。这是通用原理，不是某份收录配方的原文。"
+                )
+            else:
+                text = "你想了解哪道菜，或哪个具体的烹饪问题？"
+            return {"response": {"message": text, "source_ids": sources}}
+        # Fake mode renders facts locally; production generation receives no template prose.
+        response = ground_recommendation_facts(
+            FinalResponse(message="暂时没有足够的可靠资料回答这个问题。"),
+            list(payload.get("tool_results") or []), payload.get("slots") or {},
+            user_message=str(payload.get("user_message", "")),
+        )
+        count = (payload.get("answer_task") or {}).get("recommendation_count")
+        if count and response.recommendations:
+            response = ground_recommendation_facts(
+                response.model_copy(update={"recommendations": response.recommendations[:count]}),
+                list(payload.get("tool_results") or []), payload.get("slots") or {},
+                user_message=str(payload.get("user_message", "")),
             )
-            citations.append(
-                {
-                    "source_id": f"meal:{meal_id}",
-                    "title": str(meal.get("name", f"餐食 {meal_id}")),
-                    "source_type": "meal",
-                    "uri": meal.get("source_uri"),
-                }
-            )
-
-        intent = str(payload.get("intent") or "")
-        if intent == Intent.NUTRITION_QUERY.value:
-            nutrition_data: Any = next(
-                (
-                    result.get("data")
-                    for result in tool_results
-                    if result.get("tool_name") == "get_nutrition"
-                    and result.get("status") == "success"
-                ),
-                {},
-            )
-            message = _nutrition_message(nutrition_data)
-        elif recommendations:
-            names = "、".join(item["name"] for item in recommendations)
-            message = f"根据你的条件，优先推荐：{names}。"
-        else:
-            message = "暂时没有找到同时满足全部条件的餐食，请尝试放宽非安全条件。"
-
-        return {
-            "response": {
-                "status": "completed",
-                "message": message,
-                "recommendations": recommendations,
-                "citations": citations,
-                "warnings": [],
-                "suggested_actions": ["换一批", "查看营养信息"] if recommendations else [],
-            }
-        }
+        return {"response": response.model_dump(include={"status", "message", "recommendations"})}
 
     @staticmethod
     def _evaluation(payload: dict[str, Any]) -> dict[str, Any]:
@@ -289,7 +461,7 @@ class FakeModelGateway:
         }
 
 
-def _extract_slots(message: str) -> dict[str, Any]:
+def _extract_slots(message: str, *, current_date: date | None = None) -> dict[str, Any]:
     slots: dict[str, Any] = {}
     meal_types = {"早餐": "breakfast", "午餐": "lunch", "晚餐": "dinner", "夜宵": "late_snack"}
     for word, value in meal_types.items():
@@ -313,13 +485,59 @@ def _extract_slots(message: str) -> dict[str, Any]:
     calories = re.search(r"(?:不超过|控制在)\s*(\d+)\s*(?:千卡|大卡)", message)
     if calories:
         slots["max_calories_kcal"] = float(calories.group(1))
+    preparation = re.search(
+        r"(?:不超过|控制在)\s*(\d+(?:\.\d+)?)\s*分钟"
+        r"|(\d+(?:\.\d+)?)\s*分钟(?:内|以内)",
+        message,
+    )
+    if preparation:
+        slots["max_prep_minutes"] = float(preparation.group(1) or preparation.group(2))
+    # This fake only handles common cancellation phrases; real extraction uses IntentSlots.
+    labels = {
+        "max_calories_kcal": ("热量", "卡路里"),
+        "max_price_cny": ("预算", "价格"),
+        "max_prep_minutes": ("准备时间", "烹饪时间", "耗时", "时间"),
+        "min_protein_g": ("蛋白质",),
+    }
+    label = "|".join(term for terms in labels.values() for term in terms)
+    target = rf"(?:{label})(?:的?(?:上限|下限|限制|要求))?"
+    targets = rf"{target}(?:\s*(?:和|、|与|及)\s*{target})*"
+    cleared: set[str] = set()
+    for match in re.finditer(
+        rf"(?:取消|去掉|撤销|不限|不限制|不用限制|不再限制)\s*(?P<before>{targets})"
+        rf"|(?P<after>{targets})(?:都|也)?(?:不限|不限制|不再限制|取消|去掉)",
+        message,
+    ):
+        if re.search(
+            r"(?:不要|别|不想|不必|不用|不|如果|假如|如何|怎么|是否)(?:再)?\s*$",
+            message[:match.start()],
+        ):
+            continue
+        text = match.group("before") or match.group("after")
+        cleared.update(field for field, terms in labels.items() if any(t in text for t in terms))
+    if cleared:
+        slots["clear_constraints"] = sorted(cleared)
     if "北京" in message:
         slots["location"] = "北京"
+    start_date = re.search(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)", message)
+    if start_date:
+        with suppress(ValueError):
+            slots["start_date"] = date.fromisoformat(start_date.group(1)).isoformat()
+    else:
+        for term, offset in (("后天", 2), ("明天", 1), ("今天", 0)):
+            if term in message:
+                slots["start_date"] = (
+                    (current_date or date.today()) + timedelta(days=offset)
+                ).isoformat()
+                break
     return slots
 
 
 def _extract_food_name(message: str) -> str | None:
     match = re.search(r"(.{1,20}?)(?:有多少|多少)(?:热量|蛋白质|脂肪|碳水)", message)
+    if match:
+        return match.group(1).strip("，。？? ")
+    match = re.search(r"(?:查询|查一下|查查)?(.{1,120}?)(?:的营养|营养信息)", message)
     if match:
         return match.group(1).strip("，。？? ")
     return None
@@ -345,38 +563,3 @@ def _feedback_excluded_ids(results: list[dict[str, Any]]) -> list[int]:
                 {meal_id for meal_id in data["excluded_meal_ids"] if isinstance(meal_id, int)}
             )
     return []
-
-
-def _meals_from_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    for result in results:
-        if result.get("tool_name") != "search_meals" or result.get("status") != "success":
-            continue
-        data = result.get("data") or {}
-        if isinstance(data, list):
-            return [item for item in data if isinstance(item, dict)]
-        if isinstance(data, dict):
-            if isinstance(data.get("meals"), list):
-                return [item for item in data["meals"] if isinstance(item, dict)]
-            if isinstance(data.get("hits"), list):
-                return [
-                    item.get("meal", item)
-                    for item in data["hits"]
-                    if isinstance(item, dict) and isinstance(item.get("meal", item), dict)
-                ]
-    return []
-
-
-def _nutrition_message(data: Any) -> str:
-    if not isinstance(data, dict) or not data:
-        return "暂时没有查到该食物的可靠营养数据。"
-    name = data.get("name") or data.get("food_name") or "该食物"
-    raw_nutrition = data.get("nutrition")
-    nutrition: dict[str, Any] = raw_nutrition if isinstance(raw_nutrition, dict) else data
-    calories = nutrition.get("calories_kcal")
-    protein = nutrition.get("protein_g")
-    details: list[str] = []
-    if calories is not None:
-        details.append(f"约 {calories} 千卡")
-    if protein is not None:
-        details.append(f"蛋白质约 {protein} 克")
-    return f"{name}{'，'.join(details)}。" if details else f"已查询到{name}的营养信息。"

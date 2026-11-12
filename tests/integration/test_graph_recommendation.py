@@ -33,6 +33,8 @@ async def test_graph_runs_three_workers_and_real_tool_loop() -> None:
     assert workers[0] == "intent"
     assert "planner" in workers
     assert workers[-1] == "recommendation"
+    assert workers.count("recommendation") == 1
+    assert not {"answer_boundary", "answer_review"}.intersection(workers)
     events = container.recorder.get_trace(state["trace_id"])
     assert any(event.component == "ToolExecutor" for event in events)
     assert any(event.component == "OutputGuard" for event in events)
@@ -174,41 +176,32 @@ async def test_profile_constraints_are_enforced_when_planner_omits_them() -> Non
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_meal_search_fails_closed_when_profile_was_not_loaded() -> None:
-    gateway = FakeModelGateway()
-    gateway.queue_response(
-        "planner",
-        {
-            "complete": False,
-            "tool_calls": [
-                {
-                    "call_id": "unsafe-direct-search",
-                    "name": "search_meals",
-                    "arguments": {"query": "午餐吃什么", "meal_type": "lunch"},
-                }
-            ],
-            "plan_summary": "直接检索",
-        },
-    )
-    gateway.queue_response(
-        "planner",
-        {"complete": True, "tool_calls": [], "plan_summary": "完成"},
-    )
-    container = build_container(gateway=gateway)
+@pytest.mark.parametrize("profile_loaded", [False, True])
+async def test_meal_search_fails_closed_when_dependencies_were_not_loaded(profile_loaded) -> None:
+    from nutripilot.agent.nodes.tool import ToolExecutionNode
+    from nutripilot.agent.state import new_agent_state
 
-    state = await container.chat_service.chat(
-        user_id=1,
-        message="午餐吃什么",
-        thread_id="profile-required-flow",
-    )
+    container = build_container(gateway=FakeModelGateway())
+    state = new_agent_state(user_id=1, message="午餐吃什么")
+    state["intent"] = "MEAL_RECOMMENDATION"
+    state["pending_tool_calls"] = [{
+        "call_id": "unsafe-direct-search", "name": "search_meals",
+        "arguments": {"query": "午餐吃什么", "meal_type": "lunch"},
+    }]
+    if profile_loaded:
+        state["tool_results"] = [{
+            "tool_name": "get_user_profile", "status": "success", "data": {"allergens": ["花生"]}
+        }]
+    update = await ToolExecutionNode(container.tool_executor, container.recorder).run(state)
 
     search_result = next(
-        result for result in state["tool_results"] if result["tool_name"] == "search_meals"
+        result for result in update["tool_results"] if result["tool_name"] == "search_meals"
     )
     assert search_result["status"] == "error"
-    assert search_result["error"]["code"] == "PROFILE_REQUIRED"
-    assert state["candidate_ids"] == []
-    assert state["final_response"]["recommendations"] == []
+    assert search_result["error"]["code"] == (
+        "FEEDBACK_REQUIRED" if profile_loaded else "PROFILE_REQUIRED"
+    )
+    assert update["candidate_ids"] == []
 
 
 @pytest.mark.integration

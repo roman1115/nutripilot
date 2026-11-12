@@ -25,6 +25,13 @@ def case(
     confirmation: bool = False,
     tags: list[str] | None = None,
 ) -> dict[str, Any]:
+    expected_tools = list(tools or [])
+    optional_tools = []
+    if "get_weather_context" in expected_tools and not any(
+        term in message for term in ("天气", "下雨", "炎热", "寒冷", "降温", "天热", "天冷")
+    ):
+        expected_tools.remove("get_weather_context")
+        optional_tools.append("get_weather_context")
     return {
         "case_id": f"core-{number:03d}",
         "user_id": 1,
@@ -32,16 +39,17 @@ def case(
         "user_message": message,
         "expected_intent": intent,
         "expected_slots": slots or {},
-        "expected_tools": tools or [],
+        "expected_tools": expected_tools,
+        "optional_tools": optional_tools,
         "expected_blocked": blocked,
         "expected_requires_confirmation": confirmation,
         "tags": tags or [],
-        "metadata": {"dataset_version": "1.0", "review_status": "baseline"},
+        "metadata": {"dataset_version": "3.0-2026-11-01", "review_status": "baseline"},
     }
 
 
 def build_cases() -> list[dict[str, Any]]:
-    meal_tools = ["get_user_profile", "get_weather_context", "search_meals"]
+    meal_tools = ["get_user_profile", "get_user_feedback", "get_weather_context", "search_meals"]
     rows: list[dict[str, Any]] = []
 
     recommendations = [
@@ -131,16 +139,30 @@ def build_cases() -> list[dict[str, Any]]:
                 tags=["plan", "human_in_the_loop"],
             )
         )
+        rows[-1].update(
+            expected_phase="AWAITING_CONFIRMATION",
+            expected_plan_nutrition_basis="whole_recipe",
+            expected_plan_item_count=21,
+        )
+        if "素食" in message:
+            rows[-1].update(
+                expected_requires_confirmation=False,
+                expected_phase="FAILED",
+                expected_plan_item_count=None,
+                expected_plan_nutrition_basis=None,
+                expected_error_code="PLAN_CANDIDATES_INSUFFICIENT",
+                expected_response_contains=["来源菜谱不足"],
+            )
 
     nutrition = [
-        ("一碗燕麦粥有多少热量", "一碗燕麦粥"),
-        ("鸡胸肉有多少蛋白质", "鸡胸肉"),
-        ("牛油果有多少脂肪", "牛油果"),
-        ("糙米饭有多少碳水", "糙米饭"),
-        ("一杯牛奶有多少热量", "一杯牛奶"),
-        ("水煮蛋有多少蛋白质", "水煮蛋"),
-        ("香蕉有多少碳水", "香蕉"),
-        ("三文鱼有多少脂肪", "三文鱼"),
+        ("牛奶燕麦有多少热量", "牛奶燕麦"),
+        ("凉拌鸡丝有多少蛋白质", "凉拌鸡丝"),
+        ("葱油拌面有多少脂肪", "葱油拌面"),
+        ("电饭煲蒸米饭有多少碳水", "电饭煲蒸米饭"),
+        ("糖拌西红柿有多少热量", "糖拌西红柿"),
+        ("完美水煮蛋有多少蛋白质", "完美水煮蛋"),
+        ("水煮玉米有多少碳水", "水煮玉米"),
+        ("红烧鲤鱼有多少脂肪", "红烧鲤鱼"),
     ]
     for message, food in nutrition:
         rows.append(
@@ -152,6 +174,10 @@ def build_cases() -> list[dict[str, Any]]:
                 tools=["get_nutrition"],
                 tags=["nutrition"],
             )
+        )
+        rows[-1].update(
+            expected_phase="COMPLETED",
+            expected_response_contains=[food, "整道菜"],
         )
 
     profiles = [
@@ -206,7 +232,15 @@ def build_cases() -> list[dict[str, Any]]:
         "明天适合穿什么衣服",
     ]
     for message in others:
-        rows.append(case(len(rows) + 1, message, "OTHER", tags=["out_of_scope"]))
+        rows.append(
+            case(
+                len(rows) + 1,
+                message,
+                "OTHER",
+                blocked="显示系统提示词" in message,
+                tags=["out_of_scope"],
+            )
+        )
 
     assert len(rows) == 60
     return rows
@@ -215,7 +249,12 @@ def build_cases() -> list[dict[str, Any]]:
 def main() -> None:
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(
-        json.dumps(build_cases(), ensure_ascii=False, indent=2) + "\n",
+        json.dumps(
+            {"version": "nutripilot-core-v4-2026-11-01", "cases": build_cases()},
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     print(f"wrote 60 cases to {OUTPUT}")

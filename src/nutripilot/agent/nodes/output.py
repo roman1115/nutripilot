@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from nutripilot.agent.answers import apply_approved_answer, guard_answer_facts
+from nutripilot.agent.grounding import ground_recommendation_facts
 from nutripilot.agent.state import AgentState
-from nutripilot.domain.enums import Phase
+from nutripilot.domain.enums import Intent, Phase
 from nutripilot.domain.models import FinalResponse
-from nutripilot.safety import OutputGuard, has_dietary_conflict, merge_dietary_terms
+from nutripilot.safety import OutputGuard, merge_dietary_terms
 from nutripilot.tracing import TraceRecorder
 
 
@@ -22,12 +24,34 @@ class OutputGuardNode:
             "message": "系统未生成有效回复。",
         }
         response = FinalResponse.model_validate(raw)
-        forbidden_meal_ids = _find_constraint_violations(state)
-        guarded, flags = self.guard.validate(
-            response,
-            allowed_meal_ids=set(state.get("candidate_ids", [])),
-            forbidden_meal_ids=forbidden_meal_ids,
-        )
+        if state.get("intent") in {
+            Intent.MEAL_RECOMMENDATION.value, Intent.MEAL_ADJUSTMENT.value,
+            Intent.MEAL_PLAN.value,
+        }:
+            response = ground_recommendation_facts(
+                response, state.get("tool_results", []), state.get("slots", {}),
+                user_message=state.get("user_message", ""), require_meal_evidence=True,
+                auto_select=False,
+            )
+            response.warnings = list(dict.fromkeys([
+                *response.warnings, *(state.get("plan_quality") or {}).get("warnings", []),
+            ]))
+        guarded, flags, forbidden_meal_ids = guard_answer_facts(response, state, self.guard)
+        # Prose is reusable only while its checked facts survive the final safety filter.
+        prose_applied = False
+        if guarded.status != "blocked":
+            approved = apply_approved_answer(guarded, state.get("approved_answer"))
+            prose_applied = approved is not guarded
+            guarded = approved
+            guarded, prose_flags = self.guard.validate(
+                guarded, allowed_meal_ids={item.meal_id for item in guarded.recommendations},
+                forbidden_meal_ids=forbidden_meal_ids,
+                dietary_exclusions=merge_dietary_terms(
+                    state.get("dietary_constraints", {}).get("allergens"),
+                    state.get("dietary_constraints", {}).get("excluded_ingredients"),
+                ) if prose_applied else [],
+            )
+            flags = list(dict.fromkeys([*flags, *prose_flags]))
         phase = Phase.BLOCKED if guarded.status == "blocked" else Phase.COMPLETED
         self.recorder.record(
             trace_id=state["trace_id"],
@@ -38,46 +62,13 @@ class OutputGuardNode:
             component="OutputGuard",
             phase_before=state.get("phase"),
             phase_after=phase.value,
-            payload={"flags": flags, "removed_meal_ids": sorted(forbidden_meal_ids)},
+            payload={
+                "flags": flags, "removed_meal_ids": sorted(forbidden_meal_ids),
+                "approved_prose_applied": prose_applied and guarded.status != "blocked",
+            },
         )
         return {
             "phase": phase.value,
             "risk_flags": list(dict.fromkeys([*state.get("risk_flags", []), *flags])),
             "final_response": guarded.model_dump(mode="json"),
         }
-
-
-def _find_constraint_violations(state: AgentState) -> set[int]:
-    constraints = state.get("dietary_constraints", {})
-    declared_allergens = merge_dietary_terms(constraints.get("allergens"))
-    excluded_ingredients = merge_dietary_terms(constraints.get("excluded_ingredients"))
-    if not declared_allergens and not excluded_ingredients:
-        return set()
-
-    forbidden: set[int] = set()
-    for result in state.get("tool_results", []):
-        if result.get("status") != "success" or result.get("tool_name") != "search_meals":
-            continue
-        data = result.get("data")
-        hits = data.get("hits", []) if isinstance(data, dict) else []
-        for hit in hits:
-            meal = hit.get("meal", hit) if isinstance(hit, dict) else {}
-            if not isinstance(meal, dict):
-                continue
-            meal_id = meal.get("id") or meal.get("meal_id")
-            if not isinstance(meal_id, int):
-                continue
-            meal_allergens = meal.get("allergens")
-            meal_ingredients = meal.get("ingredients")
-            if (
-                not isinstance(meal_allergens, list)
-                or not isinstance(meal_ingredients, list)
-                or has_dietary_conflict(
-                    meal_allergens=meal_allergens,
-                    meal_ingredients=meal_ingredients,
-                    declared_allergens=declared_allergens,
-                    excluded_ingredients=excluded_ingredients,
-                )
-            ):
-                forbidden.add(meal_id)
-    return forbidden

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from functools import partial
 from typing import Any, cast
 
+from anyio import CancelScope
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
@@ -28,8 +30,18 @@ from nutripilot.agent.routing import (
     route_after_tool,
     route_entry,
 )
-from nutripilot.agent.state import AgentState
+from nutripilot.agent.state import AgentState, state_identity
+from nutripilot.domain.enums import Intent, Phase
+from nutripilot.domain.execution import current_execution
+from nutripilot.domain.models import FinalResponse
+from nutripilot.infrastructure.checkpointer import FencedCheckpointer
+from nutripilot.memory.nodes import MemoryNodes, finalized_update
 from nutripilot.model_gateway import ModelGateway
+from nutripilot.model_gateway.budget import (
+    BudgetedModelGateway,
+    ExecutionLimitExceeded,
+    execution_budget,
+)
 from nutripilot.safety import OutputGuard, RiskGuard
 from nutripilot.tools import ToolExecutor
 from nutripilot.tracing import TraceRecorder
@@ -38,29 +50,175 @@ from nutripilot.tracing import TraceRecorder
 class AgentGraph:
     """Typed facade around LangGraph's compiled runnable."""
 
-    def __init__(self, compiled: Any) -> None:
+    def __init__(
+        self,
+        compiled: Any,
+        recorder: TraceRecorder,
+        deadline_seconds: float,
+        token_budget: int,
+        memory: MemoryNodes,
+        recursion_limit: int,
+    ) -> None:
         self.compiled = compiled
+        self.recorder = recorder
+        self.deadline_seconds = deadline_seconds
+        self.token_budget = token_budget
+        self.memory = memory
+        self.recursion_limit = recursion_limit
 
     async def ainvoke(self, state: AgentState, config: dict[str, Any]) -> AgentState:
-        result = await self.compiled.ainvoke(state, config=config)
-        return cast("AgentState", result)
+        config = {"recursion_limit": self.recursion_limit, **config}
+        with execution_budget(
+            seconds=self.deadline_seconds, tokens=self.token_budget,
+            context_window=self.memory.context_window,
+        ):
+            try:
+                async with asyncio.timeout(self.deadline_seconds):
+                    result = await self.compiled.ainvoke(state, config=config, durability="sync")
+                return cast("AgentState", result)
+            except (TimeoutError, ExecutionLimitExceeded) as exc:
+                code = exc.code if isinstance(exc, ExecutionLimitExceeded) else "DEADLINE_EXCEEDED"
+                return await self._terminate(state, config, code)
+            except asyncio.CancelledError:
+                with CancelScope(shield=True):
+                    await self._terminate(state, config, "CANCELLED")
+                raise
 
     async def aget_state(self, config: dict[str, Any]) -> AgentState | None:
         snapshot = await self.compiled.aget_state(config)
         values = getattr(snapshot, "values", None)
         return cast("AgentState", values) if values else None
 
+    async def astream_durable(
+        self,
+        state: AgentState,
+        config: dict[str, Any],
+        *,
+        seconds: float,
+        tokens: int,
+    ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
+        """Resume a checkpoint without creating another turn or treating shutdown as stop."""
+        config = {"recursion_limit": self.recursion_limit, **config}
+        snapshot = await self.compiled.aget_state(config)
+        previous = getattr(snapshot, "values", {}) or {}
+        same_run = previous.get("run_id") == state["run_id"]
+        if same_run and not snapshot.next:
+            return
+        graph_input = None if same_run else state
+        with execution_budget(
+            seconds=seconds, tokens=tokens, context_window=self.memory.context_window,
+        ):
+            try:
+                async with asyncio.timeout(seconds):
+                    async for chunk in self.compiled.astream(
+                        graph_input, config=config, stream_mode="updates", durability="sync"
+                    ):
+                        if isinstance(chunk, dict):
+                            for node, update in chunk.items():
+                                if isinstance(node, str) and isinstance(update, dict):
+                                    yield node, update
+            except (TimeoutError, ExecutionLimitExceeded) as exc:
+                code = exc.code if isinstance(exc, ExecutionLimitExceeded) else "DEADLINE_EXCEEDED"
+                await self._terminate(state, config, code)
+            except asyncio.CancelledError:
+                execution = current_execution.get()
+                if execution is None or not execution.suspend:
+                    with CancelScope(shield=True):
+                        await self._terminate(state, config, "CANCELLED")
+                raise
+
     async def astream_updates(
         self,
         state: AgentState,
         config: dict[str, Any],
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
-        async for chunk in self.compiled.astream(state, config=config, stream_mode="updates"):
-            if not isinstance(chunk, dict):
-                continue
-            for node, update in chunk.items():
-                if isinstance(node, str) and isinstance(update, dict):
-                    yield node, cast("dict[str, Any]", update)
+        config = {"recursion_limit": self.recursion_limit, **config}
+        with execution_budget(
+            seconds=self.deadline_seconds, tokens=self.token_budget,
+            context_window=self.memory.context_window,
+        ):
+            try:
+                async with asyncio.timeout(self.deadline_seconds):
+                    async for chunk in self.compiled.astream(
+                        state, config=config, stream_mode="updates", durability="sync"
+                    ):
+                        if not isinstance(chunk, dict):
+                            continue
+                        for node, update in chunk.items():
+                            if isinstance(node, str) and isinstance(update, dict):
+                                yield node, cast("dict[str, Any]", update)
+            except (TimeoutError, ExecutionLimitExceeded) as exc:
+                code = exc.code if isinstance(exc, ExecutionLimitExceeded) else "DEADLINE_EXCEEDED"
+                terminated = await self._terminate(state, config, code)
+                yield "budget", cast("dict[str, Any]", terminated)
+            except asyncio.CancelledError:
+                with CancelScope(shield=True):
+                    await self._terminate(state, config, "CANCELLED")
+                raise
+
+    def _record_termination(self, state: AgentState, code: str) -> None:
+        self.recorder.record(
+            trace_id=state["trace_id"],
+            thread_id=state["thread_id"],
+            turn_id=state["turn_id"],
+            user_id=state["user_id"],
+            event_type=f"execution.{code.lower()}",
+            component="Supervisor",
+            phase_after=Phase.FAILED.value,
+            payload={"code": code},
+        )
+
+    async def _terminate(self, state: AgentState, config: dict[str, Any], code: str) -> AgentState:
+        current = await self.aget_state(config)
+        if current and current.get("run_id") == state.get("run_id") and (
+            current.get("turn_id") == state.get("turn_id")
+        ):
+            state = current
+        elif current:
+            state = cast("AgentState", {**current, **state})
+        self._record_termination(state, code)
+        response = FinalResponse(
+            status="degraded",
+            message=(
+                "已停止本轮请求。已经完成的数据写入不会因停止而撤销，请核对已保存计划。"
+                if code == "CANCELLED"
+                else "本次请求达到总时限，已停止继续调用。"
+                if code == "DEADLINE_EXCEEDED"
+                else "本次请求达到 Token 预算，已停止继续调用。"
+                if code == "TOKEN_BUDGET_EXCEEDED"
+                else "本次资料超出模型上下文容量，请缩小问题范围后重试。"
+                if code == "CONTEXT_WINDOW_EXCEEDED"
+                else "历史资料尚未完整载入，本次未继续生成，请缩小历史范围后重试。"
+                if code == "CONTEXT_HISTORY_INCOMPLETE"
+                else "本次任务恢复次数已达上限，请重试。"
+                if code == "RECOVERY_LIMIT_EXCEEDED"
+                else "本次任务执行失败，请重试；已完成的数据写入仍保留。"
+            ),
+            suggested_actions=["缩小需求范围后重试"],
+        )
+        update: dict[str, Any] = {
+            **state_identity(state),
+            "phase": Phase.FAILED.value,
+            "pending_tool_calls": [],
+            "requires_confirmation": False,
+            "error": {"code": code, "retryable": False},
+            "final_response": response.model_dump(mode="json"),
+        }
+        if state.get("run_id"):
+            update["run_id"] = state["run_id"]
+        final_state = cast("AgentState", {**state, **update})
+        memory_update = finalized_update(final_state)
+        await self.compiled.aupdate_state(
+            config,
+            {
+                **state, **update, **memory_update,
+                "messages": [*state.get("messages", []), *memory_update["messages"]],
+            },
+            as_node="memory_finalize",
+        )
+        final = await self.aget_state(config)
+        assert final is not None
+        return final
 
 
 def create_agent_graph(
@@ -70,9 +228,13 @@ def create_agent_graph(
     recorder: TraceRecorder,
     checkpointer: Any | None = None,
     max_tool_steps: int = 8,
+    deadline_seconds: float = 90,
+    token_budget: int = 24000,
+    context_window: int = 32768,
 ) -> AgentGraph:
     """Build the deterministic graph with three online LLM Worker Agents."""
 
+    gateway = BudgetedModelGateway(gateway)
     intent = IntentAgent(gateway, recorder)
     planner = PlannerAgent(gateway, recorder, tool_executor.registry)
     recommendation = RecommendationAgent(gateway, recorder)
@@ -84,8 +246,15 @@ def create_agent_graph(
     confirmation = ConfirmationNode(recorder)
     output = OutputGuardNode(OutputGuard(), recorder)
     budget = BudgetExceededNode(recorder)
+    memory = MemoryNodes(gateway, recorder, context_window=context_window)
 
     graph = StateGraph(AgentState)
+    graph.add_node("memory_load", memory.load)
+    graph.add_node("context_prepare", memory.prepare)
+    graph.add_node("summarize", memory.summarize)
+    graph.add_node("context_freeze", memory.freeze)
+    graph.add_node("memory_finalize", memory.finalize)
+    graph.add_node("history_recall", memory.recall)
     graph.add_node("risk", risk.run)
     graph.add_node("blocked", blocked.run)
     graph.add_node("intent", intent.run)
@@ -97,38 +266,103 @@ def create_agent_graph(
     graph.add_node("recommendation", recommendation.run)
     graph.add_node("output_guard", output.run)
     graph.add_node("budget", budget.run)
+    graph.add_node("tool_failure", tool_failure)
 
+    graph.add_edge(START, "memory_load")
     graph.add_conditional_edges(
-        START, route_entry, {"risk": "risk", "confirmation": "confirmation"}
+        "memory_load", route_entry, {"risk": "risk", "confirmation": "confirmation"}
     )
     graph.add_conditional_edges(
-        "risk", route_after_risk, {"blocked": "blocked", "intent": "intent"}
+        "risk", route_after_risk, {"blocked": "blocked", "intent": "context_prepare"}
     )
+    graph.add_conditional_edges(
+        "context_prepare",
+        lambda state: "summarize" if state.get("compression_requested") else "context_freeze",
+        {"summarize": "summarize", "context_freeze": "context_freeze"},
+    )
+    graph.add_edge("summarize", "context_freeze")
+    graph.add_edge("context_freeze", "intent")
     graph.add_conditional_edges(
         "intent",
-        route_after_intent,
-        {"scope": "scope", "clarify": "clarify", "planner": "planner"},
+        lambda state: "history_recall"
+        if state.get("history_query") and not state.get("history_recalled")
+        else route_after_intent(state),
+        {"scope": "scope", "clarify": "clarify", "planner": "planner",
+         "recommendation": "recommendation", "history_recall": "history_recall"},
     )
+    graph.add_edge("history_recall", "intent")
     graph.add_conditional_edges(
         "planner",
         partial(route_after_planner, max_tool_steps=max_tool_steps),
-        {"tool": "tool", "recommendation": "recommendation", "budget": "budget"},
+        {
+            "tool": "tool",
+            "recommendation": "recommendation",
+            "budget": "budget",
+            "tool_failure": "tool_failure",
+        },
     )
     graph.add_conditional_edges(
         "tool",
         partial(route_after_tool, max_tool_steps=max_tool_steps),
-        {"confirmation": "confirmation", "planner": "planner", "budget": "budget"},
+        {
+            "confirmation": "confirmation",
+            "planner": "planner",
+            "recommendation": "recommendation",
+            "budget": "budget",
+            "tool_failure": "tool_failure",
+        },
     )
     graph.add_conditional_edges(
         "confirmation",
         route_after_confirmation,
-        {"tool": "tool", "end": END},
+        {"tool": "tool", "end": "memory_finalize"},
     )
     graph.add_edge("recommendation", "output_guard")
-    graph.add_edge("blocked", END)
-    graph.add_edge("scope", END)
-    graph.add_edge("clarify", END)
-    graph.add_edge("output_guard", END)
-    graph.add_edge("budget", END)
+    for node in ("blocked", "scope", "clarify", "output_guard", "budget", "tool_failure"):
+        graph.add_edge(node, "memory_finalize")
+    graph.add_edge("memory_finalize", END)
 
-    return AgentGraph(graph.compile(checkpointer=checkpointer or InMemorySaver()))
+    return AgentGraph(
+        graph.compile(checkpointer=FencedCheckpointer(checkpointer or InMemorySaver())),
+        recorder,
+        deadline_seconds,
+        token_budget,
+        memory,
+        3 * max_tool_steps + 16,
+    )
+
+
+async def tool_failure(state: AgentState) -> dict[str, Any]:
+    results = state.get("tool_results", [])
+    error = state.get("error") or (results[-1].get("error") if results else None) or {}
+    code = error.get("code")
+    candidates = error.get("details", {}).get("candidates", [])
+    clarification = code in {"MEAL_NAME_AMBIGUOUS", "MEAL_NOT_FOUND"}
+    if code == "MEAL_NAME_AMBIGUOUS":
+        names = [item["name"] for item in candidates if isinstance(item, dict) and "name" in item]
+        message = f"请确认你要查询的是哪一道餐食：{'、'.join(names)}。"
+    elif code == "MEAL_NOT_FOUND":
+        label = "做法" if state.get("intent") == Intent.RECIPE_QUERY.value else "营养"
+        message = f"没有找到该菜品的可靠{label}记录，请提供完整菜名后再试。"
+    elif code == "RECIPE_NOT_FOUND":
+        message = "这道菜尚未收录有来源的做法，暂时无法提供可靠步骤。"
+    elif code == "MEAL_RETIRED":
+        message = "餐单中有菜品已退役，本次没有保存新餐单，请重新生成菜品安排。"
+    elif code == "PLAN_CANDIDATES_INSUFFICIENT":
+        message = str(error.get("message") or "符合当前条件的来源菜谱不足，无法生成餐单。")
+    else:
+        message = "本次工具调用未能完成，已停止重复尝试，请调整需求后重试。"
+    response = FinalResponse(
+        status="needs_clarification" if clarification else "degraded",
+        message=message,
+        suggested_actions=[
+            item["name"] for item in candidates if isinstance(item, dict) and "name" in item
+        ],
+    )
+    return {
+        "phase": Phase.CLARIFY.value if clarification else Phase.FAILED.value,
+        "pending_tool_calls": [],
+        "requires_confirmation": False,
+        "error": error,
+        "final_response": response.model_dump(mode="json"),
+    }

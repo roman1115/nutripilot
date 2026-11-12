@@ -7,9 +7,15 @@ from typing import Any
 
 def expected_slots_match(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
     for key, expected_value in expected.items():
+        if key not in actual:
+            return False
         actual_value = actual.get(key)
         if isinstance(expected_value, list):
-            if not set(expected_value).issubset(set(actual_value or [])):
+            if not isinstance(actual_value, list):
+                return False
+            if not expected_value and actual_value:
+                return False
+            if any(value not in actual_value for value in expected_value):
                 return False
         elif actual_value != expected_value:
             return False

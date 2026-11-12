@@ -9,6 +9,21 @@ from pydantic import BaseModel, Field
 
 from nutripilot.domain.enums import RiskLevel
 from nutripilot.domain.models import FinalResponse
+from nutripilot.safety.dietary import match_ingredient, merge_dietary_terms
+
+CHICKEN_SAFETY_REFERENCE = {
+    "source_id": "guideline:cdc-chicken-safety",
+    "title": "CDC · Chicken and Food Poisoning",
+    "uri": "https://www.cdc.gov/food-safety/foods/chicken.html",
+    "checked_at": "2026-11-04",
+    "applies_to": "鸡肉的家庭烹饪与剩菜保存，不是其他食材的统一标准。",
+    "guidance": (
+        "CDC建议用食品温度计确认鸡肉中心达到165°F（约74°C），"
+        "不能只凭颜色、插筷或计时保证安全。剩鸡肉在2小时内冷藏或冷冻；"
+        "环境温度超过90°F（约32°C）时缩短为1小时。"
+        "不把更低温度和任意时长当作等效安全方案。"
+    ),
+}
 
 _ALLERGEN_SPLIT_RE = re.compile(r"[、，,/]|(?:和|及|与)")
 _EXPLICIT_ALLERGY_RE = re.compile(
@@ -101,6 +116,7 @@ class OutputGuard:
         *,
         allowed_meal_ids: set[int],
         forbidden_meal_ids: set[int] | None = None,
+        dietary_exclusions: list[str] | None = None,
     ) -> tuple[FinalResponse, list[str]]:
         flags: list[str] = []
         forbidden_meal_ids = forbidden_meal_ids or set()
@@ -114,7 +130,11 @@ class OutputGuard:
         if safety_items_removed:
             flags.append("DIETARY_CONSTRAINT_VIOLATION_REMOVED")
         message = response.message
-        if any(term in message for term in self._MEDICAL_CLAIMS):
+        prose = "\n".join([
+            message, *(item.reason for item in response.recommendations),
+            *response.suggested_actions,
+        ])
+        if any(term in prose for term in self._MEDICAL_CLAIMS):
             flags.append("MEDICAL_CLAIM_BLOCKED")
             return (
                 FinalResponse(
@@ -124,6 +144,12 @@ class OutputGuard:
                 ),
                 flags,
             )
+        if dietary_prose_conflicts(prose, dietary_exclusions or []):
+            flags.append("DIETARY_PROSE_CONFLICT")
+            return FinalResponse(
+                status="blocked",
+                message="这段回答包含与已记录过敏或忌口冲突的食材，已停止展示，请勿照做。",
+            ), flags
         warnings = list(response.warnings)
         if safety_items_removed:
             warnings.append("已自动移除与过敏或忌口约束冲突的餐食。")
@@ -134,11 +160,16 @@ class OutputGuard:
             )
         if not safety_items_removed and response.recommendations and not valid:
             message = "生成结果缺少可验证的餐食依据，请重新检索后再试。"
+        elif not safety_items_removed and len(supported) != len(response.recommendations):
+            names = "、".join(item.name for item in valid)
+            message = f"已移除缺少可靠依据的菜品，可以考虑{names}。"
         valid_ids = {item.meal_id for item in valid}
         removed_ids = {
             item.meal_id for item in response.recommendations if item.meal_id not in valid_ids
         }
-        removed_sources = {f"meal:{meal_id}" for meal_id in removed_ids}
+        removed_sources = {
+            f"{prefix}:{meal_id}" for meal_id in removed_ids for prefix in ("meal", "recipe")
+        }
         citations = [
             citation for citation in response.citations if citation.source_id not in removed_sources
         ]
@@ -153,3 +184,30 @@ class OutputGuard:
             ),
             flags,
         )
+
+
+def dietary_prose_conflicts(text: str, exclusions: list[str]) -> list[str]:
+    """Reject explicit use instructions, not mere mentions of a user's exclusions."""
+    conflicts = []
+    for clause in re.split(r"[。；;\n]", text.replace("**", "")):
+        for term in merge_dietary_terms(exclusions):
+            if not match_ingredient(term, [clause], exclusion=True):
+                continue
+            # shortcut: detects explicit instructions, not every semantic paraphrase.
+            uses = re.finditer(
+                r"(?:加入|添加|撒上|撒|拌入|淋入|使用|用|吃|加|放)\s*"
+                r"(?:(?:少许|适量|少量|一些|一点|些|点)\s*)?"
+                + re.escape(term), clause, re.IGNORECASE,
+            )
+            explicit_use = any(
+                not re.search(
+                    r"(?:不|勿|不能|不可|不要|避免|省略|去掉)\s*$", clause[:use.start()],
+                )
+                for use in uses
+            )
+            ingredient_entry = bool(re.match(
+                r"\s*[-*]\s*" + re.escape(term), clause, re.IGNORECASE,
+            )) and not re.search(r"不|勿|避免|省略|去掉|过敏", clause)
+            if explicit_use or ingredient_entry:
+                conflicts.append(term)
+    return list(dict.fromkeys(conflicts))

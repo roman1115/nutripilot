@@ -1,5 +1,6 @@
 import type {
   ChatStreamEvent,
+  ConversationSummary,
   EvaluationRun,
   FeedbackType,
   MealFeedback,
@@ -10,11 +11,35 @@ import type {
   TraceRun,
   UserProfile,
 } from "../types";
-import { asArray, asRecord, firstNumber, firstString } from "./format";
+import { asArray, asRecord, firstNumber, firstString, normalizeNutrientRanges } from "./format";
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim();
 export const API_BASE_URL = (configuredBaseUrl || "http://localhost:8000").replace(/\/$/, "");
 export const DEMO_USER_ID = import.meta.env.VITE_DEMO_USER_ID?.trim() || "1";
+
+function activeUserId(): number {
+  return Number(sessionStorage.getItem("nutripilot.userId") || DEMO_USER_ID);
+}
+
+export async function authenticateAccessToken(token: string): Promise<void> {
+  const response = await fetch(endpoint("/api/v1/profile"), {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw await readError(response);
+  const profile = asRecord(await response.json());
+  const userId = String(profile.user_id);
+  if (sessionStorage.getItem("nutripilot.userId") !== userId) {
+    localStorage.removeItem("nutripilot.threadId");
+    localStorage.removeItem("nutripilot.traceIds");
+    sessionStorage.removeItem("nutripilot.threadId");
+    const url = new URL(window.location.href);
+    url.searchParams.delete("thread");
+    window.history.replaceState({}, "", url);
+  }
+  sessionStorage.setItem("nutripilot.accessToken", token);
+  sessionStorage.setItem("nutripilot.userId", userId);
+}
 
 export class ApiError extends Error {
   readonly status?: number;
@@ -33,10 +58,12 @@ function endpoint(path: string): string {
 }
 
 function baseHeaders(): HeadersInit {
+  const token = sessionStorage.getItem("nutripilot.accessToken");
   return {
     Accept: "application/json",
     "Content-Type": "application/json",
-    "X-User-ID": DEMO_USER_ID,
+    "X-User-ID": String(activeUserId()),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }
 
@@ -98,17 +125,33 @@ export async function checkHealth(signal?: AbortSignal): Promise<RuntimeStatus |
       rerankModel: firstString(source.rerank_model) || "unknown",
       storage: firstString(source.storage) || "unknown",
       mcpTransport: firstString(source.mcp_transport) || "unknown",
+      authRequired: source.auth_required === true,
     };
   } catch {
     return null;
   }
 }
 
+export async function cancelChat(threadId: string): Promise<void> {
+  await apiRequest(`/api/v1/chat/${encodeURIComponent(threadId)}/cancel`, {
+    method: "POST",
+    signal: AbortSignal.timeout(5000),
+  });
+}
+
+export async function cancelRun(runId: string): Promise<void> {
+  await apiRequest(`/api/v1/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: "POST", signal: AbortSignal.timeout(5000),
+  });
+}
+
 function parseSseBlock(block: string): ChatStreamEvent | null {
   let eventName = "message";
+  let id: number | undefined;
   const dataLines: string[] = [];
   for (const line of block.split(/\r?\n/)) {
     if (line.startsWith("event:")) eventName = line.slice(6).trim();
+    if (line.startsWith("id:")) id = Number(line.slice(3).trim());
     if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
   }
   if (!dataLines.length) return null;
@@ -122,6 +165,7 @@ function parseSseBlock(block: string): ChatStreamEvent | null {
   }
   const record = asRecord(parsed);
   return {
+    id,
     type: firstString(record.type, record.event, eventName) || "message",
     data: Object.keys(record).length ? record : { content: String(parsed) },
     rawEvent: eventName,
@@ -160,6 +204,76 @@ async function consumeSse(
 export interface ChatRequest {
   threadId: string;
   message: string;
+  requestId?: string;
+}
+
+export async function submitChat(
+  request: ChatRequest,
+): Promise<Record<string, unknown>> {
+  return apiRequest(`/api/v1/threads/${encodeURIComponent(request.threadId)}/runs`, {
+    method: "POST",
+    body: JSON.stringify({
+      message: request.message, request_id: request.requestId || crypto.randomUUID(),
+    }),
+  });
+}
+
+export async function submitConfirmation(
+  threadId: string, approved: boolean, confirmationId: string, requestId: string,
+): Promise<Record<string, unknown>> {
+  return apiRequest(`/api/v1/threads/${encodeURIComponent(threadId)}/confirm`, {
+    method: "POST",
+    body: JSON.stringify({
+      approved, confirmation_id: confirmationId, request_id: requestId,
+    }),
+  });
+}
+
+export async function subscribeRun(
+  runId: string, onEvent: (event: ChatStreamEvent) => void, signal: AbortSignal,
+): Promise<void> {
+  let cursor = 0;
+  let retry = 0;
+  while (!signal.aborted) {
+    try {
+      const response = await fetch(endpoint(
+        `/api/v1/runs/${encodeURIComponent(runId)}/events?after=${cursor}`,
+      ), { headers: baseHeaders(), signal });
+      if (!response.ok) throw await readError(response);
+      let finished = false;
+      await consumeSse(response, (event) => {
+        if (signal.aborted || (event.id !== undefined && event.id <= cursor)) return;
+        if (event.id !== undefined) cursor = event.id;
+        retry = 0;
+        finished ||= event.type === "completed";
+        onEvent(event);
+      });
+      if (finished) return;
+      const run = await apiRequest<Record<string, unknown>>(
+        `/api/v1/runs/${encodeURIComponent(runId)}`, { signal },
+      );
+      if (["completed", "awaiting_confirmation", "cancelled", "failed"].includes(String(run.status))) {
+        onEvent({ type: "completed", data: { ...asRecord(run.result), run_status: run.status } });
+        return;
+      }
+    } catch (error) {
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      if (error instanceof ApiError && error.status && error.status < 500 && error.status !== 429) throw error;
+      onEvent({ type: "connection", data: { phase: "RECONNECTING" } });
+    }
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => {
+        window.clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      };
+      const timer = window.setTimeout(() => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      }, Math.min(5000, 500 * 2 ** Math.min(retry++, 4)));
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+    });
+  }
 }
 
 export async function streamChat(
@@ -167,51 +281,9 @@ export async function streamChat(
   onEvent: (event: ChatStreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  let response: Response;
-  try {
-    response = await fetch(endpoint("/api/v1/chat/stream"), {
-      method: "POST",
-      headers: { ...baseHeaders(), Accept: "text/event-stream, application/json" },
-      body: JSON.stringify({
-        thread_id: request.threadId,
-        user_id: Number.isNaN(Number(DEMO_USER_ID)) ? DEMO_USER_ID : Number(DEMO_USER_ID),
-        message: request.message,
-      }),
-      signal,
-    });
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") throw error;
-    throw new ApiError(
-      error instanceof Error
-        ? `无法连接对话服务：${error.message}`
-        : "无法连接对话服务",
-    );
-  }
-  if (!response.ok) throw await readError(response);
-
-  const contentType = response.headers.get("content-type")?.toLowerCase() || "";
-  if (contentType.includes("text/event-stream")) {
-    await consumeSse(response, onEvent);
-    return;
-  }
-
-  const value = unwrap(await response.json());
-  const record = asRecord(value);
-  const events = asArray(record.events);
-  if (events.length) {
-    for (const event of events) {
-      const eventRecord = asRecord(event);
-      onEvent({
-        type: firstString(eventRecord.type, eventRecord.event) || "message",
-        data: eventRecord,
-      });
-    }
-  } else {
-    onEvent({
-      type: firstString(record.type, record.event, "final") || "final",
-      data: record,
-    });
-  }
+  const run = await submitChat(request);
+  onEvent({ type: "accepted", data: run });
+  return subscribeRun(String(run.id), onEvent, signal || new AbortController().signal);
 }
 
 export async function confirmChat(
@@ -226,15 +298,55 @@ export async function confirmChat(
       approved,
       confirmation_id: confirmationId,
       idempotency_key: idempotencyKey,
-      user_id: Number.isNaN(Number(DEMO_USER_ID)) ? DEMO_USER_ID : Number(DEMO_USER_ID),
+      user_id: activeUserId(),
     }),
   });
 }
 
 export async function getThread(threadId: string): Promise<Record<string, unknown>> {
   return apiRequest<Record<string, unknown>>(
-    `/api/v1/threads/${encodeURIComponent(threadId)}`,
+    `/api/v1/threads/${encodeURIComponent(threadId)}?user_id=${activeUserId()}`,
   );
+}
+
+export async function getChatSnapshot(threadId: string): Promise<Record<string, unknown>> {
+  return apiRequest(`/api/v1/threads/${encodeURIComponent(threadId)}/snapshot`);
+}
+
+export async function getConversations(
+  query: string, offset = 0, trashed = false,
+): Promise<ConversationSummary[]> {
+  const value = await apiRequest<{ items: Array<Record<string, unknown>> }>(
+    `/api/v1/threads${trashed ? "/trash" : ""}?q=${encodeURIComponent(query)}&limit=30&offset=${offset}`,
+  );
+  return value.items.map((item) => ({
+    threadId: String(item.thread_id),
+    runStatus: firstString(item.run_status),
+    title: String(item.title),
+    updatedAt: String(item.updated_at),
+    messageCount: Number(item.message_count),
+    deletedAt: firstString(item.deleted_at),
+    expiresAt: firstString(item.expires_at),
+  }));
+}
+
+export async function deleteConversation(threadId: string): Promise<void> {
+  await apiRequest(`/api/v1/threads/${encodeURIComponent(threadId)}`, { method: "DELETE" });
+}
+
+export async function restoreConversation(threadId: string): Promise<void> {
+  await apiRequest(`/api/v1/threads/${encodeURIComponent(threadId)}/restore`, { method: "POST" });
+}
+
+export async function getConversationMessages(threadId: string): Promise<Array<Record<string, unknown>>> {
+  const messages: Array<Record<string, unknown>> = [];
+  for (let offset = 0; ; offset += 200) {
+    const page = await apiRequest<{ items: Array<Record<string, unknown>> }>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/messages?limit=200&offset=${offset}`,
+    );
+    messages.push(...page.items);
+    if (page.items.length < 200) return messages;
+  }
 }
 
 function stringList(...values: unknown[]): string[] {
@@ -254,6 +366,7 @@ export function normalizeProfile(value: unknown): UserProfile {
     allergens: stringList(source.allergens, source.allergies),
     dietaryRestrictions: stringList(source.dietary_restrictions, source.restrictions),
     dailyCalorieTarget: firstNumber(source.daily_calorie_target, source.calorie_target),
+    dailyProteinTarget: firstNumber(source.daily_protein_target_g),
     location: firstString(source.location, source.city) || "",
     updatedAt: firstString(source.updated_at),
   };
@@ -275,25 +388,32 @@ export async function updateProfile(profile: UserProfile): Promise<UserProfile> 
       avoidances: profile.avoidances,
       allergens: profile.allergens,
       dietary_restrictions: profile.dietaryRestrictions,
-      daily_calorie_target: profile.dailyCalorieTarget,
+      daily_calorie_target: profile.dailyCalorieTarget ?? null,
+      daily_protein_target_g: profile.dailyProteinTarget ?? null,
       location: profile.location || undefined,
     }),
   });
   return normalizeProfile(value);
 }
 
-function normalizePlanItem(value: unknown): MealPlanItem {
+export function normalizePlanItem(value: unknown): MealPlanItem {
   const source = asRecord(value);
   const meal = asRecord(source.meal);
+  const nutrition = asRecord(source.nutrition ?? meal.nutrition);
   return {
     id: (source.id as string | number | undefined) ?? (meal.id as string | number | undefined),
     mealId:
       (source.meal_id as string | number | undefined) ??
       (meal.id as string | number | undefined),
-    date: firstString(source.date, source.plan_date),
+    date: firstString(source.date, source.meal_date, source.plan_date),
     mealType: firstString(source.meal_type, source.mealType, source.slot),
     mealName: firstString(source.meal_name, source.name, meal.name, meal.title) || "未命名餐食",
-    calories: firstNumber(source.calories, source.calories_kcal, meal.calories, meal.calories_kcal),
+    calories: firstNumber(source.calories, source.calories_kcal, nutrition.calories_kcal),
+    protein: firstNumber(source.protein_g, nutrition.protein_g),
+    nutrientRanges: normalizeNutrientRanges(nutrition.nutrient_ranges),
+    servingSize: firstString(nutrition.serving_size),
+    sourceUri: firstString(nutrition.source_uri),
+    archived: source.is_active === false,
     status: firstString(source.status),
   };
 }
@@ -308,6 +428,8 @@ function normalizePlan(value: unknown, index: number): MealPlan {
     endDate: firstString(source.end_date, source.endDate),
     createdAt: firstString(source.created_at, source.createdAt),
     totalCalories: firstNumber(source.total_calories, source.totalCalories),
+    qualityWarnings: stringList(asRecord(source.quality).warnings),
+    nutritionBasis: firstString(asRecord(source.quality).nutrition_basis),
     items: asArray(source.items ?? source.meals).map(normalizePlanItem),
   };
 }

@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
-from contextlib import AsyncExitStack
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from apps.nutrition_mcp.service import NutritionMCPService
 
 from nutripilot.agent import create_agent_graph
+from nutripilot.application.chat_runs import ChatRunService
 from nutripilot.application.chat_service import ChatService
 from nutripilot.application.evaluation_service import EvaluationService
 from nutripilot.evaluation import EvalRunner
 from nutripilot.infrastructure import PostgresDataStore, RedisTTLStore, StaticWeatherProvider
+from nutripilot.infrastructure.chat_tasks import ChatTaskStore
 from nutripilot.infrastructure.memory import load_seed_store
 from nutripilot.paths import project_root
 from nutripilot.retrieval import RetrievalService
@@ -32,7 +36,25 @@ if TYPE_CHECKING:
 async def start_container(container: ApplicationContainer) -> None:
     """Replace demo adapters with deployed adapters before accepting traffic."""
 
-    if not container.settings.uses_external_infrastructure or container.resource_stack:
+    if container.chat_runs is not None:
+        return
+    if not container.settings.uses_external_infrastructure:
+        tasks = ChatTaskStore.create(queue=container.settings.chat_queue)
+        await asyncio.to_thread(tasks.initialize)
+        if container.run_store:
+            await asyncio.to_thread(tasks.import_history, container.run_store)
+        container.chat_service.history = tasks
+        container.chat_runs = ChatRunService(
+            container.chat_service, tasks, container.settings.chat_max_queued
+        )
+        container.evaluation_service.runner = EvalRunner(
+            container.chat_service, container.chat_runs, meal_repository=container.data_store
+        )
+        from nutripilot.application.chat_worker import ChatWorker
+
+        container.chat_worker = ChatWorker(container.chat_service, tasks, container.settings)
+        container.chat_worker_task = asyncio.create_task(container.chat_worker.run())
+        await container.chat_worker.ready.wait()
         return
 
     stack = AsyncExitStack()
@@ -77,14 +99,32 @@ async def start_container(container: ApplicationContainer) -> None:
             recorder=container.recorder,
             checkpointer=checkpointer,
             max_tool_steps=container.settings.agent_max_steps,
+            deadline_seconds=container.settings.agent_deadline_seconds,
+            token_budget=container.settings.agent_token_budget,
+            context_window=container.settings.model_context_window,
         )
-        chat_service = ChatService(graph)
+        tasks = ChatTaskStore.create(container.settings.database_url, container.settings.chat_queue)
+        await asyncio.to_thread(tasks.initialize)
+        stack.callback(tasks.close)
+        if container.run_store:
+            await asyncio.to_thread(tasks.import_history, container.run_store)
+        chat_service = ChatService(
+            graph,
+            tasks,
+            timezone_name=container.settings.user_timezone,
+        )
 
         container.data_store = store
         container.tool_executor = executor
         container.graph = graph
         container.chat_service = chat_service
-        container.evaluation_service = EvaluationService(EvalRunner(chat_service))
+        container.chat_runs = ChatRunService(
+            chat_service, tasks, container.settings.chat_max_queued
+        )
+        container.evaluation_service = EvaluationService(
+            EvalRunner(chat_service, container.chat_runs, meal_repository=store),
+            container.run_store,
+        )
         container.resource_stack = stack
     except BaseException:
         await stack.aclose()
@@ -92,6 +132,15 @@ async def start_container(container: ApplicationContainer) -> None:
 
 
 async def stop_container(container: ApplicationContainer) -> None:
+    await container.evaluation_service.close()
+    if container.chat_worker is not None:
+        await container.chat_worker.close()
+    if container.chat_worker_task is not None:
+        await container.chat_worker_task
+        container.chat_worker_task = None
+    if container.chat_runs is not None and not container.settings.uses_external_infrastructure:
+        container.chat_runs.store.close()
+    container.chat_runs = None
     stack = container.resource_stack
     container.resource_stack = None
     if stack is not None:
@@ -100,15 +149,28 @@ async def stop_container(container: ApplicationContainer) -> None:
 
 async def _seed_postgres(store: PostgresDataStore, data_directory: Path) -> None:
     seed = load_seed_store(data_directory)
-    await store.seed(await seed.list_meals(), await seed.list_guidelines())
+    await store.seed(await seed.all_meals(), await seed.list_guidelines())
     profile = await seed.get_user_profile(1)
     await store.seed_user_profile(profile)
 
 
-def _postgres_checkpointer(container: ApplicationContainer) -> Any:
+@asynccontextmanager
+async def _postgres_checkpointer(container: ApplicationContainer) -> AsyncIterator[Any]:
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from psycopg import AsyncConnection
+    from psycopg.rows import dict_row
+    from psycopg_pool import AsyncConnectionPool
 
-    return AsyncPostgresSaver.from_conn_string(_psycopg_url(container.settings.database_url))
+    async with AsyncConnectionPool[AsyncConnection[dict[str, Any]]](
+        _psycopg_url(container.settings.database_url),
+        min_size=1,
+        max_size=4,
+        open=False,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        check=AsyncConnectionPool.check_connection,
+    ) as pool:
+        await pool.wait()
+        yield AsyncPostgresSaver(pool)
 
 
 def _psycopg_url(url: str) -> str:

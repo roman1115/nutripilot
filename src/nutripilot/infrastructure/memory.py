@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from nutripilot.retrieval.catalog import FoodCatalog, load_food_catalog
 from nutripilot.retrieval.models import DietaryGuideline, Meal
 from nutripilot.tools.errors import ToolRuntimeError
 from nutripilot.tools.local.models import (
@@ -30,7 +31,9 @@ class InMemoryDataStore:
         meals: list[Meal] | None = None,
         guidelines: list[DietaryGuideline] | None = None,
         profiles: list[UserProfile] | None = None,
+        catalog: FoodCatalog | None = None,
     ) -> None:
+        self.catalog = catalog or FoodCatalog(sources=[], ingredients=[], recipes=[])
         self._meals = {meal.id: meal for meal in meals or []}
         self._guidelines = {item.id: item for item in guidelines or []}
         self._profiles = {profile.user_id: profile for profile in profiles or []}
@@ -40,6 +43,10 @@ class InMemoryDataStore:
         self._lock = asyncio.Lock()
 
     async def list_meals(self) -> list[Meal]:
+        return [meal for meal in await self.all_meals() if meal.is_active]
+
+    async def all_meals(self) -> list[Meal]:
+        """Include archived records for seeding and historical references."""
         return [self._meals[key] for key in sorted(self._meals)]
 
     async def get_meal(self, meal_id: int) -> Meal | None:
@@ -62,7 +69,7 @@ class InMemoryDataStore:
     async def update_user_profile(self, user_id: int, update: UpdateUserProfileArgs) -> UserProfile:
         async with self._lock:
             current = self._profiles.get(user_id, UserProfile(user_id=user_id))
-            patch = update.model_dump(exclude_none=True)
+            patch = update.to_patch()
             patch["updated_at"] = datetime.now(UTC)
             updated = current.model_copy(update=patch)
             self._profiles[user_id] = UserProfile.model_validate(updated)
@@ -85,6 +92,15 @@ class InMemoryDataStore:
                     "One or more selected meals no longer exist.",
                     details={"meal_ids": unknown_ids},
                 )
+            retired_ids = sorted(
+                {item.meal_id for item in request.items if not self._meals[item.meal_id].is_active}
+            )
+            if retired_ids:
+                raise ToolRuntimeError(
+                    "MEAL_RETIRED",
+                    "已退役的餐食只能查看历史，不能加入新餐单。",
+                    details={"meal_ids": retired_ids},
+                )
             plan_id = str(uuid.uuid4())
             plan = MealPlan(
                 id=plan_id,
@@ -93,6 +109,7 @@ class InMemoryDataStore:
                 start_date=request.start_date,
                 items=request.items,
                 created_at=datetime.now(UTC),
+                quality=request.quality,
             )
             self._plans[plan_id] = plan
             self._write_keys[storage_key] = plan_id
@@ -199,7 +216,30 @@ class StaticWeatherProvider:
 
 def load_seed_store(data_directory: str | Path) -> InMemoryDataStore:
     data_path = Path(data_directory)
-    meals = [Meal.model_validate(item) for item in _load_json_array(data_path / "meals.json")]
+    raw_meals = _load_json_array(data_path / "meals.json")
+    for item in raw_meals:
+        if "allergens" not in item or "ingredients" not in item:
+            raise ValueError("Seed meals must explicitly declare ingredients and allergens")
+        if not isinstance(item.get("nutrition"), dict) or not item["nutrition"].get("serving_size"):
+            raise ValueError("Seed nutrition must include a serving size")
+    meals = [
+        Meal.model_validate(item).model_copy(update={"is_active": False}) for item in raw_meals
+    ]
+    catalog_paths = [data_path / f"{name}.json" for name in ("sources", "ingredients", "recipes")]
+    catalog = load_food_catalog(data_path) if any(path.exists() for path in catalog_paths) else None
+    if catalog is not None:
+        meals.extend(catalog.calculated_meals())
+    if len({meal.id for meal in meals}) != len(meals):
+        raise ValueError("Duplicate meal IDs in seed data")
+    names: dict[str, int] = {}
+    for meal in meals:
+        if not meal.ingredients:
+            raise ValueError(f"Meal {meal.id} has no ingredient metadata")
+        for name in (meal.name, *meal.aliases):
+            key = name.strip().casefold()
+            if not key or (key in names and names[key] != meal.id):
+                raise ValueError(f"Empty or ambiguous meal name/alias in seed data: {name}")
+            names[key] = meal.id
     guidelines = [
         DietaryGuideline.model_validate(item)
         for item in _load_json_array(data_path / "dietary_guidelines.json")
@@ -210,7 +250,7 @@ def load_seed_store(data_directory: str | Path) -> InMemoryDataStore:
         if profile_file.exists()
         else []
     )
-    return InMemoryDataStore(meals=meals, guidelines=guidelines, profiles=profiles)
+    return InMemoryDataStore(meals=meals, guidelines=guidelines, profiles=profiles, catalog=catalog)
 
 
 def _load_json_array(path: Path) -> list[dict[str, Any]]:

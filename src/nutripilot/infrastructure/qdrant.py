@@ -51,6 +51,16 @@ class QdrantMealIndex:
         if points:
             await self.client.upsert(collection_name=self.collection_name, points=points, wait=True)
 
+    async def delete(self, meal_ids: list[int]) -> None:
+        from qdrant_client.models import PointIdsList
+
+        if meal_ids:
+            await self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=PointIdsList(points=meal_ids),
+                wait=True,
+            )
+
     async def search(
         self,
         vector: list[float],
