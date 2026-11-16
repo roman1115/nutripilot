@@ -55,6 +55,11 @@ class MealRecommendation(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class DietMemoryReference(BaseModel):
+    state: str
+    object_ids: list[str] = Field(default_factory=list)
+
+
 class FinalResponse(BaseModel):
     status: str = "completed"
     message: str
@@ -62,3 +67,4 @@ class FinalResponse(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     suggested_actions: list[str] = Field(default_factory=list)
+    diet_context: DietMemoryReference | None = None

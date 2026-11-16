@@ -1,0 +1,47 @@
+{
+  "date": "2026-11-12",
+  "dataset": "data/eval_diet_images_20261112.json",
+  "reports": [
+    ".runtime/diet-acceptance-20261112/real-final/images-v3-odd.json",
+    ".runtime/diet-acceptance-20261112/real-final/images-v3-even.json"
+  ],
+  "model": "qwen3-vl-plus",
+  "prompt_version": "diet-image-v3",
+  "scope": "人工复核固定29餐照中预先指定的主食物是否出现。每张一个目标，不评估全部配菜、调料、重量或营养。第30张包装无可读营养表，单列未知标签处理，不放入餐照分母。",
+  "fixed_substring_matches": 26,
+  "primary_semantic_matches": 27,
+  "primary_targets": 29,
+  "primary_slot_precision": "27/29",
+  "primary_slot_recall": "27/29",
+  "not_general_food_precision": true,
+  "reviewed_exceptions": [
+    {
+      "id": "I11",
+      "reference": ["鸡"],
+      "output": "炖鸭块（鸭肉、土豆、红黄青椒）",
+      "primary_match": false,
+      "reason": "来源为大盘鸡；把鸡识别成鸭，保留为错误，不因禽肉大类相近计为正确。"
+    },
+    {
+      "id": "I15",
+      "reference": ["炸鲜奶", "炸牛奶", "奶块"],
+      "output": "炸鱼卷（疑似鳕鱼或白鱼糜）",
+      "primary_match": false,
+      "reason": "来源为炸鲜奶；白色断面被识别为鱼糜，疑似措辞不使错误变成正确。"
+    },
+    {
+      "id": "I21",
+      "reference": ["菜心", "青菜", "绿叶菜"],
+      "output": "蒜蓉炒小白菜（小白菜）",
+      "primary_match": true,
+      "reason": "人工查看原图，主物体为绿叶蔬菜。原先冻结参考允许青菜/绿叶菜；小白菜属于该宽泛类别，按已有粗粒度语义接受。未修改冻结别名或把菜心品种、烹饪方式识别计为正确。"
+    }
+  ],
+  "limits": [
+    "字面匹配仍为26/29，不改成27/29。",
+    "27/29只表示固定主食物槽位的语义匹配；不是所有输出食物的precision、配菜召回率或真实用户总体准确率。",
+    "盐/糖、酱料、具体做法等细节仍可能错误；没有称重或营养真值，不报告营养误差。",
+    "人工复核发生在模型输出之后；不是新的盲测。",
+    "未将照片或配套菜谱作为产品可发布素材，带水印及商业宣传图的第三方权属未逐张核实。"
+  ]
+}

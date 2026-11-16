@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 
 import pytest
+from tests.diet_helpers import approval, plan_items, plan_preview
 
 from nutripilot.application import build_container
 from nutripilot.application.chat_service import InvalidConfirmationStateError
@@ -21,39 +22,40 @@ async def test_write_tool_waits_for_confirmation_and_resumes_once() -> None:
     )
     assert waiting["phase"] == Phase.AWAITING_CONFIRMATION.value
     assert waiting["requires_confirmation"] is True
-    assert waiting["pending_tool_calls"][0]["name"] == "create_meal_plan"
-    pending_items = waiting["pending_tool_calls"][0]["arguments"]["items"]
+    pending_items = await plan_items(container, waiting)
     assert len(pending_items) == 7
     assert {item["meal_type"] for item in pending_items} == {"dinner"}
     assert len({item["meal_date"] for item in pending_items}) == 7
 
     completed = await container.chat_service.confirm(
-        thread_id="plan-flow", user_id=1, approved=True
+        thread_id="plan-flow", user_id=1, approved=True, **approval(waiting)
     )
     assert completed["phase"] == Phase.COMPLETED.value
-    plan_results = [
-        result for result in completed["tool_results"] if result["tool_name"] == "create_meal_plan"
-    ]
-    assert len(plan_results) == 1
-    assert plan_results[0]["status"] == "success"
+    async with container.diet.store.transaction(1, default_timezone="America/Los_Angeles") as tx:
+        plans = await tx.list_plans(date.min, date.max)
+        assert len(plans) == 1
+        assert len(await tx.list_planned_meals(plans[0].id)) == 7
+    preview = await plan_preview(container, waiting)
+    assert preview.state == "committed"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_rejected_write_does_not_execute() -> None:
     container = build_container()
-    await container.chat_service.chat(
+    waiting = await container.chat_service.chat(
         user_id=1,
         message="帮我制定一周晚餐饮食计划",
         thread_id="rejected-plan",
     )
 
     state = await container.chat_service.confirm(
-        thread_id="rejected-plan", user_id=1, approved=False
+        thread_id="rejected-plan", user_id=1, approved=False, **approval(waiting)
     )
 
     assert state["phase"] == Phase.COMPLETED.value
     assert all(result["tool_name"] != "create_meal_plan" for result in state["tool_results"])
+    assert (await plan_preview(container, waiting)).state == "discarded"
 
 
 @pytest.mark.integration
@@ -67,7 +69,7 @@ async def test_default_week_plan_contains_seven_days_of_three_meals() -> None:
         thread_id="full-week-plan",
     )
 
-    items = state["pending_tool_calls"][0]["arguments"]["items"]
+    items = await plan_items(container, state)
     assert len(items) == 21
     assert len({item["meal_date"] for item in items}) == 7
     assert {item["meal_type"] for item in items} == {"breakfast", "lunch", "dinner"}

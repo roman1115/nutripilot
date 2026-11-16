@@ -48,6 +48,10 @@ class ConversationStore(Protocol):
         self, user_id: int, thread_id: str, after: int, limit: int
     ) -> list[ConversationMessage]: ...
 
+    def turn_messages(
+        self, user_id: int, thread_id: str, turn_id: str
+    ) -> list[ConversationMessage]: ...
+
     def search_messages(
         self, user_id: int, thread_id: str | None, query: str, limit: int
     ) -> list[HistoryMatch]: ...

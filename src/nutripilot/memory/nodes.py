@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from nutripilot.agent.state import AgentState
 from nutripilot.domain.execution import ExecutionOwnershipLost
-from nutripilot.memory.context import conversation_context, ordered_messages
+from nutripilot.memory.context import conversation_context, diet_memory_content, ordered_messages
 from nutripilot.model_gateway import ModelGateway
 from nutripilot.model_gateway.budget import (
     ExecutionLimitExceeded,
@@ -58,6 +58,7 @@ def archived_message(message: ConversationMessage) -> AnyMessage:
         "turn_id": message.id.rsplit(":", 1)[0],
         "status": (message.response or {}).get("status"),
         "displayed_meals": displayed_meals(message.response or {}),
+        "diet_context": (message.response or {}).get("diet_context"),
     }
     if message.role == "assistant":
         return AIMessage(content=message.content, id=message.id, additional_kwargs=metadata)
@@ -92,6 +93,7 @@ def finalized_update(state: AgentState) -> dict[str, Any]:
                 "turn_id": state["turn_id"], "status": response.get("status"),
                 "created_at": created,
                 "displayed_meals": displayed_meals(response),
+                "diet_context": response.get("diet_context"),
             },
         )],
         "response_created_at": created,
@@ -250,7 +252,8 @@ class MemoryNodes:
             "old_summary": old.get("entries", []),
             "messages": [
                 {
-                    "id": message.id, "role": message.type, "content": message.content,
+                    "id": message.id, "role": message.type,
+                    "content": diet_memory_content(message, messages),
                     "displayed_meals": message.additional_kwargs.get("displayed_meals", []),
                     "history_event": message.additional_kwargs.get("history_event", False),
                 }
@@ -365,14 +368,18 @@ class MemoryNodes:
             size = 0
             for match in matches:
                 nearby = await asyncio.to_thread(
-                    self.history.after_position, state["user_id"], match.thread_id,
-                    max(0, (match.message.position or 1) - 2), 3,
+                    self.history.turn_messages, state["user_id"], match.thread_id,
+                    match.message.id.rsplit(":", 1)[0],
                 )
+                projected_turn = [archived_message(value) for value in nearby]
                 for message in nearby:
                     if message.id in seen or message.id == f"{state['turn_id']}:user":
                         continue
                     seen.add(message.id)
-                    excerpt = message.content[:1500]
+                    projection = diet_memory_content(
+                        archived_message(message), projected_turn,
+                    )
+                    excerpt = str(projection)[:1500]
                     if size + len(excerpt) > 6000:
                         continue
                     size += len(excerpt)

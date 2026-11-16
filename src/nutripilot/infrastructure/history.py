@@ -73,6 +73,19 @@ class InMemoryConversationStore:
     ) -> list[ConversationMessage]:
         return self.messages(user_id, thread_id, limit, after)
 
+    def turn_messages(
+        self, user_id: int, thread_id: str, turn_id: str
+    ) -> list[ConversationMessage]:
+        with self._lock:
+            owner, items = self._items.get(thread_id, (user_id, []))
+            if owner != user_id:
+                return []
+            return [
+                item.model_copy(deep=True, update={"position": index + 1})
+                for index, item in enumerate(items)
+                if item.id.rsplit(":", 1)[0] == turn_id
+            ]
+
     def search_messages(
         self, user_id: int, thread_id: str | None, query: str, limit: int
     ) -> list[HistoryMatch]:
@@ -181,6 +194,24 @@ class SQLiteConversationStore:
             ConversationMessage.model_validate_json(row[0]).model_copy(
                 update={"position": row[1]}
             ) for row in rows
+        ]
+
+    def turn_messages(
+        self, user_id: int, thread_id: str, turn_id: str
+    ) -> list[ConversationMessage]:
+        with self.store._connect() as connection:
+            rows = connection.execute(
+                "SELECT m.payload,m.sequence FROM conversation_messages m "
+                "JOIN conversations c ON c.thread_id=m.thread_id "
+                "WHERE c.user_id=? AND c.thread_id=? AND (m.id=? OR substr(m.id,1,?)=?) "
+                "ORDER BY m.sequence",
+                (user_id, thread_id, turn_id, len(turn_id) + 1, turn_id + ":"),
+            ).fetchall()
+        return [
+            item.model_copy(update={"position": row[1]})
+            for row in rows
+            if (item := ConversationMessage.model_validate_json(row[0])).id.rsplit(":", 1)[0]
+            == turn_id
         ]
 
     def after_position(

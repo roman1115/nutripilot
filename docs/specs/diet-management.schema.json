@@ -1,0 +1,355 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:nutripilot:diet-management:2026-11-11",
+  "title": "NutriPilot diet-management tool input contract",
+  "description": "Frozen structural input contract. Runtime handlers and semantic validation are tested separately; implementation status is recorded in CURRENT_STATUS.md.",
+  "x-revision": "2026-11-11",
+  "x-tools": [
+    {"name": "search_foods", "arguments": "SearchFoods", "access": "read", "permission": "diet:read"},
+    {"name": "get_meal_plans", "arguments": "GetMealPlans", "access": "read", "permission": "diet:read"},
+    {"name": "get_diet_logs", "arguments": "GetDietLogs", "access": "read", "permission": "diet:read"},
+    {"name": "get_nutrition_summary", "arguments": "GetNutritionSummary", "access": "read", "permission": "diet:read"},
+    {"name": "get_nutrition_targets", "arguments": "GetNutritionTargets", "access": "read", "permission": "diet:read"},
+    {"name": "get_diet_deviation", "arguments": "GetDietDeviation", "access": "read", "permission": "diet:read"},
+    {"name": "prepare_intake_draft", "arguments": "PrepareIntakeDraft", "access": "write", "permission": "diet:draft"},
+    {"name": "prepare_diet_log_change", "arguments": "PrepareDietLogChange", "access": "write", "permission": "diet:draft"},
+    {"name": "prepare_meal_plan_change", "arguments": "PrepareMealPlanChange", "access": "write", "permission": "diet:draft"},
+    {"name": "prepare_target_change", "arguments": "PrepareTargetChange", "access": "write", "permission": "diet:draft"}
+  ],
+  "oneOf": [
+    {"$ref": "#/$defs/SearchFoodsCall"},
+    {"$ref": "#/$defs/GetMealPlansCall"},
+    {"$ref": "#/$defs/GetDietLogsCall"},
+    {"$ref": "#/$defs/GetNutritionSummaryCall"},
+    {"$ref": "#/$defs/GetNutritionTargetsCall"},
+    {"$ref": "#/$defs/GetDietDeviationCall"},
+    {"$ref": "#/$defs/PrepareIntakeDraftCall"},
+    {"$ref": "#/$defs/PrepareDietLogChangeCall"},
+    {"$ref": "#/$defs/PrepareMealPlanChangeCall"},
+    {"$ref": "#/$defs/PrepareTargetChangeCall"}
+  ],
+  "$defs": {
+    "ID": {"type": "string", "format": "uuid"},
+    "Date": {"type": "string", "format": "date", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+    "Version": {"type": "integer", "minimum": 1},
+    "Decimal": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,8})(\\.[0-9]{1,6})?$"},
+    "PositiveDecimal": {"type": "string", "pattern": "^(?=.*[1-9])(0|[1-9][0-9]{0,8})(\\.[0-9]{1,6})?$"},
+    "MealType": {"enum": ["breakfast", "lunch", "dinner", "snack"]},
+    "FoodState": {"enum": ["raw", "cooked", "as_sold", "unknown"]},
+    "RangeScope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "start_date", "end_date"],
+      "properties": {
+        "kind": {"const": "range"},
+        "start_date": {"$ref": "#/$defs/Date"},
+        "end_date": {"$ref": "#/$defs/Date"}
+      }
+    },
+    "IDScope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {"kind": {"const": "id"}, "id": {"$ref": "#/$defs/ID"}}
+    },
+    "Scope": {"oneOf": [{"$ref": "#/$defs/RangeScope"}, {"$ref": "#/$defs/IDScope"}]},
+    "Cursor": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "FieldEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["field", "source_kind", "source_ref", "original_text", "operation", "status"],
+      "properties": {
+        "field": {"enum": ["actuality", "subject", "date", "time", "meal_type", "food", "quantity", "food_state", "note", "goal", "effective_date", "operation"]},
+        "entry_key": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{1,32}$"},
+        "item_key": {"type": "string", "minLength": 1, "maxLength": 64},
+        "source_kind": {"enum": ["user_message", "user_form", "active_draft", "catalog", "label", "model_estimate", "server_default"]},
+        "source_ref": {"type": "string", "minLength": 1, "maxLength": 160},
+        "original_text": {"type": "string", "maxLength": 2000},
+        "operation": {"enum": ["set", "clear", "keep"]},
+        "status": {"enum": ["explicit", "derived", "proposed", "unresolved"]}
+      }
+    },
+    "EvidenceList": {"type": "array", "items": {"$ref": "#/$defs/FieldEvidence"}, "minItems": 1, "maxItems": 400},
+    "FoodRef": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "id", "version"],
+          "properties": {"kind": {"const": "ingredient"}, "id": {"type": "string", "minLength": 1, "maxLength": 120}, "version": {"type": "string", "minLength": 1, "maxLength": 120}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "id", "version"],
+          "properties": {"kind": {"const": "recipe"}, "id": {"type": "integer", "minimum": 1000}, "version": {"type": "string", "minLength": 1, "maxLength": 120}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "id", "version"],
+          "properties": {"kind": {"const": "personal_food"}, "id": {"$ref": "#/$defs/ID"}, "version": {"$ref": "#/$defs/Version"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "name"],
+          "properties": {"kind": {"const": "unknown"}, "name": {"type": "string", "minLength": 1, "maxLength": 120}}
+        }
+      ]
+    },
+    "Quantity": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "description"],
+          "properties": {"kind": {"const": "unknown"}, "description": {"type": "string", "minLength": 1, "maxLength": 200}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "grams", "food_state"],
+          "properties": {"kind": {"const": "mass"}, "grams": {"$ref": "#/$defs/PositiveDecimal"}, "food_state": {"$ref": "#/$defs/FoodState"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "grams_lower", "grams_upper", "food_state"],
+          "properties": {"kind": {"const": "mass_range"}, "grams_lower": {"$ref": "#/$defs/PositiveDecimal"}, "grams_upper": {"$ref": "#/$defs/PositiveDecimal"}, "food_state": {"$ref": "#/$defs/FoodState"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "count", "serving_evidence_id"],
+          "properties": {"kind": {"const": "servings"}, "count": {"$ref": "#/$defs/PositiveDecimal"}, "serving_evidence_id": {"type": "string", "minLength": 1, "maxLength": 160}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "batch_multiplier", "share"],
+          "properties": {"kind": {"const": "recipe_fraction"}, "batch_multiplier": {"$ref": "#/$defs/PositiveDecimal"}, "share": {"$ref": "#/$defs/PositiveDecimal"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "batch_multiplier", "consumed_grams", "batch_cooked_grams"],
+          "properties": {"kind": {"const": "cooked_mass"}, "batch_multiplier": {"$ref": "#/$defs/PositiveDecimal"}, "consumed_grams": {"$ref": "#/$defs/PositiveDecimal"}, "batch_cooked_grams": {"$ref": "#/$defs/PositiveDecimal"}}
+        }
+      ]
+    },
+    "ProposedItem": {
+      "type": "object", "additionalProperties": false,
+      "required": ["client_item_key", "food", "quantity"],
+      "properties": {
+        "client_item_key": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{1,32}$"},
+        "food": {"$ref": "#/$defs/FoodRef"},
+        "quantity": {"$ref": "#/$defs/Quantity"},
+        "note": {"type": "string", "maxLength": 500}
+      }
+    },
+    "TemporalFields": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "local_date": {"oneOf": [{"$ref": "#/$defs/Date"}, {"type": "null"}]},
+        "local_time": {"type": ["string", "null"], "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$"},
+        "utc_offset_minutes": {"type": ["integer", "null"], "minimum": -840, "maximum": 840},
+        "meal_type": {"oneOf": [{"$ref": "#/$defs/MealType"}, {"type": "null"}]},
+        "note": {"type": ["string", "null"], "maxLength": 500}
+      }
+    },
+    "ProposedEntry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["actuality", "subject", "temporal", "items"],
+      "properties": {
+        "actuality": {"enum": ["actual", "planned", "hypothetical", "unknown"]},
+        "subject": {"enum": ["self", "third_party", "unknown"]},
+        "temporal": {"$ref": "#/$defs/TemporalFields"},
+        "items": {"type": "array", "minItems": 1, "maxItems": 50, "items": {"$ref": "#/$defs/ProposedItem"}}
+      }
+    },
+    "ItemEdit": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "item"],
+          "properties": {"action": {"const": "add"}, "item": {"$ref": "#/$defs/ProposedItem"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "item_id", "changes"],
+          "properties": {
+            "action": {"const": "update"}, "item_id": {"$ref": "#/$defs/ID"},
+            "changes": {
+              "type": "object", "additionalProperties": false, "minProperties": 1,
+              "properties": {"food": {"$ref": "#/$defs/FoodRef"}, "quantity": {"$ref": "#/$defs/Quantity"}, "note": {"type": ["string", "null"], "maxLength": 500}}
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "item_id"],
+          "properties": {"action": {"const": "remove"}, "item_id": {"$ref": "#/$defs/ID"}}
+        }
+      ]
+    },
+    "EntryPatch": {
+      "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {
+        "temporal": {"allOf": [{"$ref": "#/$defs/TemporalFields"}, {"minProperties": 1}]},
+        "item_edits": {"type": "array", "minItems": 1, "maxItems": 50, "items": {"$ref": "#/$defs/ItemEdit"}}
+      }
+    },
+    "GoalRange": {
+      "type": "object", "additionalProperties": false, "required": ["lower", "upper"],
+      "properties": {"lower": {"$ref": "#/$defs/Decimal"}, "upper": {"$ref": "#/$defs/Decimal"}}
+    },
+    "Goals": {
+      "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {
+        "calories_kcal": {"oneOf": [{"$ref": "#/$defs/GoalRange"}, {"type": "null"}]},
+        "protein_g": {"oneOf": [{"$ref": "#/$defs/GoalRange"}, {"type": "null"}]},
+        "fat_g": {"oneOf": [{"$ref": "#/$defs/GoalRange"}, {"type": "null"}]},
+        "carbohydrates_g": {"oneOf": [{"$ref": "#/$defs/GoalRange"}, {"type": "null"}]}
+      }
+    },
+    "SearchFoods": {
+      "type": "object", "additionalProperties": false, "required": ["query"],
+      "properties": {
+        "query": {"type": "string", "minLength": 1, "maxLength": 200},
+        "food_kind": {"enum": ["any", "ingredient", "recipe", "personal_food"], "default": "any"},
+        "food_state": {"$ref": "#/$defs/FoodState"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10}
+      }
+    },
+    "GetMealPlans": {
+      "type": "object", "additionalProperties": false, "required": ["scope"],
+      "properties": {"scope": {"$ref": "#/$defs/Scope"}, "meal_type": {"$ref": "#/$defs/MealType"}, "cursor": {"$ref": "#/$defs/Cursor"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}}
+    },
+    "GetDietLogs": {
+      "type": "object", "additionalProperties": false, "required": ["scope"],
+      "properties": {"scope": {"$ref": "#/$defs/Scope"}, "meal_type": {"$ref": "#/$defs/MealType"}, "food_query": {"type": "string", "minLength": 1, "maxLength": 120}, "include_deleted": {"type": "boolean", "default": false}, "cursor": {"$ref": "#/$defs/Cursor"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}}
+    },
+    "GetNutritionSummary": {
+      "type": "object", "additionalProperties": false, "required": ["scope", "granularity"],
+      "properties": {
+        "scope": {"$ref": "#/$defs/RangeScope"}, "granularity": {"enum": ["day", "week"]},
+        "nutrients": {"type": "array", "minItems": 1, "maxItems": 6, "uniqueItems": true, "items": {"enum": ["calories_kcal", "protein_g", "fat_g", "carbohydrates_g", "fiber_g", "sodium_mg"]}}
+      }
+    },
+    "GetNutritionTargets": {
+      "type": "object", "additionalProperties": false, "required": ["scope"],
+      "properties": {"scope": {"$ref": "#/$defs/RangeScope"}}
+    },
+    "GetDietDeviation": {
+      "type": "object", "additionalProperties": false, "required": ["scope"],
+      "properties": {"scope": {"$ref": "#/$defs/RangeScope"}, "plan_id": {"$ref": "#/$defs/ID"}}
+    },
+    "PrepareIntakeDraft": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "entry", "evidence"],
+          "properties": {
+            "action": {"const": "create"}, "entry": {"$ref": "#/$defs/ProposedEntry"}, "evidence": {"$ref": "#/$defs/EvidenceList"},
+            "media_ids": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"$ref": "#/$defs/ID"}},
+            "source": {
+              "oneOf": [
+                {"type": "object", "additionalProperties": false, "required": ["kind", "planned_meal_id", "base_version", "record_again"], "properties": {"kind": {"const": "plan"}, "planned_meal_id": {"$ref": "#/$defs/ID"}, "base_version": {"$ref": "#/$defs/Version"}, "record_again": {"type": "boolean"}}},
+                {"type": "object", "additionalProperties": false, "required": ["kind", "record_id", "base_version"], "properties": {"kind": {"const": "record_copy"}, "record_id": {"$ref": "#/$defs/ID"}, "base_version": {"$ref": "#/$defs/Version"}}}
+              ]
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "draft_id", "base_version", "patch", "evidence"],
+          "properties": {"action": {"const": "revise"}, "draft_id": {"$ref": "#/$defs/ID"}, "base_version": {"$ref": "#/$defs/Version"}, "patch": {"$ref": "#/$defs/EntryPatch"}, "evidence": {"$ref": "#/$defs/EvidenceList"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "draft_id", "base_version", "evidence"],
+          "properties": {"action": {"const": "discard"}, "draft_id": {"$ref": "#/$defs/ID"}, "base_version": {"$ref": "#/$defs/Version"}, "evidence": {"$ref": "#/$defs/EvidenceList"}}
+        }
+      ]
+    },
+    "PrepareDietLogChange": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "record_id", "base_version", "patch", "evidence"],
+          "properties": {"action": {"const": "correct"}, "record_id": {"$ref": "#/$defs/ID"}, "base_version": {"$ref": "#/$defs/Version"}, "patch": {"$ref": "#/$defs/EntryPatch"}, "evidence": {"$ref": "#/$defs/EvidenceList"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "record_id", "base_version", "evidence"],
+          "properties": {"action": {"enum": ["delete", "restore"]}, "record_id": {"$ref": "#/$defs/ID"}, "base_version": {"$ref": "#/$defs/Version"}, "evidence": {"$ref": "#/$defs/EvidenceList"}}
+        }
+      ]
+    },
+    "PlanParent": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "title", "start_date"],
+          "properties": {"kind": {"const": "new"}, "title": {"type": "string", "minLength": 1, "maxLength": 120}, "start_date": {"$ref": "#/$defs/Date"}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "plan_id", "base_version"],
+          "properties": {"kind": {"const": "existing"}, "plan_id": {"$ref": "#/$defs/ID"}, "base_version": {"$ref": "#/$defs/Version"}}
+        }
+      ]
+    },
+    "PlannedEntry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["client_entry_key", "entry"],
+      "properties": {
+        "client_entry_key": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{1,32}$"},
+        "entry": {"$ref": "#/$defs/ProposedEntry"}
+      }
+    },
+    "PrepareMealPlanChange": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "parent", "entries", "evidence"],
+          "properties": {
+            "action": {"const": "create"}, "parent": {"$ref": "#/$defs/PlanParent"},
+            "entries": {"type": "array", "minItems": 1, "maxItems": 28, "items": {"$ref": "#/$defs/PlannedEntry"}},
+            "evidence": {"$ref": "#/$defs/EvidenceList"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "planned_meal_id", "base_version", "patch", "evidence"],
+          "properties": {"action": {"const": "update"}, "planned_meal_id": {"$ref": "#/$defs/ID"}, "base_version": {"$ref": "#/$defs/Version"}, "patch": {"$ref": "#/$defs/EntryPatch"}, "evidence": {"$ref": "#/$defs/EvidenceList"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "planned_meal_id", "base_version", "evidence"],
+          "properties": {"action": {"const": "delete"}, "planned_meal_id": {"$ref": "#/$defs/ID"}, "base_version": {"$ref": "#/$defs/Version"}, "evidence": {"$ref": "#/$defs/EvidenceList"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "planned_meal_id", "base_version", "target_date", "target_meal_type", "evidence"],
+          "properties": {"action": {"const": "copy"}, "planned_meal_id": {"$ref": "#/$defs/ID"}, "base_version": {"$ref": "#/$defs/Version"}, "target_date": {"$ref": "#/$defs/Date"}, "target_meal_type": {"$ref": "#/$defs/MealType"}, "evidence": {"$ref": "#/$defs/EvidenceList"}}
+        }
+      ]
+    },
+    "PrepareTargetChange": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "effective_date", "goals", "evidence"],
+          "properties": {"action": {"const": "set"}, "effective_date": {"$ref": "#/$defs/Date"}, "goals": {"$ref": "#/$defs/Goals"}, "evidence": {"$ref": "#/$defs/EvidenceList"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "target_id", "base_version", "effective_date", "goals", "evidence"],
+          "properties": {"action": {"const": "correct"}, "target_id": {"$ref": "#/$defs/ID"}, "base_version": {"$ref": "#/$defs/Version"}, "effective_date": {"$ref": "#/$defs/Date"}, "goals": {"$ref": "#/$defs/Goals"}, "evidence": {"$ref": "#/$defs/EvidenceList"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "target_id", "base_version", "effective_date", "evidence"],
+          "properties": {"action": {"const": "stop"}, "target_id": {"$ref": "#/$defs/ID"}, "base_version": {"$ref": "#/$defs/Version"}, "effective_date": {"$ref": "#/$defs/Date"}, "evidence": {"$ref": "#/$defs/EvidenceList"}}
+        }
+      ]
+    },
+    "SearchFoodsCall": {"type": "object", "additionalProperties": false, "required": ["tool", "arguments"], "properties": {"tool": {"const": "search_foods"}, "arguments": {"$ref": "#/$defs/SearchFoods"}}},
+    "GetMealPlansCall": {"type": "object", "additionalProperties": false, "required": ["tool", "arguments"], "properties": {"tool": {"const": "get_meal_plans"}, "arguments": {"$ref": "#/$defs/GetMealPlans"}}},
+    "GetDietLogsCall": {"type": "object", "additionalProperties": false, "required": ["tool", "arguments"], "properties": {"tool": {"const": "get_diet_logs"}, "arguments": {"$ref": "#/$defs/GetDietLogs"}}},
+    "GetNutritionSummaryCall": {"type": "object", "additionalProperties": false, "required": ["tool", "arguments"], "properties": {"tool": {"const": "get_nutrition_summary"}, "arguments": {"$ref": "#/$defs/GetNutritionSummary"}}},
+    "GetNutritionTargetsCall": {"type": "object", "additionalProperties": false, "required": ["tool", "arguments"], "properties": {"tool": {"const": "get_nutrition_targets"}, "arguments": {"$ref": "#/$defs/GetNutritionTargets"}}},
+    "GetDietDeviationCall": {"type": "object", "additionalProperties": false, "required": ["tool", "arguments"], "properties": {"tool": {"const": "get_diet_deviation"}, "arguments": {"$ref": "#/$defs/GetDietDeviation"}}},
+    "PrepareIntakeDraftCall": {"type": "object", "additionalProperties": false, "required": ["tool", "arguments"], "properties": {"tool": {"const": "prepare_intake_draft"}, "arguments": {"$ref": "#/$defs/PrepareIntakeDraft"}}},
+    "PrepareDietLogChangeCall": {"type": "object", "additionalProperties": false, "required": ["tool", "arguments"], "properties": {"tool": {"const": "prepare_diet_log_change"}, "arguments": {"$ref": "#/$defs/PrepareDietLogChange"}}},
+    "PrepareMealPlanChangeCall": {"type": "object", "additionalProperties": false, "required": ["tool", "arguments"], "properties": {"tool": {"const": "prepare_meal_plan_change"}, "arguments": {"$ref": "#/$defs/PrepareMealPlanChange"}}},
+    "PrepareTargetChangeCall": {"type": "object", "additionalProperties": false, "required": ["tool", "arguments"], "properties": {"tool": {"const": "prepare_target_change"}, "arguments": {"$ref": "#/$defs/PrepareTargetChange"}}}
+  }
+}

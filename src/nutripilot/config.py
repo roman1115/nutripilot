@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_mode: Literal["demo", "docker", "production", "test"] = "demo"
     user_timezone: str = "America/Los_Angeles"
+    diet_image_enabled: bool = False
+    vision_model_name: str | None = None
+    vision_model_base_url: str | None = None
+    vision_model_api_key: str | None = None
+    diet_media_root: str | None = None
+    diet_export_root: str | None = None
+    diet_deletion_journal_root: str | None = None
     model_provider: Literal["fake", "openai"] = "fake"
     model_name: str = "qwen-plus"
     model_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -48,6 +55,7 @@ class Settings(BaseSettings):
     chat_max_queued: int = Field(default=20, ge=1, le=100)
     chat_max_attempts: int = Field(default=2, ge=1, le=3)
     api_access_tokens: dict[str, int] = Field(default_factory=dict)
+    api_local_user_id: int | None = Field(default=None, ge=1)
     api_rate_limit_per_minute: int = Field(default=60, ge=1, le=10000)
     database_url: str = "postgresql+asyncpg://nutripilot:nutripilot@localhost:5432/nutripilot"
     redis_url: str = "redis://localhost:6379/0"
@@ -68,10 +76,20 @@ class Settings(BaseSettings):
             raise ValueError("USER_TIMEZONE must be a valid IANA time zone") from exc
         if self.model_provider == "openai" and not self.model_api_key:
             raise ValueError("MODEL_API_KEY is required when MODEL_PROVIDER=openai")
+        if self.diet_image_enabled and not self.vision_model_name:
+            raise ValueError("VISION_MODEL_NAME is required when DIET_IMAGE_ENABLED=true")
+        if self.diet_image_enabled and self.model_provider == "openai" and not (
+            self.vision_model_api_key or self.model_api_key
+        ):
+            raise ValueError("An authorized vision model API key is required")
         if any(len(token) < 32 or user_id < 1 for token, user_id in self.api_access_tokens.items()):
             raise ValueError(
                 "API_ACCESS_TOKENS requires 32+ character tokens and positive user IDs"
             )
+        if self.api_local_user_id is not None and (
+            self.app_mode == "production" or self.api_access_tokens
+        ):
+            raise ValueError("API_LOCAL_USER_ID requires non-production mode and no access tokens")
         if self.app_mode == "production" and not self.api_access_tokens:
             raise ValueError("API_ACCESS_TOKENS is required in production")
         return self

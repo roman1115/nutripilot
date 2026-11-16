@@ -75,9 +75,13 @@ def test_history_api_is_user_scoped_and_restores_confirmation_messages() -> None
             },
         )
         assert first.json()["requires_confirmation"]
-        preview = first.json()["pending_action"]["meal_preview"]
+        action = first.json()["pending_action"]
+        preview = client.get(
+            f"/api/v1/diet/previews/{action['payload']['preview_id']}"
+        ).json()["content"]["after_meals"]
         assert len(preview) == 7
-        assert all(item["meal_name"] and item["calories"] is not None for item in preview)
+        assert all(item["items"][0]["name_snapshot"] for item in preview)
+        assert all(item["items"][0]["quantity"]["kind"] == "unknown" for item in preview)
         assert client.get("/api/v1/threads?q=晚餐").json()["items"][0]["message_count"] == 2
         assert (
             client.get(
@@ -98,6 +102,9 @@ def test_history_api_is_user_scoped_and_restores_confirmation_messages() -> None
             json={
                 "user_id": 1,
                 "approved": False,
+                "confirmation_id": action["id"],
+                "preview_version": action["payload"]["preview_version"],
+                "content_hash": action["payload"]["content_hash"],
             },
         )
         assert result.status_code == 200

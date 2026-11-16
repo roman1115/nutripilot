@@ -1,4 +1,4 @@
-export type ViewKey = "chat" | "profile" | "plans" | "traces" | "evaluations";
+export type ViewKey = "chat" | "diet" | "profile" | "plans" | "traces" | "evaluations";
 
 export type ConnectionState = "checking" | "online" | "offline";
 export type ActivityStatus = "waiting" | "running" | "success" | "error";

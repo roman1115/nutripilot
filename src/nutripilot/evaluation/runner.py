@@ -6,11 +6,12 @@ import json
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter
 
 from nutripilot.agent.grounding import _meal_records, ground_recommendation_facts
+from nutripilot.domain.diet_records import PlanChangeContent
 from nutripilot.domain.enums import Intent, Phase
 from nutripilot.domain.models import FinalResponse
 from nutripilot.evaluation.metrics import expected_slots_match, rate, response_contains
@@ -43,7 +44,9 @@ def recommendation_integrity(state: AgentState) -> dict[str, bool]:
     results = state.get("tool_results", [])
     records = _meal_records(results)
     meal_intent = state.get("intent") in {
-        Intent.MEAL_RECOMMENDATION.value, Intent.MEAL_ADJUSTMENT.value, Intent.MEAL_PLAN.value,
+        Intent.MEAL_RECOMMENDATION.value,
+        Intent.MEAL_ADJUSTMENT.value,
+        Intent.MEAL_PLAN.value,
     }
     searched = any(
         result.get("tool_name") == "search_meals" and result.get("status") == "success"
@@ -73,17 +76,19 @@ def recommendation_integrity(state: AgentState) -> dict[str, bool]:
     return {
         "current_search_evidence": current_search,
         "recommendation_facts": facts_ok,
-        "recommendation_sources": not response.recommendations or (
-            current_search and response.citations == canonical.citations
-        ),
+        "recommendation_sources": not response.recommendations
+        or (current_search and response.citations == canonical.citations),
         "tool_preconditions": not meal_intent or dependencies_ok,
     }
 
 
 class EvalRunner:
     def __init__(
-        self, chat_service: ChatService, runs: ChatRunService | None = None,
-        *, meal_repository: MealRepository | None = None,
+        self,
+        chat_service: ChatService,
+        runs: ChatRunService | None = None,
+        *,
+        meal_repository: MealRepository | None = None,
     ) -> None:
         self.chat_service = chat_service
         self.runs = runs
@@ -114,17 +119,26 @@ class EvalRunner:
             ingredients_ok &= bool(meal) and meets_ingredient_requirements(meal, required, groups)
             ingredients_ok &= not any(
                 match_ingredient(
-                    term, meal.get("ingredients", []), meal.get("ingredient_records", []),
+                    term,
+                    meal.get("ingredients", []),
+                    meal.get("ingredient_records", []),
                     exclusion=True,
-                ) for term in excluded
+                )
+                for term in excluded
             )
             if expected.check_reason_evidence:
                 reason = card.get("reason", "")
                 for group in [[term] for term in required] + groups:
                     evidence_ok &= any(
-                        term in reason and bool(match_ingredient(
-                            term, meal.get("ingredients", []), meal.get("ingredient_records", [])
-                        )) for term in group
+                        term in reason
+                        and bool(
+                            match_ingredient(
+                                term,
+                                meal.get("ingredients", []),
+                                meal.get("ingredient_records", []),
+                            )
+                        )
+                        for term in group
                     )
         checks["recipe_ingredients"] = ingredients_ok
         if expected.check_reason_evidence:
@@ -188,18 +202,23 @@ class EvalRunner:
             }
             checks.update(await self._recommendation_checks(state, case))
             expected_phase = case.expected_phase or (
-                Phase.BLOCKED.value if case.expected_blocked
-                else Phase.AWAITING_CONFIRMATION.value if case.expected_requires_confirmation
+                Phase.BLOCKED.value
+                if case.expected_blocked
+                else Phase.AWAITING_CONFIRMATION.value
+                if case.expected_requires_confirmation
                 else Phase.COMPLETED.value
             )
             checks["phase"] = state.get("phase") == expected_phase
             for index, turn in enumerate(turns, start=1):
-                checks.update({
-                    f"turn_{index}_{key}": value
-                    for key, value in recommendation_integrity(turn).items()
-                })
+                checks.update(
+                    {
+                        f"turn_{index}_{key}": value
+                        for key, value in recommendation_integrity(turn).items()
+                    }
+                )
                 if index < len(turns) and turn.get("intent") in {
-                    Intent.MEAL_RECOMMENDATION.value, Intent.MEAL_ADJUSTMENT.value,
+                    Intent.MEAL_RECOMMENDATION.value,
+                    Intent.MEAL_ADJUSTMENT.value,
                 }:
                     checks[f"turn_{index}_phase"] = turn.get("phase") == Phase.COMPLETED.value
             if case.turn_expectations:
@@ -210,12 +229,14 @@ class EvalRunner:
                     checks[f"turn_{index}_slots"] = expected_slots_match(
                         expectation.expected_slots, turn.get("slots", {})
                     )
-                    checks.update({
-                        f"turn_{index}_{key}": value
-                        for key, value in (await self._recommendation_checks(
-                            turn, expectation
-                        )).items()
-                    })
+                    checks.update(
+                        {
+                            f"turn_{index}_{key}": value
+                            for key, value in (
+                                await self._recommendation_checks(turn, expectation)
+                            ).items()
+                        }
+                    )
             events = [
                 event
                 for trace_id in traces
@@ -252,6 +273,25 @@ class EvalRunner:
                     for call in state.get("pending_tool_calls", [])
                     if call.get("name") == "create_meal_plan"
                 )
+            ref = state.get("pending_diet_preview_ref")
+            commit = self.chat_service.graph.diet_commit
+            if (
+                ref
+                and commit
+                and (case.expected_plan_start_date or case.expected_plan_item_count is not None)
+            ):
+                preview = await commit.diet.preview(case.user_id, UUID(ref["id"]))
+                if isinstance(preview.content, PlanChangeContent):
+                    if case.expected_plan_start_date:
+                        checks["plan_date"] = (
+                            preview.content.after_plan.start_date.isoformat()
+                            == case.expected_plan_start_date
+                        )
+                    if case.expected_plan_item_count is not None:
+                        checks["plan_items"] = (
+                            sum(len(meal.items) for meal in preview.content.after_meals)
+                            == case.expected_plan_item_count
+                        )
             if case.expected_plan_nutrition_basis is not None:
                 quality = state.get("plan_quality") or {}
                 checks["nutrition_basis"] = (

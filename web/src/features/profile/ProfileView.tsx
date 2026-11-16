@@ -68,8 +68,6 @@ export function ProfileView({ connection }: { connection: ConnectionState }) {
       ["avoidances", "不喜欢"],
       ["allergens", "过敏原"],
       ["dietaryRestrictions", "饮食限制"],
-      ["dailyCalorieTarget", "每日热量目标"],
-      ["dailyProteinTarget", "每日蛋白质目标"],
       ["location", "所在城市"],
     ];
     return labels.filter(([key]) => JSON.stringify(profile[key]) !== JSON.stringify(baseline[key])).map(([, label]) => label);
@@ -151,34 +149,13 @@ export function ProfileView({ connection }: { connection: ConnectionState }) {
               </label>
               <label className="field field-block">
                 <span>每日热量目标（kcal）</span>
-                <input
-                  type="number"
-                  min={800}
-                  max={10000}
-                  step={50}
-                  value={profile.dailyCalorieTarget ?? ""}
-                  onChange={(event) =>
-                    update(
-                      "dailyCalorieTarget",
-                      event.target.value ? Number(event.target.value) : undefined,
-                    )
-                  }
-                  placeholder="如：2000"
-                />
+                <output>{profile.dailyCalorieTarget ?? "未设置或为区间目标"}</output>
               </label>
               <label className="field field-block">
                 <span>每日蛋白质目标（g）</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={1000}
-                  step={1}
-                  value={profile.dailyProteinTarget ?? ""}
-                  onChange={(event) =>
-                    update("dailyProteinTarget", event.target.value ? Number(event.target.value) : undefined)
-                  }
-                />
+                <output>{profile.dailyProteinTarget ?? "未设置或为区间目标"}</output>
               </label>
+              <a href="?diet_section=targets#diet">营养目标与生效时间线</a>
               <label className="field field-block">
                 <span>健康目标</span>
                 <TagEditor value={profile.goals} onChange={(value) => update("goals", value)} placeholder="如：控制体重" />

@@ -20,6 +20,8 @@ def route_after_risk(state: AgentState) -> str:
 
 
 def route_after_intent(state: AgentState) -> str:
+    if state.get("intent") == Intent.DIET_MANAGEMENT.value:
+        return "diet_tools"
     if state.get("intent") in {Intent.HEALTH_RISK.value, Intent.OTHER.value}:
         return "scope"
     if state.get("missing_slots"):
@@ -82,5 +84,7 @@ def route_after_tool(
 
 def route_after_confirmation(state: AgentState) -> str:
     if state.get("confirmation_decision") is True:
+        if state.get("pending_diet_preview_ref"):
+            return "diet_commit"
         return "tool"
     return "end"

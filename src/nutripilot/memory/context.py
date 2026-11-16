@@ -52,6 +52,21 @@ def ordered_messages(state: AgentState) -> list[AnyMessage]:
     ]
 
 
+def diet_memory_content(message: AnyMessage, messages: list[AnyMessage]) -> Any:
+    turn = message.additional_kwargs.get("turn_id") or str(message.id).rsplit(":", 1)[0]
+    for candidate in messages:
+        candidate_turn = candidate.additional_kwargs.get("turn_id") or str(candidate.id).rsplit(
+            ":", 1
+        )[0]
+        ref = candidate.additional_kwargs.get("diet_context")
+        if candidate_turn == turn and ref:
+            return json.dumps({
+                "diet_reference": ref,
+                "notice": "历史饮食业务轮；有效数据必须重新查本人数据库，不从聊天还原。",
+            }, ensure_ascii=False)
+    return message.content
+
+
 def conversation_context(state: AgentState) -> dict[str, Any]:
     """Project shared conversation data without changing stored originals."""
     snapshot = state.get("context_snapshot") or {}
@@ -66,7 +81,7 @@ def conversation_context(state: AgentState) -> dict[str, Any]:
         recent = [
             {
                 "role": "assistant" if message.type == "ai" else "user",
-                "content": message.content,
+                "content": diet_memory_content(message, ordered_messages(state)),
             }
             for message in ordered_messages(state)
             if message.id != f"{state.get('turn_id')}:user"

@@ -38,7 +38,10 @@ pytestmark = [
         reason="Set NUTRIPILOT_TEST_EXTERNAL=1 to verify local PostgreSQL/Redis/Qdrant",
     ),
 ]
-DATABASE_URL = "postgresql+asyncpg://nutripilot:nutripilot@127.0.0.1:5432/nutripilot"
+DATABASE_URL = os.getenv(
+    "NUTRIPILOT_TEST_DATABASE_URL",
+    "postgresql+asyncpg://nutripilot:nutripilot@127.0.0.1:5432/nutripilot",
+)
 
 
 @pytest.fixture
@@ -62,29 +65,88 @@ async def external_worker():  # type: ignore[no-untyped-def]
 
 @pytest.mark.asyncio
 async def test_real_checkpoint_pool_replaces_broken_connection() -> None:
-    container = build_container(
-        settings=Settings(_env_file=None, database_url=DATABASE_URL)
-    )
+    container = build_container(settings=Settings(_env_file=None, database_url=DATABASE_URL))
     async with _postgres_checkpointer(container) as checkpointer:
         await checkpointer.setup()
         async with checkpointer.conn.connection() as connection:
             await connection.close()
-        assert await checkpointer.aget_tuple(
-            {"configurable": {"thread_id": uuid4().hex}}
-        ) is None
+        assert await checkpointer.aget_tuple({"configurable": {"thread_id": uuid4().hex}}) is None
     assert checkpointer.conn.closed
 
 
 @pytest.mark.asyncio
+async def test_real_api_and_worker_can_initialize_an_empty_checkpoint_schema(tmp_path) -> None:
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from nutripilot.application.runtime import start_container, stop_container
+
+    schema = f"startup_{uuid4().hex}"
+    engine = create_async_engine(DATABASE_URL)
+    async with engine.begin() as connection:
+        await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    url = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
+    containers = [
+        build_container(
+            settings=Settings(
+                _env_file=None,
+                app_mode="docker",
+                model_provider="fake",
+                database_url=DATABASE_URL,
+                redis_url="redis://127.0.0.1:6379/0",
+                mcp_enabled=False,
+                chat_queue=f"startup-{schema}-{index}",
+                run_store_path=str(tmp_path / f"{index}.sqlite"),
+                diet_deletion_journal_root=str(tmp_path / f"deletions-{index}"),
+            )
+        )
+        for index in range(2)
+    ]
+    # Isolate only the checkpoint pools, leaving application tables in the opt-in test DB.
+    import nutripilot.application.runtime as runtime
+
+    try:
+        from unittest.mock import patch
+
+        with patch.object(
+            runtime, "_psycopg_url", return_value=url + f"?options=-csearch_path%3D{schema}"
+        ):
+            await asyncio.gather(*(start_container(container) for container in containers))
+        for container in containers:
+            assert container.chat_runs is not None
+        async with engine.connect() as connection:
+            assert (
+                await connection.execute(
+                    text(
+                        "SELECT count(*) FROM information_schema.tables "
+                        "WHERE table_schema=:schema AND table_name='checkpoint_migrations'"
+                    ),
+                    {"schema": schema},
+                )
+            ).scalar_one() == 1
+    finally:
+        for container in containers:
+            await stop_container(container)
+        async with engine.begin() as connection:
+            await connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_real_trash_survives_restart_restores_context_and_purges(
-    tmp_path, external_worker,
+    tmp_path,
+    external_worker,
 ) -> None:
     user_id = 6_000_000_000 + uuid4().int % 1_000_000_000
     settings = Settings(
-        _env_file=None, app_mode="docker", model_provider="fake",
-        embedding_provider="hashing", rerank_provider="lexical",
-        database_url=DATABASE_URL, redis_url="redis://127.0.0.1:6379/0",
-        mcp_enabled=False, chat_queue=f"trash-{uuid4().hex}",
+        _env_file=None,
+        app_mode="docker",
+        model_provider="fake",
+        embedding_provider="hashing",
+        rerank_provider="lexical",
+        database_url=DATABASE_URL,
+        redis_url="redis://127.0.0.1:6379/0",
+        mcp_enabled=False,
+        chat_queue=f"trash-{uuid4().hex}",
         run_store_path=str(tmp_path / "trash.sqlite3"),
     )
     thread = uuid4().hex
@@ -93,7 +155,9 @@ async def test_real_trash_survives_restart_restores_context_and_purges(
     async with (
         app.router.lifespan_context(app),
         httpx.AsyncClient(
-            transport=httpx.ASGITransport(app), base_url="http://test", headers=headers,
+            transport=httpx.ASGITransport(app),
+            base_url="http://test",
+            headers=headers,
         ) as client,
     ):
         worker, task = await external_worker(app)
@@ -111,7 +175,9 @@ async def test_real_trash_survives_restart_restores_context_and_purges(
     async with (
         app.router.lifespan_context(app),
         httpx.AsyncClient(
-            transport=httpx.ASGITransport(app), base_url="http://test", headers=headers,
+            transport=httpx.ASGITransport(app),
+            base_url="http://test",
+            headers=headers,
         ) as client,
     ):
         worker, task = await external_worker(app)
@@ -131,9 +197,10 @@ async def test_real_trash_survives_restart_restores_context_and_purges(
             assert len(messages) == 4
             assert (await client.delete(f"/api/v1/threads/{thread}")).status_code == 204
             with service.store.transaction() as connection:
-                connection.execute(text(
-                    "UPDATE chat_thread_trash SET deleted_at=:expired WHERE thread_id=:id"
-                ), {"expired": time.time() - TRASH_RETENTION_SECONDS - 1, "id": thread})
+                connection.execute(
+                    text("UPDATE chat_thread_trash SET deleted_at=:expired WHERE thread_id=:id"),
+                    {"expired": time.time() - TRASH_RETENTION_SECONDS - 1, "id": thread},
+                )
             assert (await client.post(f"/api/v1/threads/{thread}/restore")).status_code == 404
             await service.purge_expired_threads()
             assert not await app.state.container.graph.aget_state(
@@ -141,13 +208,20 @@ async def test_real_trash_survives_restart_restores_context_and_purges(
             )
             with service.store.transaction() as connection:
                 for table in ("chat_threads", "chat_messages", "chat_runs", "chat_thread_trash"):
-                    assert connection.execute(
-                        text(f"SELECT COUNT(*) FROM {table} WHERE thread_id=:id"), {"id": thread},
-                    ).scalar() == 0
-                assert connection.execute(
-                    text("SELECT COUNT(*) FROM chat_events WHERE run_id=:id"),
-                    {"id": original["run"]["id"]},
-                ).scalar() == 0
+                    assert (
+                        connection.execute(
+                            text(f"SELECT COUNT(*) FROM {table} WHERE thread_id=:id"),
+                            {"id": thread},
+                        ).scalar()
+                        == 0
+                    )
+                assert (
+                    connection.execute(
+                        text("SELECT COUNT(*) FROM chat_events WHERE run_id=:id"),
+                        {"id": original["run"]["id"]},
+                    ).scalar()
+                    == 0
+                )
         finally:
             await worker.close()
             await task
@@ -179,9 +253,7 @@ async def test_real_stream_disconnect_restoration_and_next_turn(tmp_path, monkey
         service = app.state.container.chat_service
 
         async def run() -> None:
-            async for _ in service.stream(
-                user_id=user_id, message="推荐晚餐", thread_id=thread_id
-            ):
+            async for _ in service.stream(user_id=user_id, message="推荐晚餐", thread_id=thread_id):
                 pass
 
         for _ in range(3):
@@ -296,6 +368,8 @@ async def test_real_checkpoint_confirmation_feedback_and_identity_survive_rebuil
             "user_id": user_id,
             "approved": True,
             "confirmation_id": pending["pending_action"]["id"],
+            "preview_version": pending["pending_action"]["payload"]["preview_version"],
+            "content_hash": pending["pending_action"]["payload"]["content_hash"],
         }
         response = await client.post(f"/api/v1/chat/{thread}/confirm", json=decision)
         assert response.status_code == 200
@@ -317,7 +391,8 @@ async def test_real_checkpoint_confirmation_feedback_and_identity_survive_rebuil
         plans = (await client.get("/api/v1/meal-plans")).json()
         assert len(plans) == 1
         assert len(plans[0]["items"]) == 3
-        assert plans[0]["quality"]["nutrition_basis"] == "whole_recipe"
+        assert plans[0]["quality"] is None
+        assert all(item["quantity_status"] == "unknown" for item in plans[0]["items"])
         assert (await client.get("/api/v1/profile")).json() == profile
         assert len(await app.state.container.data_store.list_feedback(user_id)) == 1
 

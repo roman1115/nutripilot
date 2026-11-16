@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import time
 from typing import Any
@@ -74,6 +75,9 @@ class ToolExecutor:
         if definition is None:
             return self._error(call, "TOOL_NOT_FOUND", "The requested tool is not available.")
 
+        if definition.private_arguments and len(call.model_dump_json().encode()) > 32 * 1024:
+            return self._error(call, "REQUEST_TOO_LARGE", "Tool input exceeds 32KiB.")
+
         preflight = self._preflight(call, context, state, definition)
         if preflight is not None:
             await self._trace(call, context, definition, preflight)
@@ -92,8 +96,11 @@ class ToolExecutor:
             await self._trace(call, context, definition, result)
             return result
 
+        if definition.idempotency_backend == "database":
+            context = dataclasses.replace(context, idempotency_key=call.call_id)
+
         idempotency_storage_key: str | None = None
-        if definition.access is ToolAccess.WRITE:
+        if definition.access is ToolAccess.WRITE and definition.idempotency_backend == "redis":
             idempotency_storage_key = self._idempotency_key(call, context)
             cached = await self.idempotency_store.get(idempotency_storage_key)
             if cached is not None:
@@ -368,7 +375,7 @@ class ToolExecutor:
             "tool_name": definition.name,
             "source": definition.source,
             "access": definition.access.value,
-            "arguments": call.arguments,
+            "arguments": {} if definition.private_arguments else call.arguments,
             "status": result.status.value,
             "error_code": result.error.code if result.error else None,
             "duration_ms": result.duration_ms,

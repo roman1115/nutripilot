@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from functools import partial
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from anyio import CancelScope
 from langgraph.checkpoint.memory import InMemorySaver
@@ -22,6 +22,8 @@ from nutripilot.agent.nodes import (
     ScopeResponseNode,
     ToolExecutionNode,
 )
+from nutripilot.agent.nodes.diet import DietCommitNode
+from nutripilot.agent.nodes.diet_tools import DietToolsNode
 from nutripilot.agent.routing import (
     route_after_confirmation,
     route_after_intent,
@@ -33,7 +35,7 @@ from nutripilot.agent.routing import (
 from nutripilot.agent.state import AgentState, state_identity
 from nutripilot.domain.enums import Intent, Phase
 from nutripilot.domain.execution import current_execution
-from nutripilot.domain.models import FinalResponse
+from nutripilot.domain.models import DietMemoryReference, FinalResponse
 from nutripilot.infrastructure.checkpointer import FencedCheckpointer
 from nutripilot.memory.nodes import MemoryNodes, finalized_update
 from nutripilot.model_gateway import ModelGateway
@@ -45,6 +47,9 @@ from nutripilot.model_gateway.budget import (
 from nutripilot.safety import OutputGuard, RiskGuard
 from nutripilot.tools import ToolExecutor
 from nutripilot.tracing import TraceRecorder
+
+if TYPE_CHECKING:
+    from nutripilot.application.diet_management import DietManagement
 
 
 class AgentGraph:
@@ -58,6 +63,7 @@ class AgentGraph:
         token_budget: int,
         memory: MemoryNodes,
         recursion_limit: int,
+        diet: DietManagement | None = None,
     ) -> None:
         self.compiled = compiled
         self.recorder = recorder
@@ -65,6 +71,7 @@ class AgentGraph:
         self.token_budget = token_budget
         self.memory = memory
         self.recursion_limit = recursion_limit
+        self.diet_commit = DietCommitNode(diet) if diet else None
 
     async def ainvoke(self, state: AgentState, config: dict[str, Any]) -> AgentState:
         config = {"recursion_limit": self.recursion_limit, **config}
@@ -195,6 +202,13 @@ class AgentGraph:
                 else "本次任务执行失败，请重试；已完成的数据写入仍保留。"
             ),
             suggested_actions=["缩小需求范围后重试"],
+            diet_context=(
+                DietMemoryReference(state="cancelled" if code == "CANCELLED" else "failed")
+                if state.get("intent") == Intent.DIET_MANAGEMENT.value
+                or state.get("diet_operation")
+                or state.get("pending_diet_preview_ref")
+                else None
+            ),
         )
         update: dict[str, Any] = {
             **state_identity(state),
@@ -231,6 +245,7 @@ def create_agent_graph(
     deadline_seconds: float = 90,
     token_budget: int = 24000,
     context_window: int = 32768,
+    diet: DietManagement | None = None,
 ) -> AgentGraph:
     """Build the deterministic graph with three online LLM Worker Agents."""
 
@@ -242,8 +257,8 @@ def create_agent_graph(
     blocked = BlockedResponseNode(recorder)
     scope = ScopeResponseNode(recorder)
     clarify = ClarifyNode(recorder)
-    tool = ToolExecutionNode(tool_executor, recorder)
-    confirmation = ConfirmationNode(recorder)
+    tool = ToolExecutionNode(tool_executor, recorder, diet)
+    confirmation = ConfirmationNode(recorder, diet)
     output = OutputGuardNode(OutputGuard(), recorder)
     budget = BudgetExceededNode(recorder)
     memory = MemoryNodes(gateway, recorder, context_window=context_window)
@@ -267,6 +282,11 @@ def create_agent_graph(
     graph.add_node("output_guard", output.run)
     graph.add_node("budget", budget.run)
     graph.add_node("tool_failure", tool_failure)
+    if diet is not None:
+        graph.add_node("diet_commit", DietCommitNode(diet).run)
+        graph.add_edge("diet_commit", "memory_finalize")
+        graph.add_node("diet_tools", DietToolsNode(diet, tool_executor, gateway).run)
+        graph.add_edge("diet_tools", "memory_finalize")
 
     graph.add_edge(START, "memory_load")
     graph.add_conditional_edges(
@@ -288,7 +308,8 @@ def create_agent_graph(
         if state.get("history_query") and not state.get("history_recalled")
         else route_after_intent(state),
         {"scope": "scope", "clarify": "clarify", "planner": "planner",
-         "recommendation": "recommendation", "history_recall": "history_recall"},
+         "recommendation": "recommendation", "history_recall": "history_recall",
+         "diet_tools": "diet_tools" if diet is not None else "scope"},
     )
     graph.add_edge("history_recall", "intent")
     graph.add_conditional_edges(
@@ -315,7 +336,9 @@ def create_agent_graph(
     graph.add_conditional_edges(
         "confirmation",
         route_after_confirmation,
-        {"tool": "tool", "end": "memory_finalize"},
+        {"tool": "tool", "end": "memory_finalize", **(
+            {"diet_commit": "diet_commit"} if diet is not None else {}
+        )},
     )
     graph.add_edge("recommendation", "output_guard")
     for node in ("blocked", "scope", "clarify", "output_guard", "budget", "tool_failure"):
@@ -329,6 +352,7 @@ def create_agent_graph(
         token_budget,
         memory,
         3 * max_tool_steps + 16,
+        diet,
     )
 
 

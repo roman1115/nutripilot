@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from typing import Any
 
@@ -20,6 +21,7 @@ from nutripilot.domain.execution import ExecutionOwnershipLost, current_executio
 from nutripilot.model_gateway.base import (
     GatewayResult,
     ModelGatewayError,
+    ModelImageInput,
     ModelOutputT,
     ModelUsage,
 )
@@ -65,6 +67,45 @@ class OpenAICompatibleModelGateway:
         response_model: type[ModelOutputT],
         prompt_version: str,
     ) -> GatewayResult[ModelOutputT]:
+        return await self._generate(
+            worker=worker,
+            system_prompt=system_prompt,
+            payload=payload,
+            response_model=response_model,
+            prompt_version=prompt_version,
+        )
+
+    async def generate_vision(
+        self,
+        *,
+        worker: str,
+        system_prompt: str,
+        payload: dict[str, Any],
+        images: list[ModelImageInput],
+        response_model: type[ModelOutputT],
+        prompt_version: str,
+    ) -> GatewayResult[ModelOutputT]:
+        if not 1 <= len(images) <= 4:
+            raise ModelGatewayError("INVALID_IMAGE_INPUT", "Expected one to four owned images.")
+        return await self._generate(
+            worker=worker,
+            system_prompt=system_prompt,
+            payload=payload,
+            images=images,
+            response_model=response_model,
+            prompt_version=prompt_version,
+        )
+
+    async def _generate(
+        self,
+        *,
+        worker: str,
+        system_prompt: str,
+        payload: dict[str, Any],
+        response_model: type[ModelOutputT],
+        prompt_version: str,
+        images: list[ModelImageInput] | None = None,
+    ) -> GatewayResult[ModelOutputT]:
         models = [self.primary_model]
         if self.fallback_model and self.fallback_model != self.primary_model:
             models.append(self.fallback_model)
@@ -81,7 +122,11 @@ class OpenAICompatibleModelGateway:
                     budget = current_budget()
                     completion_options: dict[str, Any] = {}
                     model_request = structured_request(
-                        worker, system_prompt, payload, response_model, prompt_version,
+                        worker,
+                        system_prompt,
+                        payload,
+                        response_model,
+                        prompt_version,
                         schema_feedback,
                     )
                     if budget:
@@ -94,7 +139,25 @@ class OpenAICompatibleModelGateway:
                             budget.remaining_tokens,
                             estimated + int(completion_options.get("max_tokens", 4096)),
                         )
+                        if images:
+                            # Unknown image tokenization requires reserving the entire cap.
+                            reserved = budget.remaining_tokens
                         await execution.reserve(reserved)
+                    if images:
+                        user_content = model_request["messages"][1]["content"]
+                        model_request["messages"][1]["content"] = [
+                            {"type": "text", "text": user_content},
+                            *(
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{image.mime};base64,"
+                                        + base64.b64encode(image.content).decode(),
+                                    },
+                                }
+                                for image in images
+                            ),
+                        ]
                     completion = await self.client.chat.completions.create(
                         model=model,
                         **model_request,
@@ -107,7 +170,8 @@ class OpenAICompatibleModelGateway:
                     total_output_tokens += output_tokens
                     if budget:
                         budget.add_usage(input_tokens, output_tokens)
-                        budget.observe_input(model_request, input_tokens)
+                        if not images:
+                            budget.observe_input(model_request, input_tokens)
                     if reserved and usage is not None and execution and execution.settle:
                         await execution.settle(reserved, input_tokens + output_tokens)
                     content = completion.choices[0].message.content
@@ -118,7 +182,8 @@ class OpenAICompatibleModelGateway:
                             retryable=True,
                         )
                     output = response_model.model_validate(
-                        json.loads(content), context={"payload": payload},
+                        json.loads(content),
+                        context={"payload": payload},
                     )
                     return GatewayResult(
                         output=output,
@@ -136,7 +201,8 @@ class OpenAICompatibleModelGateway:
                     schema_feedback = (
                         [
                             {
-                                "field": list(error["loc"]), "type": error["type"],
+                                "field": list(error["loc"]),
+                                "type": error["type"],
                                 "message": error["msg"],
                             }
                             for error in exc.errors()[:10]

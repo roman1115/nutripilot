@@ -46,6 +46,8 @@ class ChatRunService:
         request_key: str,
         approved: bool | None = None,
         confirmation_id: str | None = None,
+        preview_version: int | None = None,
+        content_hash: str | None = None,
     ) -> dict[str, Any]:
         kind = "chat" if approved is None else "confirmation"
         request_hash = self.store.request_hash(
@@ -55,6 +57,7 @@ class ChatRunService:
                 "kind": kind,
                 "approved": approved,
                 "confirmation_id": confirmation_id,
+                "preview_version": preview_version, "content_hash": content_hash,
             }
         )
         existing = await asyncio.to_thread(
@@ -73,10 +76,18 @@ class ChatRunService:
         else:
             previous = await self.chat.get_thread(user_id=user_id, thread_id=thread_id)
             calls = previous.get("pending_tool_calls", [])
+            diet_ref = previous.get("pending_diet_preview_ref")
+            if diet_ref:
+                await self.chat.validate_diet_confirmation(
+                    previous, confirmation_id=confirmation_id,
+                    preview_version=preview_version, content_hash=content_hash,
+                )
             if (
                 previous.get("phase") != "AWAITING_CONFIRMATION"
                 or not confirmation_id
-                or confirmation_id not in {str(call.get("call_id")) for call in calls}
+                or (not diet_ref and confirmation_id not in {
+                    str(call.get("call_id")) for call in calls
+                })
             ):
                 raise InvalidConfirmationStateError("确认已失效，请重新读取当前预览。")
             state = AgentState(

@@ -19,7 +19,10 @@ from nutripilot.agent.state import AgentState
 from nutripilot.api.schemas import ChatResponse
 from nutripilot.application.chat_runs import ChatRunService, response_message
 from nutripilot.application.chat_service import ChatService, ThreadNotFoundError
+from nutripilot.application.diet_privacy import DietPrivacyService
 from nutripilot.config import Settings
+from nutripilot.domain.diet import DietError
+from nutripilot.domain.diet_jobs import BackgroundJob, PurgePayload
 from nutripilot.domain.execution import (
     ExecutionOwnershipLost,
     RunExecution,
@@ -27,6 +30,8 @@ from nutripilot.domain.execution import (
 )
 from nutripilot.infrastructure.chat_tasks import ChatTaskStore
 from nutripilot.memory.nodes import finalized_update
+from nutripilot.model_gateway.base import ModelGatewayError
+from nutripilot.model_gateway.budget import ExecutionLimitExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +42,9 @@ class ChatWorker:
         self.active: dict[str, tuple[asyncio.Task[None], RunExecution, int]] = {}
         self.stopping = asyncio.Event()
         self.ready = asyncio.Event()
+        self.parsing = chat.diet_parsing
+        self.privacy = DietPrivacyService(self.parsing) if self.parsing else None
+        self.jobs_active: dict[str, tuple[asyncio.Task[None], RunExecution, BackgroundJob]] = {}
 
     async def run(self) -> None:
         lock = await asyncio.to_thread(self.store.worker_lock)
@@ -44,6 +52,8 @@ class ChatWorker:
             raise RuntimeError("该队列已有 Worker，不能启动第二个执行进程。")
         try:
             await asyncio.to_thread(self.store.recover)
+            if self.parsing:
+                await asyncio.to_thread(self.parsing.jobs.recover, startup=True)
             await asyncio.to_thread(self.store.heartbeat)
             self.ready.set()
             heartbeat_at = time.monotonic()
@@ -54,10 +64,20 @@ class ChatWorker:
                     await asyncio.to_thread(lock.commit)
                 if time.monotonic() - heartbeat_at >= 1:
                     await asyncio.to_thread(self.store.heartbeat)
+                    if self.parsing:
+                        for task, execution, job in self.jobs_active.values():
+                            if not task.done():
+                                try:
+                                    await asyncio.to_thread(self.parsing.jobs.heartbeat, job)
+                                except ExecutionOwnershipLost:
+                                    execution.suspend = True
+                                    task.cancel()
                     heartbeat_at = time.monotonic()
                 if time.monotonic() - cleanup_at >= 60:
                     try:
                         await ChatRunService(self.chat, self.store).purge_expired_threads()
+                        if self.privacy:
+                            await self.privacy.cleanup()
                     except Exception:
                         logger.exception("Conversation trash cleanup failed; will retry")
                     cleanup_at = time.monotonic()
@@ -77,7 +97,22 @@ class ChatWorker:
                         and not execution.finishing
                     ):
                         task.cancel()
-                while len(self.active) < self.settings.chat_concurrency:
+                for job_id, (task, _, _) in list(self.jobs_active.items()):
+                    if task.done():
+                        task.result()
+                        del self.jobs_active[job_id]
+                if self.parsing:
+                    maintenance = await asyncio.to_thread(self.parsing.jobs.claim_maintenance)
+                    if maintenance is not None:
+                        await self._start_job(maintenance)
+                while (
+                    len(self.active)
+                    + sum(
+                        job.kind in ("parse_text", "parse_image")
+                        for _, _, job in self.jobs_active.values()
+                    )
+                    < self.settings.chat_concurrency
+                ):
                     row = await asyncio.to_thread(
                         self.store.claim,
                         self.settings.chat_concurrency,
@@ -86,6 +121,15 @@ class ChatWorker:
                         tuple(self.active),
                     )
                     if row is None:
+                        if self.parsing:
+                            claimed_job = await asyncio.to_thread(
+                                self.parsing.jobs.claim,
+                                self.settings.chat_concurrency,
+                                self.settings.chat_user_concurrency,
+                            )
+                            if claimed_job is not None:
+                                await self._start_job(claimed_job)
+                                continue
                         break
                     run_id, version = row["id"], row["version"]
 
@@ -120,11 +164,82 @@ class ChatWorker:
         for task, execution, _ in self.active.values():
             execution.suspend = True
             task.cancel()
+        for task, execution, _ in self.jobs_active.values():
+            execution.suspend = True
+            task.cancel()
         if self.active:
             await asyncio.gather(
                 *(entry[0] for entry in self.active.values()), return_exceptions=True
             )
         self.active.clear()
+        if self.jobs_active:
+            await asyncio.gather(
+                *(entry[0] for entry in self.jobs_active.values()), return_exceptions=True
+            )
+        self.jobs_active.clear()
+
+    async def _start_job(self, job: BackgroundJob) -> None:
+        assert self.parsing is not None
+        jobs = self.parsing.jobs
+
+        async def reserve(tokens: int) -> None:
+            await asyncio.to_thread(jobs.account, job, tokens)
+
+        async def settle(reserved: int, used: int) -> None:
+            await asyncio.to_thread(jobs.account, job, reserved, used)
+
+        execution = RunExecution(fence=partial(jobs.fence, job), reserve=reserve, settle=settle)
+        task = asyncio.create_task(self._execute_job(job, execution), name=f"diet:{job.id}")
+        self.jobs_active[str(job.id)] = task, execution, job
+
+    async def _execute_job(self, job: BackgroundJob, execution: RunExecution) -> None:
+        assert self.parsing is not None
+        handle = current_execution.set(execution)
+        try:
+            if job.kind == "export":
+                assert self.privacy is not None
+                artifact = await self.privacy.execute_export(job)
+                await self._finish_job(job, artifact=artifact)
+            elif job.kind == "purge":
+                assert self.privacy is not None
+                assert isinstance(job.payload, PurgePayload)
+                await self.privacy.execute_purge(job)
+                await self._finish_job(job, refs=job.payload.refs)
+            else:
+                result, refs = await self.parsing.execute(job)
+                await self._finish_job(job, result=result, refs=refs)
+        except asyncio.CancelledError:
+            if not execution.suspend:
+                await asyncio.to_thread(self.parsing.jobs.cancel, job.id, job.user_id)
+        except ExecutionOwnershipLost:
+            pass
+        except (DietError, ModelGatewayError, ExecutionLimitExceeded, TimeoutError) as exc:
+            code = exc.code if hasattr(exc, "code") else "MODEL_TIMEOUT"
+            with suppress(ExecutionOwnershipLost):
+                if isinstance(exc, (ModelGatewayError, TimeoutError)) and (
+                    isinstance(exc, TimeoutError) or exc.retryable
+                ):
+                    await asyncio.to_thread(self.parsing.jobs.retry, job, code)
+                else:
+                    await self._finish_job(job, error=code)
+        except Exception:
+            logger.error("Diet task failed: %s", job.id)
+            with suppress(ExecutionOwnershipLost):
+                await self._finish_job(job, error="EXECUTION_FAILED")
+        finally:
+            current_execution.reset(handle)
+
+    async def _finish_job(self, job: BackgroundJob, **values: Any) -> None:
+        assert self.parsing is not None
+        delay = 0.1
+        while True:
+            try:
+                await asyncio.to_thread(self.parsing.jobs.finish, job, **values)
+                return
+            except (OperationalError, InterfaceError):
+                logger.warning("Diet task finalization unavailable; retrying: %s", job.id)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 5)
 
     async def _execute(self, row: dict[str, Any], execution: RunExecution) -> None:
         state = cast("AgentState", row["state"])
@@ -149,6 +264,8 @@ class ChatWorker:
                 )
                 prepared["run_id"] = row["id"]
                 prepared["current_date"] = state["current_date"]
+                if state.get("diet_submission_anchor"):
+                    prepared["diet_submission_anchor"] = state["diet_submission_anchor"]
                 state = prepared
             if completed_checkpoint:
                 if previous.get("memory_finalized_run_id") != row["id"]:
@@ -217,8 +334,11 @@ class ChatWorker:
                     await self._finish(row)
         except ExecutionOwnershipLost:
             pass
-        except Exception:
-            logger.exception("Chat execution failed: %s", row["id"])
+        except Exception as exc:
+            if isinstance(exc, ModelGatewayError):
+                logger.error("Chat model failed: %s (%s)", row["id"], exc.code)
+            else:
+                logger.exception("Chat execution failed: %s", row["id"])
             if not execution.suspend and not execution.finishing:
                 with CancelScope(shield=True):
                     try:
@@ -236,12 +356,15 @@ class ChatWorker:
                 await self._finish_once(row)
                 return
             except (
-                OperationalError, InterfaceError,
-                CheckpointOperationalError, CheckpointInterfaceError,
+                OperationalError,
+                InterfaceError,
+                CheckpointOperationalError,
+                CheckpointInterfaceError,
             ) as exc:
                 logger.warning(
                     "Final result persistence failed; retrying: %s (%s)",
-                    row["id"], type(exc).__name__,
+                    row["id"],
+                    type(exc).__name__,
                 )
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 5)
@@ -252,7 +375,9 @@ class ChatWorker:
         )
         state = checkpoint.values
         if (
-            not state or state.get("run_id") != row["id"] or checkpoint.next
+            not state
+            or state.get("run_id") != row["id"]
+            or checkpoint.next
             or state.get("memory_finalized_run_id") != row["id"]
         ):
             raise RuntimeError("Missing completed execution checkpoint or memory finalization.")

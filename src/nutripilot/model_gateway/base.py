@@ -2,11 +2,31 @@
 
 from __future__ import annotations
 
-from typing import Any, Generic, Protocol, TypeVar
+from typing import Any, Generic, Literal, Protocol, TypeVar
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 ModelOutputT = TypeVar("ModelOutputT", bound=BaseModel)
+
+
+class ModelImageInput(BaseModel):
+    media_id: UUID
+    mime: Literal["image/jpeg", "image/png", "image/webp"]
+    content: bytes = Field(min_length=1, max_length=10485760, repr=False)
+
+
+class VisionGateway(Protocol):
+    async def generate_vision(
+        self,
+        *,
+        worker: str,
+        system_prompt: str,
+        payload: dict[str, Any],
+        images: list[ModelImageInput],
+        response_model: type[ModelOutputT],
+        prompt_version: str,
+    ) -> GatewayResult[ModelOutputT]: ...
 
 
 class ModelUsage(BaseModel):

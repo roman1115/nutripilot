@@ -9,12 +9,18 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
 from nutripilot.domain.execution import current_execution
-from nutripilot.model_gateway.base import GatewayResult, ModelGateway, ModelOutputT
+from nutripilot.model_gateway.base import (
+    GatewayResult,
+    ModelGateway,
+    ModelImageInput,
+    ModelOutputT,
+    VisionGateway,
+)
 
 
 class ExecutionLimitExceeded(RuntimeError):
@@ -48,20 +54,40 @@ class ExecutionBudget:
         self.output_tokens += output_tokens
 
     def estimate_input(self, request: object) -> int:
-        base = max(1, len(json.dumps(
-            request, ensure_ascii=False, default=str, separators=(",", ":"),
-        ).encode()) // 2)
-        ratio = min(1.0, self.observed_input_ratio * 1.2) if (
-            self.observed_input_ratio is not None
-        ) else 1.0
+        base = max(
+            1,
+            len(
+                json.dumps(
+                    request,
+                    ensure_ascii=False,
+                    default=str,
+                    separators=(",", ":"),
+                ).encode()
+            )
+            // 2,
+        )
+        ratio = (
+            min(1.0, self.observed_input_ratio * 1.2)
+            if (self.observed_input_ratio is not None)
+            else 1.0
+        )
         return math.ceil(base * ratio)
 
     def observe_input(self, request: object, actual_tokens: int) -> None:
         if actual_tokens <= 0:
             return
-        base = max(1, len(json.dumps(
-            request, ensure_ascii=False, default=str, separators=(",", ":"),
-        ).encode()) // 2)
+        base = max(
+            1,
+            len(
+                json.dumps(
+                    request,
+                    ensure_ascii=False,
+                    default=str,
+                    separators=(",", ":"),
+                ).encode()
+            )
+            // 2,
+        )
         ratio = actual_tokens / base
         self.observed_input_ratio = max(self.observed_input_ratio or 0, ratio)
 
@@ -79,8 +105,11 @@ class ExecutionBudget:
 
 
 def structured_request(
-    worker: str, system_prompt: str, payload: dict[str, Any],
-    response_model: type[BaseModel], prompt_version: str,
+    worker: str,
+    system_prompt: str,
+    payload: dict[str, Any],
+    response_model: type[BaseModel],
+    prompt_version: str,
     schema_feedback: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Use the same serialized envelope for preflight and the provider request."""
@@ -95,11 +124,18 @@ def structured_request(
             },
             {
                 "role": "user",
-                "content": json.dumps({
-                    "worker": worker, "prompt_version": prompt_version, "input": payload,
-                    "output_schema": response_model.model_json_schema(),
-                    "schema_feedback": schema_feedback or [],
-                }, ensure_ascii=False, default=str, separators=(",", ":")),
+                "content": json.dumps(
+                    {
+                        "worker": worker,
+                        "prompt_version": prompt_version,
+                        "input": payload,
+                        "output_schema": response_model.model_json_schema(),
+                        "schema_feedback": schema_feedback or [],
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                    separators=(",", ":"),
+                ),
             },
         ],
         "response_format": {"type": "json_object"},
@@ -130,10 +166,15 @@ def model_allocation(*, output_tokens: int) -> Iterator[None]:
 
 @contextmanager
 def execution_budget(
-    *, seconds: float, tokens: int, context_window: int = 32768,
+    *,
+    seconds: float,
+    tokens: int,
+    context_window: int = 32768,
 ) -> Iterator[ExecutionBudget]:
     budget = ExecutionBudget(
-        deadline=time.monotonic() + seconds, token_limit=tokens, context_window=context_window,
+        deadline=time.monotonic() + seconds,
+        token_limit=tokens,
+        context_window=context_window,
     )
     handle = _CURRENT.set(budget)
     try:
@@ -145,6 +186,48 @@ def execution_budget(
 class BudgetedModelGateway:
     def __init__(self, delegate: ModelGateway) -> None:
         self.delegate = delegate
+
+    async def generate_vision(
+        self,
+        *,
+        worker: str,
+        system_prompt: str,
+        payload: dict[str, Any],
+        images: list[ModelImageInput],
+        response_model: type[ModelOutputT],
+        prompt_version: str,
+    ) -> GatewayResult[ModelOutputT]:
+        budget = current_budget()
+        accounts = getattr(self.delegate, "accounts_usage", False)
+        execution = current_execution.get()
+        reserved = 0
+        if budget:
+            budget.check()
+            budget.completion_limit(
+                structured_request(
+                    worker,
+                    system_prompt,
+                    payload,
+                    response_model,
+                    prompt_version,
+                )
+            )
+            if execution and execution.reserve and not accounts:
+                reserved = budget.remaining_tokens
+                await execution.reserve(reserved)
+        result = await cast("VisionGateway", self.delegate).generate_vision(
+            worker=worker,
+            system_prompt=system_prompt,
+            payload=payload,
+            images=images,
+            response_model=response_model,
+            prompt_version=prompt_version,
+        )
+        if budget and not accounts:
+            budget.add_usage(result.usage.input_tokens, result.usage.output_tokens)
+            if reserved and execution and execution.settle:
+                await execution.settle(reserved, result.usage.total_tokens)
+        return result
 
     async def generate_structured(
         self,
@@ -158,9 +241,15 @@ class BudgetedModelGateway:
         budget = current_budget()
         if budget:
             budget.check()
-            budget.completion_limit(structured_request(
-                worker, system_prompt, payload, response_model, prompt_version,
-            ))
+            budget.completion_limit(
+                structured_request(
+                    worker,
+                    system_prompt,
+                    payload,
+                    response_model,
+                    prompt_version,
+                )
+            )
         execution = current_execution.get()
         reserved = 0
         if (

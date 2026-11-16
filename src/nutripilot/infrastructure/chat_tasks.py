@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from pydantic import BaseModel
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
@@ -75,7 +75,9 @@ class QueueFullError(RuntimeError):
 
 def _json(value: Any) -> str:
     return json.dumps(
-        value, ensure_ascii=False, separators=(",", ":"),
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
         default=lambda item: (
             item.model_dump(mode="json") if isinstance(item, BaseModel) else str(item)
         ),
@@ -88,6 +90,7 @@ class ChatTaskStore:
         self.queue = queue
         self.postgres = engine.dialect.name == "postgresql"
         self._mutex = threading.Lock()
+        self.background_jobs_enabled = False
 
     @classmethod
     def create(cls, database_url: str | None = None, queue: str = "default") -> ChatTaskStore:
@@ -217,7 +220,8 @@ class ChatTaskStore:
             text(
                 "SELECT user_id FROM chat_threads WHERE thread_id=:id "
                 "AND NOT EXISTS (SELECT 1 FROM chat_thread_trash WHERE thread_id=:id)"
-            ), {"id": thread_id}
+            ),
+            {"id": thread_id},
         ).scalar()
         if owner is None or owner != user_id:
             raise ThreadNotFoundError(thread_id)
@@ -234,9 +238,12 @@ class ChatTaskStore:
             ),
             {"id": thread_id, "user": user_id, "title": message.content[:80], "now": now},
         ).scalar()
-        if inserted_thread and connection.execute(
-            text("SELECT 1 FROM chat_history_imports WHERE thread_id=:id"), {"id": thread_id}
-        ).first():
+        if (
+            inserted_thread
+            and connection.execute(
+                text("SELECT 1 FROM chat_history_imports WHERE thread_id=:id"), {"id": thread_id}
+            ).first()
+        ):
             raise ThreadNotFoundError(thread_id)
         if self.postgres:
             connection.execute(
@@ -245,7 +252,8 @@ class ChatTaskStore:
             )
         self._owner(connection, user_id, thread_id)
         existing = connection.execute(
-            text("SELECT thread_id,payload FROM chat_messages WHERE id=:id"), {"id": message.id},
+            text("SELECT thread_id,payload FROM chat_messages WHERE id=:id"),
+            {"id": message.id},
         ).first()
         if existing is not None:
             if existing[0] != thread_id or ConversationMessage.model_validate_json(
@@ -281,8 +289,7 @@ class ChatTaskStore:
     ) -> list[ConversationSummary]:
         escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         visibility = (
-            "t.deleted_at > :cutoff AND t.purging=FALSE"
-            if trashed else "t.thread_id IS NULL"
+            "t.deleted_at > :cutoff AND t.purging=FALSE" if trashed else "t.thread_id IS NULL"
         )
         ordering = "t.deleted_at" if trashed else "c.updated_at"
         with self.transaction() as connection:
@@ -328,12 +335,13 @@ class ChatTaskStore:
                         run_status=status,
                         deleted_at=(
                             datetime.fromtimestamp(row["deleted_at"], UTC)
-                            if row["deleted_at"] is not None else None
+                            if row["deleted_at"] is not None
+                            else None
                         ),
                         expires_at=(
-                            datetime.fromtimestamp(
-                                row["deleted_at"] + TRASH_RETENTION_SECONDS, UTC
-                            ) if row["deleted_at"] is not None else None
+                            datetime.fromtimestamp(row["deleted_at"] + TRASH_RETENTION_SECONDS, UTC)
+                            if row["deleted_at"] is not None
+                            else None
                         ),
                     )
                 )
@@ -344,20 +352,16 @@ class ChatTaskStore:
     ) -> list[ConversationMessage]:
         with self.transaction() as connection:
             self._owner(connection, user_id, thread_id)
-            rows = (
-                connection.execute(
-                    text(
-                        "SELECT payload,position FROM chat_messages WHERE thread_id=:id "
-                        "ORDER BY position LIMIT :limit OFFSET :offset"
-                    ),
-                    {"id": thread_id, "limit": limit, "offset": offset},
-                )
-                .all()
-            )
+            rows = connection.execute(
+                text(
+                    "SELECT payload,position FROM chat_messages WHERE thread_id=:id "
+                    "ORDER BY position LIMIT :limit OFFSET :offset"
+                ),
+                {"id": thread_id, "limit": limit, "offset": offset},
+            ).all()
         return [
-            ConversationMessage.model_validate_json(row[0]).model_copy(
-                update={"position": row[1]}
-            ) for row in rows
+            ConversationMessage.model_validate_json(row[0]).model_copy(update={"position": row[1]})
+            for row in rows
         ]
 
     def after_position(
@@ -373,9 +377,31 @@ class ChatTaskStore:
                 {"id": thread_id, "after": after, "limit": limit},
             ).all()
         return [
-            ConversationMessage.model_validate_json(row[0]).model_copy(
-                update={"position": row[1]}
-            ) for row in rows
+            ConversationMessage.model_validate_json(row[0]).model_copy(update={"position": row[1]})
+            for row in rows
+        ]
+
+    def turn_messages(
+        self, user_id: int, thread_id: str, turn_id: str
+    ) -> list[ConversationMessage]:
+        with self.transaction() as connection:
+            self._owner(connection, user_id, thread_id)
+            rows = connection.execute(
+                text(
+                    "SELECT payload,position FROM chat_messages "
+                    "WHERE thread_id=:id AND (id=:turn OR substr(id,1,:length)=:prefix) "
+                    "ORDER BY position"
+                ),
+                {
+                    "id": thread_id, "turn": turn_id,
+                    "length": len(turn_id) + 1, "prefix": turn_id + ":",
+                },
+            ).all()
+        return [
+            item.model_copy(update={"position": row[1]})
+            for row in rows
+            if (item := ConversationMessage.model_validate_json(row[0])).id.rsplit(":", 1)[0]
+            == turn_id
         ]
 
     def search_messages(
@@ -400,18 +426,20 @@ class ChatTaskStore:
                 {"user": user_id, "thread": thread_id, "query": f"%{escaped}%", "limit": limit},
             ).all()
         return [
-            HistoryMatch(thread_id=row[0], message=ConversationMessage.model_validate_json(
-                row[1],
-            ).model_copy(update={"position": row[2]})) for row in rows
+            HistoryMatch(
+                thread_id=row[0],
+                message=ConversationMessage.model_validate_json(
+                    row[1],
+                ).model_copy(update={"position": row[2]}),
+            )
+            for row in rows
         ]
 
     def delete_thread(self, user_id: int, thread_id: str) -> None:
         with self.transaction() as connection:
             suffix = " FOR UPDATE" if self.postgres else ""
             thread = connection.execute(
-                text(
-                    "SELECT user_id FROM chat_threads WHERE thread_id=:id" + suffix
-                ),
+                text("SELECT user_id FROM chat_threads WHERE thread_id=:id" + suffix),
                 {"id": thread_id},
             ).scalar()
             if thread is None or thread != user_id:
@@ -436,16 +464,21 @@ class ChatTaskStore:
     def restore_thread(self, user_id: int, thread_id: str) -> None:
         with self.transaction() as connection:
             suffix = " FOR UPDATE OF c,t" if self.postgres else ""
-            row = connection.execute(
-                text(
-                    "SELECT t.deleted_at,t.purging FROM chat_threads c "
-                    "JOIN chat_thread_trash t ON t.thread_id=c.thread_id "
-                    "WHERE c.thread_id=:id AND c.user_id=:user" + suffix
-                ),
-                {"id": thread_id, "user": user_id},
-            ).mappings().first()
+            row = (
+                connection.execute(
+                    text(
+                        "SELECT t.deleted_at,t.purging FROM chat_threads c "
+                        "JOIN chat_thread_trash t ON t.thread_id=c.thread_id "
+                        "WHERE c.thread_id=:id AND c.user_id=:user" + suffix
+                    ),
+                    {"id": thread_id, "user": user_id},
+                )
+                .mappings()
+                .first()
+            )
             if (
-                row is None or row["purging"]
+                row is None
+                or row["purging"]
                 or row["deleted_at"] <= time.time() - TRASH_RETENTION_SECONDS
             ):
                 raise ThreadNotFoundError(thread_id)
@@ -456,13 +489,17 @@ class ChatTaskStore:
     def claim_expired_threads(self, limit: int = 100) -> list[str]:
         with self.transaction() as connection:
             suffix = " FOR UPDATE SKIP LOCKED" if self.postgres else ""
-            rows = connection.execute(
-                text(
-                    "SELECT thread_id FROM chat_thread_trash WHERE deleted_at<=:cutoff "
-                    "ORDER BY deleted_at,thread_id LIMIT :limit" + suffix
-                ),
-                {"cutoff": time.time() - TRASH_RETENTION_SECONDS, "limit": limit},
-            ).scalars().all()
+            rows = (
+                connection.execute(
+                    text(
+                        "SELECT thread_id FROM chat_thread_trash WHERE deleted_at<=:cutoff "
+                        "ORDER BY deleted_at,thread_id LIMIT :limit" + suffix
+                    ),
+                    {"cutoff": time.time() - TRASH_RETENTION_SECONDS, "limit": limit},
+                )
+                .scalars()
+                .all()
+            )
             for thread_id in rows:
                 connection.execute(
                     text("UPDATE chat_thread_trash SET purging=TRUE WHERE thread_id=:id"),
@@ -545,6 +582,15 @@ class ChatTaskStore:
                     ),
                     {"queue": self.queue, "user": user_id},
                 ).scalar_one()
+                if self.background_jobs_enabled:
+                    count += connection.execute(
+                        text(
+                            "SELECT COUNT(*) FROM background_jobs "
+                            "WHERE queue=:queue AND user_id=:user "
+                            "AND state IN ('queued','running')"
+                        ),
+                        {"queue": self.queue, "user": user_id},
+                    ).scalar_one()
                 if count >= max_queued:
                     raise QueueFullError("待处理任务已达上限，请等待完成或停止部分任务。")
                 owner = connection.execute(
@@ -751,6 +797,17 @@ class ChatTaskStore:
                 {"queue": self.queue},
             ).all()
             running = [row[1] for row in active_rows if row[2] == "running" or row[0] in excluded]
+            if self.background_jobs_enabled:
+                running.extend(
+                    connection.execute(
+                        text(
+                            "SELECT user_id FROM background_jobs "
+                            "WHERE queue=:queue AND state='running' "
+                            "AND kind IN ('parse_text','parse_image')"
+                        ),
+                        {"queue": self.queue},
+                    ).scalars()
+                )
             if len(running) >= concurrency:
                 return None
             rows = (
@@ -774,6 +831,31 @@ class ChatTaskStore:
             )
             if row is None:
                 return None
+            if self.background_jobs_enabled:
+                from nutripilot.infrastructure.background_jobs import jobs
+
+                active_jobs = list(
+                    connection.execute(
+                        select(jobs.c.user_id).where(
+                            jobs.c.queue == self.queue,
+                            jobs.c.state == "running",
+                            jobs.c.kind.in_(("parse_text", "parse_image")),
+                        )
+                    ).scalars()
+                )
+                older = connection.execute(
+                    select(jobs.c.user_id).where(
+                        jobs.c.queue == self.queue,
+                        jobs.c.state == "queued",
+                            jobs.c.kind.in_(("parse_text", "parse_image")),
+                        jobs.c.created_at < datetime.fromtimestamp(row["created_at"], UTC),
+                        jobs.c.available_at <= datetime.now(UTC),
+                    )
+                ).scalars()
+                if any(
+                    owner not in active_jobs and running.count(owner) < per_user for owner in older
+                ):
+                    return None
             cancelled = row["status"] == "cancelling"
             now = time.time()
             row.update(
@@ -914,15 +996,17 @@ class ChatTaskStore:
                 "JOIN conversation_messages m ON m.thread_id=c.thread_id ORDER BY m.sequence"
             ).fetchall()
         with self.transaction() as connection:
-            imported = set(connection.execute(
-                text("SELECT thread_id FROM chat_history_imports")
-            ).scalars())
-            visible = set(connection.execute(
-                text(
-                    "SELECT thread_id FROM chat_threads c WHERE NOT EXISTS "
-                    "(SELECT 1 FROM chat_thread_trash t WHERE t.thread_id=c.thread_id)"
-                )
-            ).scalars())
+            imported = set(
+                connection.execute(text("SELECT thread_id FROM chat_history_imports")).scalars()
+            )
+            visible = set(
+                connection.execute(
+                    text(
+                        "SELECT thread_id FROM chat_threads c WHERE NOT EXISTS "
+                        "(SELECT 1 FROM chat_thread_trash t WHERE t.thread_id=c.thread_id)"
+                    )
+                ).scalars()
+            )
             for user_id, thread_id, payload in rows:
                 if thread_id in imported and thread_id not in visible:
                     continue

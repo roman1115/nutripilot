@@ -67,6 +67,15 @@ function baseHeaders(): HeadersInit {
   };
 }
 
+export async function privateResponse(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(baseHeaders());
+  if (init.body instanceof FormData) headers.delete("Content-Type");
+  new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+  const response = await fetch(endpoint(path), { ...init, headers });
+  if (!response.ok) throw await readError(response);
+  return response;
+}
+
 async function readError(response: Response): Promise<ApiError> {
   let details: unknown;
   try {
@@ -75,8 +84,9 @@ async function readError(response: Response): Promise<ApiError> {
     details = await response.text().catch(() => undefined);
   }
   const record = asRecord(details);
+  const structuredDetail = asRecord(record.detail);
   const message =
-    firstString(record.detail, record.message, record.error) ||
+    firstString(record.detail, structuredDetail.message, record.message, record.error) ||
     `请求失败（HTTP ${response.status}）`;
   return new ApiError(message, response.status, details);
 }
@@ -220,11 +230,15 @@ export async function submitChat(
 
 export async function submitConfirmation(
   threadId: string, approved: boolean, confirmationId: string, requestId: string,
+  preview?: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   return apiRequest(`/api/v1/threads/${encodeURIComponent(threadId)}/confirm`, {
     method: "POST",
     body: JSON.stringify({
       approved, confirmation_id: confirmationId, request_id: requestId,
+      ...(confirmationId.startsWith("diet:") ? {
+        preview_version: preview?.preview_version, content_hash: preview?.content_hash,
+      } : {}),
     }),
   });
 }
@@ -388,8 +402,6 @@ export async function updateProfile(profile: UserProfile): Promise<UserProfile> 
       avoidances: profile.avoidances,
       allergens: profile.allergens,
       dietary_restrictions: profile.dietaryRestrictions,
-      daily_calorie_target: profile.dailyCalorieTarget ?? null,
-      daily_protein_target_g: profile.dailyProteinTarget ?? null,
       location: profile.location || undefined,
     }),
   });

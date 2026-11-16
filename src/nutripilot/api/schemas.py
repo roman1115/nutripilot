@@ -29,6 +29,8 @@ class RunConfirmationRequest(BaseModel):
     approved: bool
     confirmation_id: str = Field(min_length=1, max_length=200)
     request_id: str = Field(min_length=1, max_length=100)
+    preview_version: int | None = Field(default=None, ge=1)
+    content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class ConfirmationRequest(BaseModel):
@@ -36,6 +38,8 @@ class ConfirmationRequest(BaseModel):
     approved: bool
     confirmation_id: str | None = None
     idempotency_key: str | None = None
+    preview_version: int | None = Field(default=None, ge=1)
+    content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class PendingAction(BaseModel):
@@ -67,6 +71,22 @@ class ChatResponse(BaseModel):
         raw = state.get("final_response")
         pending_calls = state.get("pending_tool_calls", [])
         pending_action = None
+        diet_ref = state.get("pending_diet_preview_ref")
+        if state.get("requires_confirmation") and diet_ref:
+            from nutripilot.agent.nodes.diet import confirmation_id
+
+            pending_action = PendingAction(
+                id=confirmation_id(diet_ref),
+                title="确认饮食变更",
+                description="请核对当前预览，确认后才保存正式数据。",
+                operation="diet_preview",
+                idempotency_key=confirmation_id(diet_ref),
+                payload={
+                    "preview_id": diet_ref["id"],
+                    "preview_version": diet_ref["version"],
+                    "content_hash": diet_ref["hash"],
+                },
+            )
         if state.get("requires_confirmation") and pending_calls:
             call = pending_calls[0]
             call_id = str(call.get("call_id", ""))
@@ -143,15 +163,15 @@ class ProfileUpdateRequest(BaseModel):
     location: str | None = None
 
     def to_domain(self) -> UpdateUserProfileArgs:
-        return UpdateUserProfileArgs(
-            display_name=self.display_name,
-            preferences=self.tastes,
-            cuisines=self.cuisines,
-            dislikes=self.avoidances,
-            allergens=self.allergens,
-            health_goals=self.goals,
-            dietary_tags=self.dietary_restrictions,
-            daily_calorie_target=self.daily_calorie_target,
-            daily_protein_target_g=self.daily_protein_target_g,
-            location=self.location,
+        mapping = {
+            "tastes": "preferences",
+            "avoidances": "dislikes",
+            "goals": "health_goals",
+            "dietary_restrictions": "dietary_tags",
+        }
+        return UpdateUserProfileArgs.model_validate(
+            {
+                mapping.get(field, field): value
+                for field, value in self.model_dump(exclude_unset=True).items()
+            }
         )

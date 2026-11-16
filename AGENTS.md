@@ -7,9 +7,13 @@
 
 ## 项目边界
 
-- 这是面向日常饮食决策的个人展示项目，不提供疾病诊断、治疗或医疗处方。
+- 这是面向日常饮食决策与饮食管理的产品，目标是达到 CookHero 同等级的产品完整度，不再以个人展示为范围上限；不提供疾病诊断、治疗或医疗处方。
 - 保持现有 Python、LangGraph、FastAPI、React/TypeScript 和 MCP 技术栈；避免无需求地增加依赖或拆分服务。
 - 先阅读相关实现、测试及 `CURRENT_STATUS.md`，沿用现有模块边界和模式。
+- 饮食管理后续实现以[实施基线](docs/diet-management-implementation-spec-2026-11-11.md)
+  及其[工具Schema](docs/specs/diet-management.schema.json)为准，开始前必须阅读。
+  按W01–W08依赖推进，D01–D09全部验收才称完整交付；不得自行改成精简首版。
+  变更范围、数据/确认语义或契约时同步更新基线、样例与验收，不以旧讨论覆盖新基线。
 
 ## 数据与安全
 

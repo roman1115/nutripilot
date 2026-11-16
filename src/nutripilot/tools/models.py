@@ -7,9 +7,11 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from nutripilot.domain.diet import SubmissionAnchor
 
 
 class ToolAccess(StrEnum):
@@ -144,6 +146,8 @@ class ToolCall(BaseModel):
 
 @dataclass(slots=True)
 class ToolContext:
+    submission_anchor: SubmissionAnchor | None = None
+    source_message: str | None = None
     user_id: int | None = None
     trace_id: str | None = None
     thread_id: str | None = None
@@ -191,6 +195,8 @@ class ToolDefinition:
     schema_version: str = "1.0.0"
     implementation_version: str = "1.0.0"
     source: str = "local"
+    idempotency_backend: Literal["redis", "database"] = "redis"
+    private_arguments: bool = False
 
     def json_schema(self) -> dict[str, Any]:
         return self.arguments_model.model_json_schema()

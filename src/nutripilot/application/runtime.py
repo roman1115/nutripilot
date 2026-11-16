@@ -9,19 +9,24 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from apps.nutrition_mcp.service import NutritionMCPService
+from sqlalchemy import text
 
 from nutripilot.agent import create_agent_graph
 from nutripilot.application.chat_runs import ChatRunService
 from nutripilot.application.chat_service import ChatService
+from nutripilot.application.diet_management import DietManagement
 from nutripilot.application.evaluation_service import EvaluationService
 from nutripilot.evaluation import EvalRunner
 from nutripilot.infrastructure import PostgresDataStore, RedisTTLStore, StaticWeatherProvider
 from nutripilot.infrastructure.chat_tasks import ChatTaskStore
+from nutripilot.infrastructure.diet_deletions import DeletionJournal
+from nutripilot.infrastructure.diet_store import PostgresDietStore
 from nutripilot.infrastructure.memory import load_seed_store
 from nutripilot.paths import project_root
 from nutripilot.retrieval import RetrievalService
 from nutripilot.tools import ToolExecutor, ToolRegistry
 from nutripilot.tools.local import register_local_tools
+from nutripilot.tools.local.diet import register_diet_tools
 from nutripilot.tools.mcp import (
     InProcessMCPTransport,
     MCPToolAdapter,
@@ -47,6 +52,7 @@ async def start_container(container: ApplicationContainer) -> None:
         container.chat_runs = ChatRunService(
             container.chat_service, tasks, container.settings.chat_max_queued
         )
+        await _setup_diet_jobs(container, tasks)
         container.evaluation_service.runner = EvalRunner(
             container.chat_service, container.chat_runs, meal_repository=container.data_store
         )
@@ -68,7 +74,22 @@ async def start_container(container: ApplicationContainer) -> None:
         await redis_store.client.ping()
         stack.push_async_callback(redis_store.close)
 
-        registry = register_local_tools(ToolRegistry(), store, StaticWeatherProvider())
+        from nutripilot.infrastructure.diet_foods import CatalogDietFoodResolver
+
+        deletion_journal = DeletionJournal(
+            Path(container.settings.diet_deletion_journal_root)
+            if container.settings.diet_deletion_journal_root
+            else project_root() / ".runtime/diet_deletions"
+        )
+        deletion_journal.assert_ready()
+        diet = DietManagement(
+            PostgresDietStore(store.engine, deletion_journal),
+            CatalogDietFoodResolver(container.food_catalog, store),
+            default_timezone=container.settings.user_timezone,
+            cursor_secret=container.diet.queries.cursor_secret,
+        )
+        registry = register_local_tools(ToolRegistry(), store, StaticWeatherProvider(), diet=diet)
+        register_diet_tools(registry, diet)
         transport: MCPTransport
         if container.settings.mcp_enabled:
             transport = StreamableHTTPMCPTransport(
@@ -92,7 +113,18 @@ async def start_container(container: ApplicationContainer) -> None:
             max_steps=container.settings.agent_max_steps,
         )
         checkpointer = await stack.enter_async_context(_postgres_checkpointer(container))
-        await checkpointer.setup()
+        # API and Worker can first-start together; PostgreSQL IF NOT EXISTS is not a DDL lock.
+        async with store.engine.connect() as connection:
+            connection = await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await connection.execute(text("SELECT pg_advisory_lock(1878765101)"))
+            try:
+                await checkpointer.setup()
+            finally:
+                try:
+                    await connection.execute(text("SELECT pg_advisory_unlock(1878765101)"))
+                except BaseException:
+                    await connection.invalidate()
+                    raise
         graph = create_agent_graph(
             gateway=container.gateway,
             tool_executor=executor,
@@ -102,6 +134,7 @@ async def start_container(container: ApplicationContainer) -> None:
             deadline_seconds=container.settings.agent_deadline_seconds,
             token_budget=container.settings.agent_token_budget,
             context_window=container.settings.model_context_window,
+            diet=diet,
         )
         tasks = ChatTaskStore.create(container.settings.database_url, container.settings.chat_queue)
         await asyncio.to_thread(tasks.initialize)
@@ -115,12 +148,14 @@ async def start_container(container: ApplicationContainer) -> None:
         )
 
         container.data_store = store
+        container.diet = diet
         container.tool_executor = executor
         container.graph = graph
         container.chat_service = chat_service
         container.chat_runs = ChatRunService(
             chat_service, tasks, container.settings.chat_max_queued
         )
+        await _setup_diet_jobs(container, tasks)
         container.evaluation_service = EvaluationService(
             EvalRunner(chat_service, container.chat_runs, meal_repository=store),
             container.run_store,
@@ -129,6 +164,43 @@ async def start_container(container: ApplicationContainer) -> None:
     except BaseException:
         await stack.aclose()
         raise
+
+
+async def _setup_diet_jobs(container: ApplicationContainer, tasks: ChatTaskStore) -> None:
+    from nutripilot.application.diet_parsing import DietParsingService
+    from nutripilot.infrastructure.background_jobs import BackgroundJobStore
+    from nutripilot.model_gateway import FakeModelGateway, OpenAICompatibleModelGateway
+    from nutripilot.model_gateway.base import VisionGateway
+
+    jobs = BackgroundJobStore(tasks)
+    if not await asyncio.to_thread(jobs.initialize):
+        return
+    settings = container.settings
+    gateway = container.gateway
+    if not settings.uses_fake_model:
+        gateway = OpenAICompatibleModelGateway(
+            api_key=settings.model_api_key or "",
+            base_url=settings.model_base_url,
+            model=settings.model_name,
+            timeout_seconds=45,
+            max_retries=0,
+        )
+    vision: VisionGateway | None = None
+    if settings.diet_image_enabled:
+        vision = (
+            FakeModelGateway()
+            if settings.uses_fake_model
+            else OpenAICompatibleModelGateway(
+                api_key=settings.vision_model_api_key or settings.model_api_key or "",
+                base_url=settings.vision_model_base_url or settings.model_base_url,
+                model=settings.vision_model_name or "",
+                timeout_seconds=45,
+                max_retries=0,
+            )
+        )
+    parser = DietParsingService(container.diet, jobs, gateway, settings, vision)
+    container.diet_parsing = parser
+    container.chat_service.diet_parsing = parser
 
 
 async def stop_container(container: ApplicationContainer) -> None:
@@ -141,6 +213,15 @@ async def stop_container(container: ApplicationContainer) -> None:
     if container.chat_runs is not None and not container.settings.uses_external_infrastructure:
         container.chat_runs.store.close()
     container.chat_runs = None
+    if container.diet_parsing:
+        from nutripilot.model_gateway import OpenAICompatibleModelGateway
+
+        parser = container.diet_parsing
+        if isinstance(parser.gateway.delegate, OpenAICompatibleModelGateway):
+            await parser.gateway.delegate.client.close()
+        if parser.vision and isinstance(parser.vision.delegate, OpenAICompatibleModelGateway):
+            await parser.vision.delegate.client.close()
+        container.diet_parsing = None
     stack = container.resource_stack
     container.resource_stack = None
     if stack is not None:

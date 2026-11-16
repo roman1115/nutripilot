@@ -23,7 +23,8 @@ from nutripilot.tracing import InMemoryTraceRecorder
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
-        os.getenv("NUTRIPILOT_TEST_EXTERNAL") != "1", reason="Local PostgreSQL required",
+        os.getenv("NUTRIPILOT_TEST_EXTERNAL") != "1",
+        reason="Local PostgreSQL required",
     ),
 ]
 
@@ -32,7 +33,10 @@ pytestmark = [
 async def test_postgres_summary_removal_and_archive_survive_pool_recreation():
     settings = Settings(
         _env_file=None,
-        database_url="postgresql+asyncpg://nutripilot:nutripilot@127.0.0.1:5432/nutripilot",
+        database_url=os.getenv(
+            "NUTRIPILOT_TEST_DATABASE_URL",
+            "postgresql+asyncpg://nutripilot:nutripilot@127.0.0.1:5432/nutripilot",
+        ),
     )
     container = build_container(settings=settings)
     store = ChatTaskStore.create(settings.database_url, f"memory-{uuid4().hex}")
@@ -45,15 +49,28 @@ async def test_postgres_summary_removal_and_archive_survive_pool_recreation():
         for role, suffix in [("user", "user"), ("assistant", "response")]:
             message_id = f"{turn}:{suffix}"
             ids.append(message_id)
-            store.append(user_id, thread, ConversationMessage(
-                id=message_id, role=role, content=f"{index}:{role}",
-                response={"status": "completed"} if role == "assistant" else None,
-            ))
-    store.append(user_id, thread, ConversationMessage(
-        id=f"{current}:user", role="user", content="继续",
-    ))
+            store.append(
+                user_id,
+                thread,
+                ConversationMessage(
+                    id=message_id,
+                    role=role,
+                    content=f"{index}:{role}",
+                    response={"status": "completed"} if role == "assistant" else None,
+                ),
+            )
+    store.append(
+        user_id,
+        thread,
+        ConversationMessage(
+            id=f"{current}:user",
+            role="user",
+            content="继续",
+        ),
+    )
     memory = MemoryNodes(
-        BudgetedModelGateway(FakeModelGateway()), InMemoryTraceRecorder(),
+        BudgetedModelGateway(FakeModelGateway()),
+        InMemoryTraceRecorder(),
     )
     memory.history = store
 
@@ -74,12 +91,18 @@ async def test_postgres_summary_removal_and_archive_survive_pool_recreation():
             await saver.setup()
             compiled = build(saver)
             state = new_agent_state(
-                user_id=user_id, thread_id=thread, turn_id=current, message="继续",
+                user_id=user_id,
+                thread_id=thread,
+                turn_id=current,
+                message="继续",
             )
             state["compression_candidate_ids"] = ids[:6]
             with execution_budget(seconds=15, tokens=24000):
                 await compiled.ainvoke(
-                    state, config, interrupt_after=["summarize"], durability="sync",
+                    state,
+                    config,
+                    interrupt_after=["summarize"],
+                    durability="sync",
                 )
             checkpoint = await compiled.aget_state(config)
             assert checkpoint.next == ("freeze",)

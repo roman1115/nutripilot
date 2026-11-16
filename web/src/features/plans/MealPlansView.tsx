@@ -5,6 +5,7 @@ import { FeedbackDialog } from "../feedback/FeedbackDialog";
 import { getMealPlans } from "../../lib/api";
 import { formatDate, nutrientLabel, planNutrientTotal } from "../../lib/format";
 import type { ConnectionState, MealFeedback, MealPlan, MealPlanItem } from "../../types";
+import { PlanWeekView } from "../diet/PlanWeekView";
 
 const mealTypeLabels: Record<string, string> = {
   breakfast: "早餐",
@@ -18,7 +19,12 @@ function mealTypeLabel(value?: string): string {
   return mealTypeLabels[value.toLowerCase()] || value;
 }
 
-export function MealPlansView({
+export function MealPlansView(props: { connection: ConnectionState; onNavigateChat: () => void }) {
+  const [legacy, setLegacy] = useState(false);
+  return legacy ? <><div className="page-container diet-legacy-back"><button className="button button-secondary" onClick={() => setLegacy(false)}><CalendarDays size={16} />返回周餐单</button></div><LegacyMealPlansView {...props} /></> : <PlanWeekView connection={props.connection} onLegacy={() => setLegacy(true)} />;
+}
+
+function LegacyMealPlansView({
   connection,
   onNavigateChat,
 }: {

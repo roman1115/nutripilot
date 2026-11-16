@@ -46,14 +46,29 @@ class FakeModelGateway:
             "planner": self._planner,
             "recommendation": self._recommendation,
             "answer_boundary": lambda payload: {
-                "facts_match": True, "objects_match": True, "portion_basis_preserved": True,
-                "cooking_conditions_preserved": True, "issues": [],
+                "facts_match": True,
+                "objects_match": True,
+                "portion_basis_preserved": True,
+                "cooking_conditions_preserved": True,
+                "issues": [],
             },
             "answer_review": self._answer_review,
             "evaluation": self._evaluation,
             "memory_summary": self._memory_summary,
+            "diet_planner": lambda _: {
+                "complete": True,
+                "tool_calls": [],
+                "plan_summary": "演示模型未解析饮食原话，请使用饮食记录表单核对。",
+            },
+            "diet_parser": lambda _: {
+                "entries": [],
+                "clarification": "请核对主体、食物、日期、餐次与份量。",
+            },
         }
         self.call_history: list[dict[str, Any]] = []
+
+    async def generate_vision(self, *, images: list[Any], **kwargs: Any) -> Any:
+        return await self.generate_structured(**kwargs)
 
     def queue_response(
         self, worker: str, response: BaseModel | dict[str, Any] | BaseException
@@ -119,12 +134,19 @@ class FakeModelGateway:
     def _answer_review(payload: dict[str, Any]) -> dict[str, Any]:
         # Fake checks exercise the contract only, not semantic correctness.
         return {
-            "supported": True, "issues": [], "coherent": True,
+            "supported": True,
+            "issues": [],
+            "coherent": True,
             "checks": [
                 {
-                    "unit_id": unit_id, "kind": "general_advice", "supported": True,
-                    "has_object_count": False, "object_counts": [],
-                    "conditions_preserved": True, "conditions": [], "evidence": [],
+                    "unit_id": unit_id,
+                    "kind": "general_advice",
+                    "supported": True,
+                    "has_object_count": False,
+                    "object_counts": [],
+                    "conditions_preserved": True,
+                    "conditions": [],
+                    "evidence": [],
                     "explanation": "Fake contract check; not a factual assessment.",
                 }
                 for unit_id in payload["review_units"]
@@ -149,9 +171,22 @@ class FakeModelGateway:
         requested = explicit_food_request(message)
         # The fake only recognises these regression ingredients; the real model extracts them.
         ingredients = [
-            term for term in (
-                "鸡胸肉", "鸡翅", "番茄", "鸡蛋", "西红柿", "豆腐", "土豆", "马铃薯",
-                "花菜", "西兰花", "香菇", "香菜", "牛肉", "龙肉",
+            term
+            for term in (
+                "鸡胸肉",
+                "鸡翅",
+                "番茄",
+                "鸡蛋",
+                "西红柿",
+                "豆腐",
+                "土豆",
+                "马铃薯",
+                "花菜",
+                "西兰花",
+                "香菇",
+                "香菜",
+                "牛肉",
+                "龙肉",
             )
             if term in message
         ]
@@ -177,6 +212,26 @@ class FakeModelGateway:
         elif any(
             word in message
             for word in (
+                "我吃了",
+                "我没吃",
+                "我昨天吃",
+                "帮我记",
+                "记一笔",
+                "饮食记录",
+                "摄入记录",
+                "摄入汇总",
+                "营养目标",
+                "回收站",
+                "再记一次",
+            )
+        ) or (
+            payload.get("active_draft_ref")
+            and any(word in message for word in ("改成", "更正", "补充", "取消草稿"))
+        ):
+            intent = Intent.DIET_MANAGEMENT
+        elif any(
+            word in message
+            for word in (
                 "一周",
                 "一星期",
                 "七天",
@@ -194,31 +249,68 @@ class FakeModelGateway:
                 else "one_week"
             )
         elif message.strip("，,。！!？? ") in {
-            "谢谢", "好的，谢谢", "好的", "明白了", "你好", "谢谢你", "不客气",
+            "谢谢",
+            "好的，谢谢",
+            "好的",
+            "明白了",
+            "你好",
+            "谢谢你",
+            "不客气",
         }:
             intent = Intent.CONVERSATION
-        elif any(term in message for term in (
-            "为什么", "区别", "比较", "怎么做才", "烹饪技巧", "失败补救",
-        )) and (
+        elif any(
+            term in message
+            for term in (
+                "为什么",
+                "区别",
+                "比较",
+                "怎么做才",
+                "烹饪技巧",
+                "失败补救",
+            )
+        ) and (
             payload.get("discussed_meals")
-            or any(term in message for term in (
-                "鸡胸肉", "做菜", "烹饪", "食材", "第二个", "前两个",
-            ))
+            or any(
+                term in message
+                for term in (
+                    "鸡胸肉",
+                    "做菜",
+                    "烹饪",
+                    "食材",
+                    "第二个",
+                    "前两个",
+                )
+            )
         ):
             intent = Intent.FOOD_QUESTION
         elif is_recipe_request(message):
             intent = Intent.RECIPE_QUERY
-        elif slots.get("clear_constraints") or any(word in message for word in (
-            "换一个", "换一批", "不想吃这个", "再来", "改成", "换成", "再加", "加上", "还要",
-            "不限食材", "食材不限", "取消食材限制",
-        )):
+        elif slots.get("clear_constraints") or any(
+            word in message
+            for word in (
+                "换一个",
+                "换一批",
+                "不想吃这个",
+                "再来",
+                "改成",
+                "换成",
+                "再加",
+                "加上",
+                "还要",
+                "不限食材",
+                "食材不限",
+                "取消食材限制",
+            )
+        ):
             intent = Intent.MEAL_ADJUSTMENT
         elif any(word in message for word in ("热量", "蛋白质", "营养", "脂肪", "碳水")):
             intent = Intent.NUTRITION_QUERY
         elif any(word in message for word in ("记住", "更新偏好", "以后不要", "我喜欢")):
             intent = Intent.PROFILE_UPDATE
-        elif requested or slots.get("ingredient_any_groups") or any(
-            word in message for word in ("吃什么", "推荐", "早餐", "午餐", "晚餐", "夜宵")
+        elif (
+            requested
+            or slots.get("ingredient_any_groups")
+            or any(word in message for word in ("吃什么", "推荐", "早餐", "午餐", "晚餐", "夜宵"))
         ):
             intent = Intent.MEAL_RECOMMENDATION
         else:
@@ -227,12 +319,10 @@ class FakeModelGateway:
         missing: list[str] = []
         if intent is Intent.MEAL_RECOMMENDATION and "meal_type" not in slots:
             missing.append("meal_type")
-        if (
-            intent is Intent.OTHER
-            and payload.get("clarification_intent") in {
-                Intent.NUTRITION_QUERY.value, Intent.RECIPE_QUERY.value
-            }
-        ):
+        if intent is Intent.OTHER and payload.get("clarification_intent") in {
+            Intent.NUTRITION_QUERY.value,
+            Intent.RECIPE_QUERY.value,
+        }:
             intent = Intent(payload["clarification_intent"])
             slots["food_name"] = message.strip("，。？? ")
         elif (
@@ -248,10 +338,12 @@ class FakeModelGateway:
         if intent is Intent.RECIPE_QUERY:
             name = resolve_recipe_name(
                 message,
-                message if (
+                message
+                if (
                     payload.get("clarification_intent") == intent.value
                     and not is_recipe_request(message)
-                ) else None,
+                )
+                else None,
                 payload.get("discussed_meals") or [],
             )
             slots.pop("food_name", None)
@@ -271,12 +363,12 @@ class FakeModelGateway:
             "missing_slots": missing,
             "answer_task": {
                 "objective": message,
-                "context": "general" if intent is Intent.FOOD_QUESTION and (
-                    "柴" in message or "补救" in message
-                ) else "auto",
-                "recommendation_count": 1 if any(
-                    term in message for term in ("一份", "一道", "换一个")
-                ) else None,
+                "context": "general"
+                if intent is Intent.FOOD_QUESTION and ("柴" in message or "补救" in message)
+                else "auto",
+                "recommendation_count": 1
+                if any(term in message for term in ("一份", "一道", "换一个"))
+                else None,
                 "needs_nutrition": any(term in message for term in ("蛋白", "脂肪", "营养")),
             },
             "notes": "deterministic fake classification",
@@ -338,7 +430,8 @@ class FakeModelGateway:
                             *_feedback_excluded_ids(results),
                         }
                     )
-                    if intent == Intent.MEAL_ADJUSTMENT.value and any(
+                    if intent == Intent.MEAL_ADJUSTMENT.value
+                    and any(
                         term in str(payload.get("user_message", ""))
                         for term in ("换一批", "换一个", "不想吃这个", "再来", "换几道")
                     )
@@ -351,10 +444,13 @@ class FakeModelGateway:
                 if payload.get("verified_plan"):
                     return {
                         "complete": False,
-                        "tool_calls": [{
-                            "call_id": f"{turn_id}:{len(results) + 1}:create_meal_plan",
-                            "name": "create_meal_plan", "arguments": payload["verified_plan"],
-                        }],
+                        "tool_calls": [
+                            {
+                                "call_id": f"{turn_id}:{len(results) + 1}:create_meal_plan",
+                                "name": "create_meal_plan",
+                                "arguments": payload["verified_plan"],
+                            }
+                        ],
                         "plan_summary": "保存已验证餐单",
                     }
                 try:
@@ -422,7 +518,8 @@ class FakeModelGateway:
                 text = (
                     f"第二道是{discussed[1]['name']}。我可以根据刚才的配方食材解释这个选择，"
                     "不能据此判断它一定适合所有人。"
-                    if len(discussed) > 1 else "你指的是哪道菜？可以告诉我菜名。"
+                    if len(discussed) > 1
+                    else "你指的是哪道菜？可以告诉我菜名。"
                 )
             elif any(term in message for term in ("比较", "区别")) and len(discussed) > 1:
                 text = (
@@ -441,14 +538,16 @@ class FakeModelGateway:
         # Fake mode renders facts locally; production generation receives no template prose.
         response = ground_recommendation_facts(
             FinalResponse(message="暂时没有足够的可靠资料回答这个问题。"),
-            list(payload.get("tool_results") or []), payload.get("slots") or {},
+            list(payload.get("tool_results") or []),
+            payload.get("slots") or {},
             user_message=str(payload.get("user_message", "")),
         )
         count = (payload.get("answer_task") or {}).get("recommendation_count")
         if count and response.recommendations:
             response = ground_recommendation_facts(
                 response.model_copy(update={"recommendations": response.recommendations[:count]}),
-                list(payload.get("tool_results") or []), payload.get("slots") or {},
+                list(payload.get("tool_results") or []),
+                payload.get("slots") or {},
                 user_message=str(payload.get("user_message", "")),
             )
         return {"response": response.model_dump(include={"status", "message", "recommendations"})}
@@ -510,7 +609,7 @@ def _extract_slots(message: str, *, current_date: date | None = None) -> dict[st
     ):
         if re.search(
             r"(?:不要|别|不想|不必|不用|不|如果|假如|如何|怎么|是否)(?:再)?\s*$",
-            message[:match.start()],
+            message[: match.start()],
         ):
             continue
         text = match.group("before") or match.group("after")

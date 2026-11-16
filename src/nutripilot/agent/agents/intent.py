@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from datetime import date
 from typing import Any
@@ -27,9 +28,21 @@ from nutripilot.tracing import TraceRecorder
 
 class IntentAgent:
     name = "IntentAgent"
-    prompt_version = "intent-v16"
+    prompt_version = "intent-v21"
     system_prompt = (
+        "饮食管理意图还要设置diet_operation：只读query、记餐/草稿intake、"
+        "更正删除恢复正式记录log_change、新建或修改指定食物的餐单plan_change、营养目标target_change。"
         "你是饮食意图识别 Worker。仅依据用户消息和已有状态识别意图、抽取槽位；"
+        "本人实际吃了什么、记餐、多轮补充饮食草稿、更正/删除/恢复记录、"
+        "查询本人已记录摄入/营养汇总/目标/计划执行偏差，或设置营养目标，"
+        "使用DIET_MANAGEMENT；不把实际摄入写进推荐extracted_slots。"
+        "第三方吃了、否定吃过、假设吃饭也交DIET_MANAGEMENT核对主体和时态，不能记本人。"
+        "本人实际已吃且说‘帮我记录’‘帮我记’‘分别记录’必须DIET_MANAGEMENT/intake，"
+        "即使食物已有营养数据也不能走推荐或营养问答，不得口头声称已保存。"
+        "有active_draft_ref时，补重量、删食物、改餐次、撤回刚才等操作都是intake；"
+        "只有明确对已保存正式记录的操作才是log_change。"
+        "用户指定食物并要求安排未来一餐、保存未来饮食计划时用DIET_MANAGEMENT/plan_change；"
+        "请求智能推荐或生成候选餐单仍用MEAL_PLAN，不将未来餐次准备成实际摄入。"
         "不得调用工具或提供医疗结论，必须返回符合给定 Schema 的结构化结果。"
         "extracted_slots 仅允许 meal_type、plan_range、start_date（YYYY-MM-DD）、food_name、"
         "location、tastes、preferences、cuisines、health_goals、dietary_tags、allergens、"
@@ -131,6 +144,7 @@ class IntentAgent:
             "current_date": state["current_date"],
             "clarification_intent": state.get("clarification_intent"),
             "discussed_meals": state.get("discussed_meals", []),
+            "active_draft_ref": state.get("active_draft_ref"),
         }
         try:
             result = await self.gateway.generate_structured(
@@ -161,6 +175,7 @@ class IntentAgent:
                 Intent.MEAL_PLAN,
             }:
                 output = output.model_copy(update={"intent": Intent.MEAL_PLAN})
+            output = _diet_intent(state, output)
             record_worker_event(
                 self.recorder,
                 state,
@@ -183,6 +198,7 @@ class IntentAgent:
                 "phase": Phase.INTENT.value,
                 "intent": output.intent.value,
                 "intent_confidence": output.confidence,
+                "diet_operation": output.diet_operation,
                 "slots": slots,
                 "active_constraints": constraint_sources(state, slots),
                 "history_query": output.history_query,
@@ -209,6 +225,7 @@ class IntentAgent:
                 )
             if state.get("replacing_plan"):
                 output = output.model_copy(update={"intent": Intent.MEAL_PLAN})
+            output = _diet_intent(state, output)
             usage = getattr(exc, "usage", ModelUsage())
             record_worker_event(
                 self.recorder,
@@ -229,6 +246,7 @@ class IntentAgent:
                 "phase": Phase.INTENT.value,
                 "intent": output.intent.value,
                 "intent_confidence": output.confidence,
+                "diet_operation": output.diet_operation,
                 "slots": slots,
                 "active_constraints": constraint_sources(state, slots),
                 "missing_slots": missing,
@@ -239,6 +257,43 @@ class IntentAgent:
                     self.name: self.prompt_version,
                 },
             }
+
+
+def _explicit_intake_request(message: str) -> bool:
+    return bool(
+        re.search(r"帮我记(?!住|得)|记下来|分别记录|另外记一餐|补记", message)
+        and any(term in message for term in ("吃", "喝", "餐", "摄入", "饮食", "份量"))
+    )
+
+
+def _diet_intent(state: AgentState, output: IntentOutput) -> IntentOutput:
+    message = state["user_message"]
+    active_edit = (
+        state.get("active_draft_ref")
+        and not any(
+            word in message for word in ("查询", "推荐", "目标", "做法", "怎么", "多少热量")
+        )
+        and (
+            any(word in message for word in (
+                "改成", "删掉", "撤回", "生重", "熟重", "份量", "重量", "是午餐", "是晚餐",
+                "是早餐", "是加餐",
+            ))
+            or re.search(r"\d+(?:\.\d+)?\s*(?:克|g)\b", message)
+        )
+    )
+    if output.intent is not Intent.HEALTH_RISK and (
+        _explicit_intake_request(message) or active_edit
+    ):
+        return output.model_copy(update={
+            "intent": Intent.DIET_MANAGEMENT,
+            "diet_operation": (
+                output.diet_operation
+                if output.intent is Intent.DIET_MANAGEMENT and output.diet_operation
+                else "intake"
+            ),
+            "extracted_slots": {}, "missing_slots": [],
+        })
+    return output
 
 
 def _answer_task(state: AgentState, output: IntentOutput) -> dict[str, Any]:
@@ -264,7 +319,7 @@ def _required_missing(output: IntentOutput, slots: dict[str, Any]) -> list[str]:
 
 
 def _resolved_slots(state: AgentState, output: IntentOutput) -> tuple[dict[str, Any], list[str]]:
-    if output.intent in {Intent.FOOD_QUESTION, Intent.CONVERSATION}:
+    if output.intent in {Intent.FOOD_QUESTION, Intent.CONVERSATION, Intent.DIET_MANAGEMENT}:
         return dict(state.get("slots", {})), []
     slots = merge_slots(
         state.get("slots", {}),

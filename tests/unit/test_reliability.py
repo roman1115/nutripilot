@@ -129,7 +129,8 @@ async def test_unknown_name_stops_after_one_lookup_and_the_required_profile() ->
     )
     assert result["phase"] == "CLARIFY"
     assert [item["tool_name"] for item in result["tool_results"]] == [
-        "get_user_profile", "get_nutrition",
+        "get_user_profile",
+        "get_nutrition",
     ]
     assert sum(call["worker"] == "planner" for call in gateway.call_history) == 1
     assert "没有找到" in result["final_response"]["message"]
@@ -231,7 +232,11 @@ async def test_explicit_date_survives_intent_model_failure() -> None:
     )
     assert state["slots"]["start_date"] == "2026-10-22"
     assert state["slots"]["plan_range"] == "one_week"
-    assert state["pending_tool_calls"][0]["arguments"]["start_date"] == "2026-10-22"
+    from tests.diet_helpers import plan_preview
+
+    assert (await plan_preview(container, state)).content.after_plan.start_date.isoformat() == (
+        "2026-10-22"
+    )
 
 
 @pytest.mark.asyncio
@@ -251,7 +256,11 @@ async def test_invalid_date_is_clarified_before_tool_calls() -> None:
         thread_id="invalid-date",
     )
     assert second["phase"] == "AWAITING_CONFIRMATION"
-    assert second["pending_tool_calls"][0]["arguments"]["start_date"] == "2026-03-01"
+    from tests.diet_helpers import plan_preview
+
+    assert (await plan_preview(container, second)).content.after_plan.start_date.isoformat() == (
+        "2026-03-01"
+    )
 
 
 def test_intent_schema_exposes_the_typed_slots_to_the_model() -> None:
@@ -433,6 +442,16 @@ async def test_disconnect_persists_cancelled_turn_and_allows_continuation(
     slow = SlowGateway()
     generate = gateway.generate_structured
     monkeypatch.setattr(gateway, "generate_structured", slow.generate_structured)
+    if operation == "confirm":
+        confirm = container.diet.confirm
+
+        async def paused_confirm(*args: Any, **kwargs: Any) -> Any:
+            result = await confirm(*args, **kwargs)
+            slow.started.set()
+            await asyncio.Event().wait()
+            return result
+
+        monkeypatch.setattr(container.diet, "confirm", paused_confirm)
     update = container.graph.compiled.aupdate_state
 
     async def yielding_update(*args: Any, **kwargs: Any) -> Any:
@@ -448,13 +467,13 @@ async def test_disconnect_persists_cancelled_turn_and_allows_continuation(
             ):
                 pass
         elif operation == "confirm":
+            from tests.diet_helpers import approval
+
             await container.chat_service.confirm(
-                user_id=1, thread_id=thread_id, approved=True
+                user_id=1, thread_id=thread_id, approved=True, **approval(pending)
             )
         else:
-            await container.chat_service.chat(
-                user_id=1, message="推荐晚餐", thread_id=thread_id
-            )
+            await container.chat_service.chat(user_id=1, message="推荐晚餐", thread_id=thread_id)
 
     async with create_task_group() as group:
         group.start_soon(run)
@@ -470,7 +489,12 @@ async def test_disconnect_persists_cancelled_turn_and_allows_continuation(
     assert "已停止本轮请求" in messages[-1].content
     assert not container.chat_service.cancel(thread_id=thread_id, user_id=1)
     if operation == "confirm":
-        assert len(await container.data_store.list_plans(1)) == 1
+        from datetime import date
+
+        async with container.diet.store.transaction(
+            1, default_timezone=container.diet.default_timezone
+        ) as tx:
+            assert len(await tx.list_plans(date.min, date.max)) == 1
     monkeypatch.setattr(gateway, "generate_structured", generate)
     result = await container.chat_service.chat(
         user_id=1, message="糖拌西红柿有多少热量", thread_id=thread_id
@@ -581,10 +605,39 @@ def test_token_identity_overrides_header_and_protects_resources() -> None:
         )
 
 
-def test_authenticated_requests_are_rate_limited() -> None:
+def test_local_identity_overrides_headers_and_keeps_owner_checks() -> None:
+    container = build_container(settings=_settings(api_local_user_id=1))
+    with TestClient(create_app(container)) as client:
+        headers = {"X-User-ID": "2", "Authorization": "Bearer stale-token"}
+        profile = client.get("/api/v1/profile", headers=headers)
+        assert profile.status_code == 200 and profile.json()["user_id"] == 1
+        assert client.get("/api/v1/diet/context").status_code == 200
+        assert client.get("/api/v1/diet/context", headers=headers).status_code == 200
+        spoofed = client.post(
+            "/api/v1/chat", json={"user_id": 2, "message": "推荐晚餐"}, headers=headers
+        )
+        assert spoofed.status_code == 403
+        assert client.get("/health/ready").json()["auth_required"] is False
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"app_mode": "production"},
+        {"api_access_tokens": {TOKEN_ONE: 1}},
+        {"api_local_user_id": 0},
+    ],
+)
+def test_local_identity_rejects_unsafe_configuration(options: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
+        _settings(**({"api_local_user_id": 1} | options))
+
+
+@pytest.mark.parametrize("local", [False, True])
+def test_authenticated_requests_are_rate_limited(local: bool) -> None:
     container = build_container(
         settings=_settings(
-            api_access_tokens={TOKEN_ONE: 1},
+            **({"api_local_user_id": 1} if local else {"api_access_tokens": {TOKEN_ONE: 1}}),
             api_rate_limit_per_minute=1,
         )
     )

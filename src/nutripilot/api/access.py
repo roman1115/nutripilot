@@ -23,18 +23,20 @@ class AccessMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         if not request.url.path.startswith("/api/") or request.method == "OPTIONS":
             return await call_next(request)
-        if not self.settings.api_access_tokens:
+        identity = self.settings.api_local_user_id
+        if not self.settings.api_access_tokens and identity is None:
             return await call_next(request)
-        authorization = request.headers.get("authorization", "")
-        supplied = authorization[7:] if authorization.startswith("Bearer ") else ""
-        identity = next(
-            (
-                user_id
-                for token, user_id in self.settings.api_access_tokens.items()
-                if hmac.compare_digest(supplied.encode(), token.encode())
-            ),
-            None,
-        )
+        if self.settings.api_access_tokens:
+            authorization = request.headers.get("authorization", "")
+            supplied = authorization[7:] if authorization.startswith("Bearer ") else ""
+            identity = next(
+                (
+                    user_id
+                    for token, user_id in self.settings.api_access_tokens.items()
+                    if hmac.compare_digest(supplied.encode(), token.encode())
+                ),
+                None,
+            )
         if identity is None:
             return JSONResponse(
                 {"detail": "需要有效的访问令牌"},

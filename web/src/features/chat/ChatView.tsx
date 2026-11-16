@@ -27,6 +27,7 @@ import {
   X,
 } from "lucide-react";
 import { ErrorNotice } from "../../components/Common";
+import { ChatDietPreview } from "../diet/ChatDietPreview";
 import {
   ApiError, cancelRun, deleteConversation, getChatSnapshot, getConversations, getThread,
   getTrace, restoreConversation, streamChat, subscribeRun, submitConfirmation,
@@ -238,6 +239,7 @@ function ChatSession({
   const [error, setError] = useState<string | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const [confirmationBusy, setConfirmationBusy] = useState(false);
+  const [verifiedDietPreview, setVerifiedDietPreview] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(() => window.matchMedia("(min-width: 1100px)").matches);
   const [activityOpen, setActivityOpen] = useState(false);
   const [historyQuery, setHistoryQuery] = useState("");
@@ -768,6 +770,7 @@ function ChatSession({
       confirmationRequestRef.current ||= crypto.randomUUID();
       const run = await submitConfirmation(
         threadId, approved, pendingConfirmation.id, confirmationRequestRef.current,
+        pendingConfirmation.payload,
       );
       if (!mountedRef.current) return;
       confirmationRequestRef.current = null;
@@ -1170,7 +1173,12 @@ function ChatSession({
               </div>
             </div>
             <p>{pendingConfirmation.description}</p>
-            {pendingConfirmation.mealPreview?.length ? (
+            {pendingConfirmation.operation === "diet_preview" ? <ChatDietPreview
+              id={String(pendingConfirmation.payload?.preview_id)}
+              version={Number(pendingConfirmation.payload?.preview_version)}
+              hash={String(pendingConfirmation.payload?.content_hash)}
+              onVerified={setVerifiedDietPreview}
+            /> : pendingConfirmation.mealPreview?.length ? (
               <div className="confirmation-meals">
                 <p>所选整菜营养合计，不代表个人摄入量，不评定每日营养目标。</p>
                 {asArray(asRecord(pendingConfirmation.payload?.quality).daily_totals).map((value) => {
@@ -1204,7 +1212,7 @@ function ChatSession({
               </dl>
             ) : null}
             <div className="confirmation-actions">
-              <button className="button button-primary" type="button" onClick={() => void handleConfirmation(true)} disabled={confirmationBusy}>
+              <button className="button button-primary" type="button" onClick={() => void handleConfirmation(true)} disabled={confirmationBusy || (pendingConfirmation.operation === "diet_preview" && verifiedDietPreview !== String(pendingConfirmation.payload?.content_hash))}>
                 {confirmationBusy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
                 确认执行
               </button>

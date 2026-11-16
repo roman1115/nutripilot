@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -10,10 +12,13 @@ from apps.nutrition_mcp.service import NutritionMCPService
 
 from nutripilot.agent import AgentGraph, create_agent_graph
 from nutripilot.application.chat_service import ChatService
+from nutripilot.application.diet_management import DietManagement
 from nutripilot.application.evaluation_service import EvaluationService
 from nutripilot.config import Settings, get_settings
 from nutripilot.evaluation import EvalRunner
 from nutripilot.infrastructure import InMemoryDataStore, StaticWeatherProvider, load_seed_store
+from nutripilot.infrastructure.diet_foods import CatalogDietFoodResolver
+from nutripilot.infrastructure.diet_store import MemoryDietStore
 from nutripilot.infrastructure.history import InMemoryConversationStore, SQLiteConversationStore
 from nutripilot.infrastructure.run_store import SQLiteRunStore
 from nutripilot.model_gateway import (
@@ -33,6 +38,7 @@ from nutripilot.retrieval.catalog import FoodCatalog
 from nutripilot.retrieval.ports import Embedder, MealReranker
 from nutripilot.tools import ToolExecutor, ToolRegistry
 from nutripilot.tools.local import register_local_tools
+from nutripilot.tools.local.diet import register_diet_tools
 from nutripilot.tools.mcp import (
     InProcessMCPTransport,
     MCPToolAdapter,
@@ -44,6 +50,7 @@ from nutripilot.tracing.recorder import SQLiteTraceRecorder
 
 if TYPE_CHECKING:
     from nutripilot.application.chat_runs import ChatRunService
+    from nutripilot.application.diet_parsing import DietParsingService
 
 
 @dataclass(slots=True)
@@ -57,12 +64,14 @@ class ApplicationContainer:
     chat_service: ChatService
     evaluation_service: EvaluationService
     food_catalog: FoodCatalog
+    diet: DietManagement
     resource_stack: AsyncExitStack | None = None
     runtime_mode: str = "demo"
     run_store: SQLiteRunStore | None = None
     chat_runs: ChatRunService | None = None
     chat_worker_task: Any | None = None
     chat_worker: Any | None = None
+    diet_parsing: DietParsingService | None = None
 
 
 def build_container(
@@ -86,7 +95,19 @@ def build_container(
         SQLiteTraceRecorder(run_store) if run_store else InMemoryTraceRecorder()
     )
     selected_store = data_store or load_seed_store(project_root() / "data")
-    selected_executor = tool_executor or _build_tool_executor(selected_store, selected_settings)
+    diet = DietManagement(
+        MemoryDietStore(),
+        CatalogDietFoodResolver(selected_store.catalog, selected_store),
+        default_timezone=selected_settings.user_timezone,
+        cursor_secret=(
+            hashlib.sha256("\n".join(sorted(selected_settings.api_access_tokens)).encode()).digest()
+            if selected_settings.api_access_tokens
+            else secrets.token_bytes(32)
+        ),
+    )
+    selected_executor = tool_executor or _build_tool_executor(
+        selected_store, selected_settings, diet
+    )
     graph = create_agent_graph(
         gateway=selected_gateway,
         tool_executor=selected_executor,
@@ -95,6 +116,7 @@ def build_container(
         deadline_seconds=selected_settings.agent_deadline_seconds,
         token_budget=selected_settings.agent_token_budget,
         context_window=selected_settings.model_context_window,
+        diet=diet,
     )
     chat_service = ChatService(
         graph,
@@ -113,6 +135,7 @@ def build_container(
             EvalRunner(chat_service, meal_repository=data_store), run_store
         ),
         food_catalog=selected_store.catalog,
+        diet=diet,
         runtime_mode=selected_settings.app_mode,
         run_store=run_store,
     )
@@ -132,8 +155,13 @@ def _build_gateway(settings: Settings) -> ModelGateway:
     )
 
 
-def _build_tool_executor(store: InMemoryDataStore, settings: Settings) -> ToolExecutor:
-    registry = register_local_tools(ToolRegistry(), store, StaticWeatherProvider())
+def _build_tool_executor(
+    store: InMemoryDataStore,
+    settings: Settings,
+    diet: DietManagement,
+) -> ToolExecutor:
+    registry = register_local_tools(ToolRegistry(), store, StaticWeatherProvider(), diet=diet)
+    register_diet_tools(registry, diet)
     if settings.mcp_enabled:
         transport: MCPTransport
         if settings.uses_external_infrastructure:

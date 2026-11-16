@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import signal
 from pathlib import Path
 from typing import Any
@@ -30,23 +31,46 @@ class GatedGateway(FakeModelGateway):
         if worker == "planner":
             while not (self.directory / "release").exists():  # noqa: ASYNC110 - cross-process gate
                 await asyncio.sleep(0.05)
+        if worker == "diet_parser":
+            while not (self.directory / "parse-release").exists():  # noqa: ASYNC110
+                await asyncio.sleep(0.05)
+            self.queue_response(
+                worker,
+                {
+                    "entries": [
+                        {
+                            "actuality": "actual",
+                            "subject": "self",
+                            "temporal": {
+                                "local_date": kwargs["payload"]["anchor"]["anchor_local_date"],
+                                "meal_type": "lunch",
+                            },
+                            "items": [
+                                {
+                                    "client_item_key": "rice",
+                                    "food": {"kind": "unknown", "name": "米饭"},
+                                    "quantity": {"kind": "unknown", "description": "半碗"},
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
         return await super().generate_structured(**kwargs)
 
 
 async def run_worker(container: Any, directory: Path) -> None:
     await start_container(container)
-    executor = container.tool_executor
-    execute = executor.execute
+    confirm = container.diet.confirm
 
-    async def pause_after_write(call: Any, *args: Any, **kwargs: Any) -> Any:
-        result = await execute(call, *args, **kwargs)
-        if call.name == "create_meal_plan" and result.ok:
-            (directory / "write-finished").touch()
-            while (directory / "pause-write").exists():  # noqa: ASYNC110 - cross-process gate
-                await asyncio.sleep(0.05)
+    async def pause_after_write(*args: Any, **kwargs: Any) -> Any:
+        result = await confirm(*args, **kwargs)
+        (directory / "write-finished").touch()
+        while (directory / "pause-write").exists():  # noqa: ASYNC110 - cross-process gate
+            await asyncio.sleep(0.05)
         return result
 
-    executor.execute = pause_after_write
+    container.diet.confirm = pause_after_write
     worker = ChatWorker(container.chat_service, container.chat_runs.store, container.settings)
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -63,6 +87,7 @@ def main() -> None:
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--queue", required=True)
     parser.add_argument("--port", type=int, default=8007)
+    parser.add_argument("--owner", type=int)
     args = parser.parse_args()
     args.directory.mkdir(parents=True, exist_ok=True)
     settings = Settings(
@@ -72,12 +97,18 @@ def main() -> None:
         embedding_provider="hashing",
         rerank_provider="lexical",
         mcp_enabled=False,
-        database_url="postgresql+asyncpg://nutripilot:nutripilot@127.0.0.1:5432/nutripilot",
+        database_url=os.getenv(
+            "NUTRIPILOT_TEST_DATABASE_URL",
+            "postgresql+asyncpg://nutripilot:nutripilot@127.0.0.1:5432/nutripilot",
+        ),
         redis_url="redis://127.0.0.1:6379/0",
         chat_queue=args.queue,
         run_store_path=str(args.directory / "traces.sqlite3"),
         agent_deadline_seconds=180,
         api_rate_limit_per_minute=10000,
+        api_access_tokens={"d" * 32: args.owner} if args.owner else {},
+        diet_media_root=str(args.directory / "media"),
+        diet_export_root=str(args.directory / "exports"),
         web_origin="http://127.0.0.1:5177,http://127.0.0.1:5178",
     )
     container = build_container(

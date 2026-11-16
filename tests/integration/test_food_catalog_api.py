@@ -195,7 +195,9 @@ async def test_weekly_plan_uses_source_recipes_for_every_required_slot(container
     assert searches and searches[-1]["data"]["hits"]
     assert len(searches) == 3
     assert all(hit["recipe_id"] >= 1000 for search in searches for hit in search["data"]["hits"])
-    items = state["pending_tool_calls"][0]["arguments"]["items"]
+    from tests.diet_helpers import plan_items
+
+    items = await plan_items(container, state)
     assert len(items) == 21
     assert {item["meal_type"] for item in items} == {"breakfast", "lunch", "dinner"}
     assert all(item["meal_id"] >= 1000 for item in items)

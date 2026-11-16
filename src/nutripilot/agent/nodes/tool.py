@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from nutripilot.agent.contracts import PlanSpec
+from nutripilot.agent.nodes.diet import preview_reference
 from nutripilot.agent.planning import (
     PlanBuilder,
     PlanBuildError,
@@ -24,13 +25,20 @@ from nutripilot.tools import (
     ToolResult,
     ToolStatus,
 )
+from nutripilot.tools.local.models import CreateMealPlanArgs
 from nutripilot.tracing import TraceRecorder
+
+if TYPE_CHECKING:
+    from nutripilot.application.diet_management import DietManagement
 
 
 class ToolExecutionNode:
-    def __init__(self, executor: ToolExecutor, recorder: TraceRecorder) -> None:
+    def __init__(
+        self, executor: ToolExecutor, recorder: TraceRecorder, diet: DietManagement | None = None,
+    ) -> None:
         self.executor = executor
         self.recorder = recorder
+        self.diet = diet
 
     async def run(self, state: AgentState) -> dict[str, Any]:
         calls = [ToolCall.model_validate(item) for item in state.get("pending_tool_calls", [])]
@@ -189,6 +197,25 @@ class ToolExecutionNode:
                         PlanBuilder.parse_request(call.arguments),
                         candidate_meals_from_results(results),
                     )
+                    if self.diet is not None:
+                        from nutripilot.application.diet_compatibility import DietCompatibility
+
+                        names = {
+                            int(meal.get("meal_id") or meal["id"]): str(meal["name"])
+                            for meal in candidate_meals_from_results(results)
+                        }
+                        preview = await DietCompatibility(self.diet).prepare_plan(
+                            state["user_id"], CreateMealPlanArgs.model_validate(call.arguments),
+                            key=f"{state['turn_id']}:{call.call_id}", names=names,
+                            thread_id=state["thread_id"],
+                        )
+                        return {
+                            "phase": "AWAITING_CONFIRMATION", "requires_confirmation": True,
+                            "pending_tool_calls": [], "tool_results": results,
+                            "pending_diet_preview_ref": preview_reference(preview),
+                            "plan_quality": plan_quality,
+                            "step_count": execution_state.step_count + 1,
+                        }
                 except PlanBuildError as exc:
                     plan_validation_error = exc
                     execution_state.step_count += 1

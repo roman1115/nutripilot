@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from itertools import pairwise
 from typing import Any
 
 import pytest
+from tests.diet_helpers import approval, plan_items, plan_preview
 
 from nutripilot.agent.contracts import PlanSpec
 from nutripilot.agent.planning import PlanBuilder
@@ -190,26 +191,21 @@ async def test_graph_discloses_whole_recipe_basis_for_personal_target_requests()
 async def test_relative_date_reaches_pending_plan_in_configured_user_timezone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "nutripilot.application.chat_service.today_in_timezone",
-        lambda _: date(2026, 10, 26),
-    )
     container = build_container(
         settings=Settings(_env_file=None, user_timezone="America/Los_Angeles")
     )
+    monkeypatch.setattr(container.diet, "clock", lambda: datetime(2026, 10, 26, 15, tzinfo=UTC))
 
     state = await container.chat_service.chat(
         user_id=29,
         message="明天制定一周晚餐计划",
     )
 
-    plan_call = next(
-        call for call in state["pending_tool_calls"] if call["name"] == "create_meal_plan"
-    )
+    preview = await plan_preview(container, state)
     assert state["current_date"] == "2026-10-26"
     assert state["slots"]["start_date"] == "2026-10-27"
-    assert plan_call["arguments"]["start_date"] == "2026-10-27"
-    assert {item["meal_date"] for item in plan_call["arguments"]["items"]} == {
+    assert preview.content.after_plan.start_date.isoformat() == "2026-10-27"
+    assert {item["meal_date"] for item in await plan_items(container, state)} == {
         "2026-10-27",
         "2026-10-28",
         "2026-10-29",
@@ -237,11 +233,17 @@ async def test_graph_plan_discloses_profile_target_shortfall_before_confirmation
         22,
         UpdateUserProfileArgs(daily_calorie_target=5000),
     )
+    from nutripilot.application.diet_compatibility import DietCompatibility
+
+    target = await DietCompatibility(container.diet).prepare_profile_target(
+        22, UpdateUserProfileArgs(daily_calorie_target=5000), key="target-fixture"
+    )
+    await container.diet.confirm(22, target.id, version=1, approved_hash=target.content_hash)
     state = await container.chat_service.chat(user_id=22, message="制定一周三餐饮食计划")
     assert state["phase"] == "AWAITING_CONFIRMATION"
     assert state["plan_quality"]["meal_count"] == 21
     assert any("每日目标不用于" in warning for warning in state["plan_quality"]["warnings"])
-    items = state["pending_tool_calls"][0]["arguments"]["items"]
+    items = await plan_items(container, state)
     assert len(items) == 21
     for day in {item["meal_date"] for item in items}:
         ids = [item["meal_id"] for item in items if item["meal_date"] == day]
@@ -257,11 +259,16 @@ async def test_confirmed_plan_retains_the_same_quality_report() -> None:
         message="制定一日三餐饮食计划，每日1500千卡，每天蛋白质至少80克",
     )
     assert waiting["requires_confirmation"]
-    confirmed_items = waiting["pending_tool_calls"][0]["arguments"]["items"]
-    await container.chat_service.confirm(thread_id="quality-persist", user_id=22, approved=True)
-    plan = (await container.data_store.list_plans(22))[0]
-    assert plan.quality == waiting["plan_quality"]
-    assert [item.model_dump(mode="json") for item in plan.items] == confirmed_items
+    preview = await plan_preview(container, waiting)
+    completed = await container.chat_service.confirm(
+        thread_id="quality-persist", user_id=22, approved=True, **approval(waiting)
+    )
+    assert completed["plan_quality"] == waiting["plan_quality"]
+    async with container.diet.store.transaction(22, default_timezone="America/Los_Angeles") as tx:
+        saved = await tx.list_planned_meals(preview.content.after_plan.id)
+    assert {meal.id: meal for meal in saved} == {
+        meal.id: meal for meal in preview.content.after_meals
+    }
 
 
 @pytest.mark.asyncio
@@ -349,5 +356,5 @@ async def test_explicit_three_meal_plan_clears_the_previous_turns_single_meal_sl
         message="制定一日三餐饮食计划",
     )
     assert plan["phase"] == "AWAITING_CONFIRMATION"
-    assert len(plan["pending_tool_calls"][0]["arguments"]["items"]) == 3
+    assert len(await plan_items(container, plan)) == 3
     assert plan["plan_quality"]["scope"] == "all_meal_slots"

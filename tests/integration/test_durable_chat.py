@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Any
 from uuid import uuid4
 
@@ -19,7 +20,7 @@ from nutripilot.domain.execution import ExecutionOwnershipLost
 from nutripilot.infrastructure.chat_tasks import ChatTaskStore
 from nutripilot.infrastructure.history import SQLiteConversationStore
 from nutripilot.infrastructure.run_store import SQLiteRunStore
-from nutripilot.model_gateway import FakeModelGateway
+from nutripilot.model_gateway import FakeModelGateway, ModelGatewayError
 
 
 class GatedGateway(FakeModelGateway):
@@ -188,9 +189,9 @@ async def test_worker_shutdown_resumes_checkpoint_without_repeating_completed_in
         assert done["status"] == "completed"
         assert done["attempts"] == 2
         assert gateway.intent_calls == 1
-        assert len(await asyncio.to_thread(
-            service.store.messages, 1, run["thread_id"], 100, 0
-        )) == 2
+        assert (
+            len(await asyncio.to_thread(service.store.messages, 1, run["thread_id"], 100, 0)) == 2
+        )
 
 
 @pytest.mark.asyncio
@@ -206,6 +207,8 @@ async def test_confirmation_replay_and_stale_preview_cannot_write_twice() -> Non
         payload = {
             "approved": True,
             "confirmation_id": pending["result"]["pending_action"]["id"],
+            "preview_version": pending["result"]["pending_action"]["payload"]["preview_version"],
+            "content_hash": pending["result"]["pending_action"]["payload"]["content_hash"],
             "request_id": uuid4().hex,
         }
         path = f"/api/v1/threads/{thread}/confirm"
@@ -217,7 +220,11 @@ async def test_confirmation_replay_and_stale_preview_cannot_write_twice() -> Non
         assert (
             await client.post(path, json={**payload, "request_id": uuid4().hex})
         ).status_code == 409
-        assert len(await container.data_store.list_plans(1)) == 1
+        async with container.diet.store.transaction(
+            1, default_timezone=container.settings.user_timezone
+        ) as tx:
+            assert len(await tx.list_plans(date.min, date.max)) == 1
+        assert await container.data_store.list_plans(1) == []
 
 
 def test_legacy_import_preserves_identity_content_and_is_repeatable(tmp_path: Any) -> None:
@@ -258,6 +265,7 @@ async def test_queue_bound_and_obsolete_owner_fence() -> None:
         ).status_code == 429
         await until(lambda: gateway.started == 1)
         store = container.chat_runs.store
+
         def obsolete_owner() -> None:
             with store.fence(first.json()["id"], 999):
                 pytest.fail("Obsolete owner acquired the fence")
@@ -287,9 +295,10 @@ async def test_cancel_queued_run_creates_terminal_checkpoint_without_model_calls
         assert stopped["status"] == "cancelled"
         assert gateway.intent_calls == 1
         assert stopped["result"]["phase"] == "FAILED"
-        assert len(await asyncio.to_thread(
-            service.store.messages, 1, queued["thread_id"], 100, 0
-        )) == 2
+        assert (
+            len(await asyncio.to_thread(service.store.messages, 1, queued["thread_id"], 100, 0))
+            == 2
+        )
 
 
 @pytest.mark.asyncio
@@ -313,6 +322,7 @@ async def test_evaluation_uses_the_same_queue_as_interactive_chats() -> None:
                 dataset_version="durable-test",
             )
         )
+
         async def evaluation_queued() -> bool:
             threads = await asyncio.to_thread(service.store.list_threads, 1, "", 100, 0)
             return len(threads) == 2
@@ -338,6 +348,23 @@ async def test_durable_deadline_and_token_budget_are_terminal_not_fallbacks() ->
             user_id=1, thread_id=uuid4().hex, message="推荐午餐", request_key=uuid4().hex
         )
         assert (await finished(container.chat_runs, run))["error"] == "TOKEN_BUDGET_EXCEEDED"
+
+
+@pytest.mark.asyncio
+async def test_model_schema_failure_does_not_log_private_validation_cause(caplog) -> None:
+    gateway = FakeModelGateway()
+    failure = ModelGatewayError("INVALID_STRUCTURED_OUTPUT", "invalid output")
+    failure.__cause__ = ValueError("private-food-and-portion")
+    gateway.queue_response("diet_parser", failure)
+    async with runtime(gateway) as (container, _):
+        run = await container.chat_runs.submit(
+            user_id=1, thread_id=uuid4().hex,
+            message="我今天午餐吃了苹果，帮我记。", request_key=uuid4().hex,
+        )
+        assert (await finished(container.chat_runs, run))["error"] == "EXECUTION_FAILED"
+    assert "INVALID_STRUCTURED_OUTPUT" in caplog.text
+    assert "private-food-and-portion" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records if "Chat model" in record.msg)
 
 
 @pytest.mark.asyncio
@@ -383,9 +410,9 @@ async def test_completed_checkpoint_is_finalized_even_after_recovery_limit() -> 
         result = await finished(service, run)
         assert result["status"] == "completed"
         assert result["attempts"] == 2
-        assert len(await asyncio.to_thread(
-            service.store.messages, 1, run["thread_id"], 100, 0
-        )) == 2
+        assert (
+            len(await asyncio.to_thread(service.store.messages, 1, run["thread_id"], 100, 0)) == 2
+        )
 
 
 @pytest.mark.asyncio
@@ -396,7 +423,9 @@ async def test_imported_messages_restore_without_a_graph_checkpoint() -> None:
         thread = uuid4().hex
         await asyncio.to_thread(
             container.chat_runs.store.append,
-            1, thread, ConversationMessage(id=uuid4().hex, role="user", content="迁移前的消息")
+            1,
+            thread,
+            ConversationMessage(id=uuid4().hex, role="user", content="迁移前的消息"),
         )
         snapshot = await client.get(f"/api/v1/threads/{thread}/snapshot")
         assert snapshot.status_code == 200
@@ -414,7 +443,10 @@ async def test_postgres_queue_single_worker_fence_and_process_recreation() -> No
 
     settings = Settings(
         _env_file=None,
-        database_url="postgresql+asyncpg://nutripilot:nutripilot@127.0.0.1:5432/nutripilot",
+        database_url=os.getenv(
+            "NUTRIPILOT_TEST_DATABASE_URL",
+            "postgresql+asyncpg://nutripilot:nutripilot@127.0.0.1:5432/nutripilot",
+        ),
         chat_queue=f"test-{uuid4().hex}",
     )
     gateway = GatedGateway()
@@ -480,7 +512,10 @@ async def test_final_archive_retry_keeps_success_and_does_not_regenerate(monkeyp
 
         monkeypatch.setattr(service.store, "finish", transient_failure)
         run = await service.submit(
-            user_id=1, thread_id=uuid4().hex, message="你好", request_key=uuid4().hex,
+            user_id=1,
+            thread_id=uuid4().hex,
+            message="你好",
+            request_key=uuid4().hex,
         )
         done = await finished(service, run)
         assert done["status"] == "completed"
@@ -488,9 +523,7 @@ async def test_final_archive_retry_keeps_success_and_does_not_regenerate(monkeyp
         state = service.store.final_state(run["id"], 1)
         assert state["memory_finalized_run_id"] == run["id"]
         assert all(isinstance(message, dict) for message in state["messages"])
-        assert len(await asyncio.to_thread(
-            service.store.messages, 1, run["thread_id"], 10, 0
-        )) == 2
+        assert len(await asyncio.to_thread(service.store.messages, 1, run["thread_id"], 10, 0)) == 2
         calls = container.gateway.call_history
         assert [call["worker"] for call in calls] == ["intent", "recommendation"]
         events = await asyncio.to_thread(service.store.events, run["id"], 1, 0)

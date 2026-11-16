@@ -15,6 +15,12 @@ class ToolRegistry:
             self.register(definition)
 
     def register(self, definition: ToolDefinition, *, replace: bool = False) -> None:
+        if definition.idempotency_backend not in ("redis", "database"):
+            raise ValueError("Unsupported idempotency backend.")
+        if definition.idempotency_backend == "database" and not getattr(
+            definition.handler, "database_idempotency", False
+        ):
+            raise ValueError("Database-idempotent tools require a database-aware handler.")
         if definition.name in self._definitions and not replace:
             raise ValueError(f"Tool already registered: {definition.name}")
         self._definitions[definition.name] = definition

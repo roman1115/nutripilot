@@ -10,6 +10,7 @@ from langgraph.graph.message import add_messages
 
 from nutripilot.agent.state import AgentState, new_agent_state
 from nutripilot.application import build_container
+from nutripilot.application.chat_service import ThreadNotFoundError
 from nutripilot.application.history import ConversationMessage
 from nutripilot.config import Settings
 from nutripilot.infrastructure.chat_tasks import ChatTaskStore
@@ -291,6 +292,50 @@ async def test_history_recall_is_scoped_and_intent_recheck_is_bounded():
     assert [call["worker"] for call in gateway.call_history[before:]] == [
         "intent", "intent", "recommendation",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["memory", "sqlite", "tasks"])
+async def test_recall_projects_entire_diet_turn_not_only_nearby_messages(tmp_path, backend):
+    if backend == "memory":
+        store = InMemoryConversationStore()
+    elif backend == "sqlite":
+        store = SQLiteConversationStore(SQLiteRunStore(tmp_path / "history.sqlite"))
+    else:
+        store = ChatTaskStore.create(f"sqlite:///{tmp_path / 'tasks.sqlite'}")
+        store.initialize()
+    turn = "turn_%:nested"
+    try:
+        for index in range(5):
+            store.append(1, "private", ConversationMessage(
+                id=f"{turn}:{index}", role="user" if index == 0 else "assistant",
+                content="吃了苹果123克" if index == 0 else "历史饮食正文",
+                response={"diet_context": {"state": "deleted", "object_ids": ["record"]}}
+                if index == 4 else None,
+            ))
+        store.append(1, "private", ConversationMessage(
+            id=f"{turn}:other:user", role="user", content="另一个轮次",
+        ))
+        assert len(store.turn_messages(1, "private", turn)) == 5
+        store.append(1, "private", ConversationMessage(id="legacy", role="user", content="旧消息"))
+        assert store.turn_messages(1, "private", "legacy")[0].content == "旧消息"
+        if backend == "tasks":
+            with pytest.raises(ThreadNotFoundError):
+                store.turn_messages(2, "private", turn)
+        else:
+            assert not store.turn_messages(2, "private", turn)
+        memory = nodes()
+        memory.history = store
+        state = new_agent_state(message="之前苹果记录", user_id=1, thread_id="private")
+        state["history_query"] = "苹果"
+        recalled = (await memory.recall(state))["context_snapshot"]["history_recall"]
+        assert len(recalled) == 5
+        assert all("苹果" not in row["excerpt"] and "123" not in row["excerpt"] for row in recalled)
+        assert all("record" in row["excerpt"] for row in recalled)
+        assert "苹果" in store.messages(1, "private", 1, 0)[0].content
+    finally:
+        if backend == "tasks":
+            store.close()
 
 
 def test_tool_projection_deduplicates_only_identical_facts():

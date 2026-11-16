@@ -13,6 +13,11 @@ from nutripilot.domain.enums import Phase
 
 
 class AgentState(TypedDict, total=False):
+    diet_submission_anchor: dict[str, Any]
+    pending_diet_preview_ref: dict[str, Any] | None
+    active_draft_ref: dict[str, Any] | None
+    diet_query_refs: list[dict[str, Any]]
+    diet_operation: str | None
     run_id: str
     trace_id: str
     thread_id: str
@@ -81,6 +86,9 @@ def new_agent_state(
     """Create explicit defaults so every checkpoint is inspectable."""
 
     return AgentState(
+        pending_diet_preview_ref=None,
+        active_draft_ref=None,
+        diet_query_refs=[],
         trace_id=trace_id or str(uuid4()),
         thread_id=thread_id or str(uuid4()),
         turn_id=turn_id or str(uuid4()),

@@ -1,0 +1,270 @@
+{
+  "description": "Synthetic contract examples only, not nutrition seed data. Cases inherit an earlier case and apply path changes in order. Semantic expectations are documentation until runtime validators exist.",
+  "cases": [
+    {
+      "id": "read-search", "schema_valid": true,
+      "input": {"tool": "search_foods", "arguments": {"query": "contract fixture", "limit": 10}}
+    },
+    {
+      "id": "read-plans", "schema_valid": true,
+      "input": {"tool": "get_meal_plans", "arguments": {"scope": {"kind": "range", "start_date": "2026-11-09", "end_date": "2026-11-15"}}}
+    },
+    {
+      "id": "read-logs", "schema_valid": true,
+      "input": {"tool": "get_diet_logs", "arguments": {"scope": {"kind": "id", "id": "11111111-1111-4111-8111-111111111111"}, "include_deleted": true}}
+    },
+    {
+      "id": "read-summary", "schema_valid": true,
+      "input": {"tool": "get_nutrition_summary", "arguments": {"scope": {"kind": "range", "start_date": "2026-11-09", "end_date": "2026-11-15"}, "granularity": "week"}}
+    },
+    {
+      "id": "read-targets", "schema_valid": true,
+      "input": {"tool": "get_nutrition_targets", "arguments": {"scope": {"kind": "range", "start_date": "2026-11-09", "end_date": "2026-11-15"}}}
+    },
+    {
+      "id": "read-deviation", "schema_valid": true,
+      "input": {"tool": "get_diet_deviation", "arguments": {"scope": {"kind": "range", "start_date": "2026-11-09", "end_date": "2026-11-15"}}}
+    },
+    {
+      "id": "intake-create", "schema_valid": true,
+      "input": {
+        "tool": "prepare_intake_draft",
+        "arguments": {
+          "action": "create",
+          "entry": {
+            "actuality": "actual", "subject": "self",
+            "temporal": {"local_date": "2026-11-11", "meal_type": "lunch"},
+            "items": [{"client_item_key": "item1", "food": {"kind": "unknown", "name": "fixture food"}, "quantity": {"kind": "unknown", "description": "unknown amount"}}]
+          },
+          "evidence": [{"field": "food", "item_key": "item1", "source_kind": "user_message", "source_ref": "fixture-message", "original_text": "fixture food", "operation": "set", "status": "explicit"}]
+        }
+      }
+    },
+    {
+      "id": "intake-revise", "schema_valid": true,
+      "input": {
+        "tool": "prepare_intake_draft",
+        "arguments": {
+          "action": "revise", "draft_id": "11111111-1111-4111-8111-111111111111", "base_version": 1,
+          "patch": {"temporal": {"note": null}},
+          "evidence": [{"field": "note", "source_kind": "user_form", "source_ref": "fixture-form", "original_text": "", "operation": "clear", "status": "explicit"}]
+        }
+      }
+    },
+    {
+      "id": "intake-discard", "schema_valid": true,
+      "input": {
+        "tool": "prepare_intake_draft",
+        "arguments": {
+          "action": "discard", "draft_id": "11111111-1111-4111-8111-111111111111", "base_version": 1,
+          "evidence": [{"field": "operation", "source_kind": "user_form", "source_ref": "fixture-form", "original_text": "discard", "operation": "set", "status": "explicit"}]
+        }
+      }
+    },
+    {
+      "id": "log-correct", "schema_valid": true,
+      "input": {
+        "tool": "prepare_diet_log_change",
+        "arguments": {
+          "action": "correct", "record_id": "11111111-1111-4111-8111-111111111111", "base_version": 1,
+          "patch": {"item_edits": [{"action": "remove", "item_id": "22222222-2222-4222-8222-222222222222"}]},
+          "evidence": [{"field": "operation", "source_kind": "user_message", "source_ref": "fixture-message", "original_text": "remove one item", "operation": "set", "status": "explicit"}]
+        }
+      }
+    },
+    {
+      "id": "log-delete", "schema_valid": true, "base": "log-correct",
+      "changes": [
+        {"path": ["arguments", "action"], "value": "delete"},
+        {"path": ["arguments", "patch"], "remove": true}
+      ]
+    },
+    {
+      "id": "log-restore", "schema_valid": true, "base": "log-delete",
+      "changes": [{"path": ["arguments", "action"], "value": "restore"}]
+    },
+    {
+      "id": "plan-create", "schema_valid": true,
+      "input": {
+        "tool": "prepare_meal_plan_change",
+        "arguments": {
+          "action": "create", "parent": {"kind": "new", "title": "fixture week", "start_date": "2026-11-09"},
+          "entries": [
+            {"client_entry_key": "mon-lunch", "entry": {"actuality": "planned", "subject": "self", "temporal": {"local_date": "2026-11-09", "meal_type": "lunch"}, "items": [{"client_item_key": "item1", "food": {"kind": "recipe", "id": 1000, "version": "fixture-v1"}, "quantity": {"kind": "recipe_fraction", "batch_multiplier": "1", "share": "0.5"}}]}},
+            {"client_entry_key": "tue-lunch", "entry": {"actuality": "planned", "subject": "self", "temporal": {"local_date": "2026-11-10", "meal_type": "lunch"}, "items": [{"client_item_key": "item1", "food": {"kind": "unknown", "name": "fixture food"}, "quantity": {"kind": "unknown", "description": "unknown"}}]}}
+          ],
+          "evidence": [{"field": "operation", "source_kind": "user_form", "source_ref": "fixture-form", "original_text": "create week", "operation": "set", "status": "explicit"}]
+        }
+      }
+    },
+    {
+      "id": "plan-update", "schema_valid": true,
+      "input": {
+        "tool": "prepare_meal_plan_change",
+        "arguments": {
+          "action": "update", "planned_meal_id": "11111111-1111-4111-8111-111111111111", "base_version": 1,
+          "patch": {"temporal": {"meal_type": "dinner"}},
+          "evidence": [{"field": "meal_type", "source_kind": "user_form", "source_ref": "fixture-form", "original_text": "dinner", "operation": "set", "status": "explicit"}]
+        }
+      }
+    },
+    {
+      "id": "plan-delete", "schema_valid": true, "base": "plan-update",
+      "changes": [{"path": ["arguments", "action"], "value": "delete"}, {"path": ["arguments", "patch"], "remove": true}]
+    },
+    {
+      "id": "plan-copy", "schema_valid": true, "base": "plan-delete",
+      "changes": [
+        {"path": ["arguments", "action"], "value": "copy"},
+        {"path": ["arguments", "target_date"], "value": "2026-11-12"},
+        {"path": ["arguments", "target_meal_type"], "value": "lunch"}
+      ]
+    },
+    {
+      "id": "target-set", "schema_valid": true,
+      "input": {
+        "tool": "prepare_target_change",
+        "arguments": {
+          "action": "set", "effective_date": "2026-11-11", "goals": {"protein_g": {"lower": "10", "upper": "20"}, "fat_g": null},
+          "evidence": [{"field": "goal", "source_kind": "user_form", "source_ref": "fixture-form", "original_text": "fixture goal", "operation": "set", "status": "explicit"}]
+        }
+      }
+    },
+    {
+      "id": "target-correct", "schema_valid": true, "base": "target-set",
+      "changes": [
+        {"path": ["arguments", "action"], "value": "correct"},
+        {"path": ["arguments", "target_id"], "value": "11111111-1111-4111-8111-111111111111"},
+        {"path": ["arguments", "base_version"], "value": 1}
+      ]
+    },
+    {
+      "id": "target-stop", "schema_valid": true, "base": "target-correct",
+      "changes": [{"path": ["arguments", "action"], "value": "stop"}, {"path": ["arguments", "goals"], "remove": true}]
+    },
+    {
+      "id": "quantity-mass", "schema_valid": true, "base": "intake-create",
+      "changes": [{"path": ["arguments", "entry", "items", 0, "quantity"], "value": {"kind": "mass", "grams": "150", "food_state": "cooked"}}]
+    },
+    {
+      "id": "quantity-range", "schema_valid": true, "base": "quantity-mass",
+      "changes": [{"path": ["arguments", "entry", "items", 0, "quantity"], "value": {"kind": "mass_range", "grams_lower": "100", "grams_upper": "150.5", "food_state": "cooked"}}]
+    },
+    {
+      "id": "quantity-serving", "schema_valid": true, "base": "intake-create",
+      "changes": [{"path": ["arguments", "entry", "items", 0, "quantity"], "value": {"kind": "servings", "count": "0.5", "serving_evidence_id": "fixture-serving"}}]
+    },
+    {
+      "id": "quantity-cooked-mass", "schema_valid": true, "base": "intake-create",
+      "changes": [{"path": ["arguments", "entry", "items", 0, "quantity"], "value": {"kind": "cooked_mass", "batch_multiplier": "1", "consumed_grams": "100", "batch_cooked_grams": "400"}}]
+    },
+    {
+      "id": "reject-user-id", "schema_valid": false, "base": "read-search",
+      "changes": [{"path": ["arguments", "user_id"], "value": 2}]
+    },
+    {
+      "id": "reject-sql", "schema_valid": false, "base": "read-logs",
+      "changes": [{"path": ["arguments", "sql"], "value": "SELECT private_data"}]
+    },
+    {
+      "id": "reject-approve", "schema_valid": false, "base": "intake-create",
+      "changes": [{"path": ["arguments", "approved"], "value": true}]
+    },
+    {
+      "id": "reject-commit-tool", "schema_valid": false, "base": "intake-create",
+      "changes": [{"path": ["tool"], "value": "commit_diet_log"}]
+    },
+    {
+      "id": "reject-number-grams", "schema_valid": false, "base": "quantity-mass",
+      "changes": [{"path": ["arguments", "entry", "items", 0, "quantity", "grams"], "value": 150}]
+    },
+    {
+      "id": "reject-zero-grams", "schema_valid": false, "base": "quantity-mass",
+      "changes": [{"path": ["arguments", "entry", "items", 0, "quantity", "grams"], "value": "0.000000"}]
+    },
+    {
+      "id": "reject-nan", "schema_valid": false, "base": "quantity-mass",
+      "changes": [{"path": ["arguments", "entry", "items", 0, "quantity", "grams"], "value": "NaN"}]
+    },
+    {
+      "id": "reject-negative", "schema_valid": false, "base": "quantity-mass",
+      "changes": [{"path": ["arguments", "entry", "items", 0, "quantity", "grams"], "value": "-1"}]
+    },
+    {
+      "id": "reject-precision", "schema_valid": false, "base": "quantity-mass",
+      "changes": [{"path": ["arguments", "entry", "items", 0, "quantity", "grams"], "value": "0.1234567"}]
+    },
+    {
+      "id": "reject-date", "schema_valid": false, "base": "read-plans",
+      "changes": [{"path": ["arguments", "scope", "start_date"], "value": "2026-02-30"}]
+    },
+    {
+      "id": "reject-scope-mixing", "schema_valid": false, "base": "read-logs",
+      "changes": [{"path": ["arguments", "scope", "start_date"], "value": "2026-11-11"}]
+    },
+    {
+      "id": "reject-missing-version", "schema_valid": false, "base": "log-delete",
+      "changes": [{"path": ["arguments", "base_version"], "remove": true}]
+    },
+    {
+      "id": "reject-zero-version", "schema_valid": false, "base": "log-delete",
+      "changes": [{"path": ["arguments", "base_version"], "value": 0}]
+    },
+    {
+      "id": "reject-empty-patch", "schema_valid": false, "base": "intake-revise",
+      "changes": [{"path": ["arguments", "patch"], "value": {}}]
+    },
+    {
+      "id": "reject-empty-temporal-patch", "schema_valid": false, "base": "intake-revise",
+      "changes": [{"path": ["arguments", "patch"], "value": {"temporal": {}}}]
+    },
+    {
+      "id": "reject-wrong-action-fields", "schema_valid": false, "base": "target-stop",
+      "changes": [{"path": ["arguments", "goals"], "value": {"protein_g": null}}]
+    },
+    {
+      "id": "reject-invalid-uuid", "schema_valid": false, "base": "log-delete",
+      "changes": [{"path": ["arguments", "record_id"], "value": "invented-id"}]
+    },
+    {
+      "id": "reject-empty-evidence", "schema_valid": false, "base": "intake-create",
+      "changes": [{"path": ["arguments", "evidence"], "value": []}]
+    },
+    {
+      "id": "reject-oversized-search", "schema_valid": false, "base": "read-search",
+      "changes": [{"path": ["arguments", "limit"], "value": 21}]
+    },
+    {
+      "id": "reject-empty-plan-batch", "schema_valid": false, "base": "plan-create",
+      "changes": [{"path": ["arguments", "entries"], "value": []}]
+    },
+    {
+      "id": "reject-time", "schema_valid": false, "base": "intake-create",
+      "changes": [{"path": ["arguments", "entry", "temporal", "local_time"], "value": "25:00"}]
+    },
+    {
+      "id": "semantic-date-order", "schema_valid": true, "semantic_expectation": "reject: start_date exceeds end_date",
+      "base": "read-plans", "changes": [{"path": ["arguments", "scope", "end_date"], "value": "2026-11-01"}]
+    },
+    {
+      "id": "semantic-goal-order", "schema_valid": true, "semantic_expectation": "reject: lower exceeds upper",
+      "base": "target-set", "changes": [{"path": ["arguments", "goals", "protein_g"], "value": {"lower": "30", "upper": "20"}}]
+    },
+    {
+      "id": "semantic-quantity-order", "schema_valid": true, "semantic_expectation": "reject: grams_lower exceeds grams_upper",
+      "base": "quantity-range", "changes": [{"path": ["arguments", "entry", "items", 0, "quantity", "grams_lower"], "value": "200"}]
+    },
+    {
+      "id": "semantic-batch-share", "schema_valid": true, "semantic_expectation": "reject: share exceeds one",
+      "base": "plan-create", "changes": [{"path": ["arguments", "entries", 0, "entry", "items", 0, "quantity", "share"], "value": "1.5"}]
+    },
+    {
+      "id": "semantic-cooked-output", "schema_valid": true, "semantic_expectation": "reject: consumed exceeds cooked batch",
+      "base": "quantity-cooked-mass", "changes": [{"path": ["arguments", "entry", "items", 0, "quantity", "consumed_grams"], "value": "500"}]
+    },
+    {
+      "id": "semantic-unowned-reference", "schema_valid": true, "semantic_expectation": "reject if record is not owned by authenticated user",
+      "base": "log-delete", "changes": [{"path": ["arguments", "record_id"], "value": "99999999-9999-4999-8999-999999999999"}]
+    }
+  ]
+}

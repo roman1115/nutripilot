@@ -2,11 +2,14 @@ from fastapi.testclient import TestClient
 
 from nutripilot.api.app import create_app
 from nutripilot.application import build_container
+from nutripilot.config import Settings
 
 
 def test_profile_feedback_and_plan_endpoints_share_the_application_store() -> None:
-    container = build_container()
+    token = "resource-owner-two-" + "a" * 32
+    container = build_container(settings=Settings(_env_file=None, api_access_tokens={token: 2}))
     with TestClient(create_app(container)) as client:
+        client.headers["Authorization"] = f"Bearer {token}"
         profile = client.get("/api/v1/profile", headers={"X-User-ID": "2"})
         assert profile.status_code == 200
         assert profile.json()["user_id"] == 2
@@ -21,7 +24,6 @@ def test_profile_feedback_and_plan_endpoints_share_the_application_store() -> No
                 "cuisines": ["粤菜"],
                 "avoidances": ["香菜"],
                 "allergens": ["花生"],
-                "daily_calorie_target": 1800,
                 "location": "广州",
             },
         )
@@ -30,7 +32,7 @@ def test_profile_feedback_and_plan_endpoints_share_the_application_store() -> No
         assert updated.json()["health_goals"] == ["减脂"]
         assert updated.json()["cuisines"] == ["粤菜"]
         assert updated.json()["allergens"] == ["花生"]
-        assert updated.json()["daily_calorie_target"] == 1800
+        assert updated.json()["daily_calorie_target"] is None
         assert updated.json()["location"] == "广州"
 
         reloaded = client.get("/api/v1/profile", headers={"X-User-ID": "2"})
@@ -65,8 +67,13 @@ def test_profile_feedback_and_plan_endpoints_share_the_application_store() -> No
         )
         assert waiting.json()["requires_confirmation"] is True
         pending_action = waiting.json()["pending_action"]
-        assert pending_action["operation"] == "create_meal_plan"
-        assert pending_action["payload"]["items"]
+        assert pending_action["operation"] == "diet_preview"
+        preview = client.get(
+            f"/api/v1/diet/previews/{pending_action['payload']['preview_id']}",
+            headers={"X-User-ID": "2"},
+        )
+        assert preview.status_code == 200
+        assert preview.json()["content"]["after_meals"]
         confirmed = client.post(
             "/api/v1/chat/resource-plan/confirm",
             json={
@@ -74,6 +81,8 @@ def test_profile_feedback_and_plan_endpoints_share_the_application_store() -> No
                 "approved": True,
                 "confirmation_id": pending_action["id"],
                 "idempotency_key": pending_action["idempotency_key"],
+                "preview_version": pending_action["payload"]["preview_version"],
+                "content_hash": pending_action["payload"]["content_hash"],
             },
         )
         assert confirmed.status_code == 200

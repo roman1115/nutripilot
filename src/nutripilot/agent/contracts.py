@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 from nutripilot.domain.enums import Intent
 from nutripilot.domain.models import IngredientGroup, IngredientTerm
+from nutripilot.tools.local.diet_models import DIET_ARGUMENT_MODELS
 from nutripilot.tools.models import ToolCall
 
 
@@ -88,6 +89,9 @@ class IntentOutput(BaseModel):
     notes: str = ""
     answer_task: AnswerTask = Field(default_factory=AnswerTask)
     history_query: str | None = Field(default=None, min_length=1, max_length=80)
+    diet_operation: Literal[
+        "query", "intake", "log_change", "plan_change", "target_change"
+    ] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -139,6 +143,8 @@ class PlannerOutput(BaseModel):
                         f"{call.name}不支持参数：{','.join(sorted(unknown))}；"
                         f"仅允许：{','.join(properties)}。删除未知参数，不自行扩展工具。"
                     )
+            if call.name in DIET_ARGUMENT_MODELS:
+                DIET_ARGUMENT_MODELS[call.name].model_validate(call.arguments)
         return self
 
 

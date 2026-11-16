@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel
 
 from nutripilot.tools.errors import ToolRuntimeError
@@ -20,20 +22,27 @@ from nutripilot.tools.local.ports import LocalDataStore, WeatherProvider
 from nutripilot.tools.models import ToolAccess, ToolContext, ToolDefinition
 from nutripilot.tools.registry import ToolRegistry
 
+if TYPE_CHECKING:
+    from nutripilot.application.diet_management import DietManagement
+
 
 def build_local_tool_definitions(
-    store: LocalDataStore, weather_provider: WeatherProvider
+    store: LocalDataStore,
+    weather_provider: WeatherProvider,
+    diet: DietManagement | None = None,
 ) -> list[ToolDefinition]:
     async def get_user_profile(_arguments: BaseModel, context: ToolContext) -> UserProfile:
-        return await store.get_user_profile(_require_user(context))
+        from nutripilot.application.diet_compatibility import DietCompatibility
+
+        owner = _require_user(context)
+        profile = await store.get_user_profile(owner)
+        return await DietCompatibility(diet).profile(owner, profile) if diet else profile
 
     async def get_weather_context(arguments: BaseModel, _context: ToolContext) -> WeatherContext:
         request = GetWeatherContextArgs.model_validate(arguments)
         return await weather_provider.get_weather(request.location)
 
-    async def get_user_feedback(
-        _arguments: BaseModel, context: ToolContext
-    ) -> FeedbackHistory:
+    async def get_user_feedback(_arguments: BaseModel, context: ToolContext) -> FeedbackHistory:
         records = await store.list_feedback(_require_user(context))
         excluded_meal_ids = sorted(
             {
@@ -46,6 +55,10 @@ def build_local_tool_definitions(
         return FeedbackHistory(records=records, excluded_meal_ids=excluded_meal_ids)
 
     async def create_meal_plan(arguments: BaseModel, context: ToolContext) -> MealPlan:
+        if diet is not None:
+            raise ToolRuntimeError(
+                "DIET_PREVIEW_REQUIRED", "请重新生成餐单预览后确认，旧批准不能直接写入。"
+            )
         request = CreateMealPlanArgs.model_validate(arguments)
         return await store.create_meal_plan(
             _require_user(context), request, _require_idempotency(context)
@@ -58,7 +71,13 @@ def build_local_tool_definitions(
         )
 
     async def update_user_profile(arguments: BaseModel, context: ToolContext) -> UserProfile:
+        from nutripilot.application.diet_compatibility import GOAL_FIELDS
+
         request = UpdateUserProfileArgs.model_validate(arguments)
+        if diet is not None and GOAL_FIELDS & request.model_fields_set:
+            raise ToolRuntimeError(
+                "TARGET_PREVIEW_REQUIRED", "营养目标需要独立预览，请使用目标设置入口。"
+            )
         if not request.model_fields_set:
             raise ToolRuntimeError(
                 "EMPTY_PROFILE_UPDATE", "At least one profile field must be provided."
@@ -136,8 +155,11 @@ def register_local_tools(
     weather_provider: WeatherProvider,
     *,
     replace: bool = False,
+    diet: DietManagement | None = None,
 ) -> ToolRegistry:
-    registry.register_many(build_local_tool_definitions(store, weather_provider), replace=replace)
+    registry.register_many(
+        build_local_tool_definitions(store, weather_provider, diet), replace=replace
+    )
     return registry
 
 

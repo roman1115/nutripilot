@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime
 
 import pytest
 from apps.nutrition_mcp.service import NutritionMCPService
 from fastapi.testclient import TestClient
+from tests.diet_helpers import approval, plan_items, plan_preview
 
 from nutripilot.api.app import create_app
 from nutripilot.application import build_container
 from nutripilot.application.chat_service import InvalidConfirmationStateError
 from nutripilot.config import Settings
+from nutripilot.infrastructure.diet_migration import convert_legacy_plan
 from nutripilot.infrastructure.memory import InMemoryDataStore, load_seed_store
 from nutripilot.model_gateway import FakeModelGateway
 from nutripilot.tools.errors import ToolRuntimeError
@@ -60,7 +63,13 @@ async def test_retired_meals_cannot_enter_new_plans_but_old_idempotent_replays_w
 
 
 def test_historical_plan_names_nutrition_feedback_and_user_isolation_survive() -> None:
-    container = build_container(settings=Settings(_env_file=None))
+    token, other = "a" * 32, "b" * 32
+    container = build_container(
+        settings=Settings(
+            _env_file=None,
+            api_access_tokens={token: 23, other: 24},
+        )
+    )
     request = CreateMealPlanArgs.model_validate(
         {
             "title": "旧版餐单",
@@ -74,14 +83,33 @@ def test_historical_plan_names_nutrition_feedback_and_user_isolation_survive() -
         created_at=datetime.now(UTC),
         **request.model_dump(),
     )
+
+    async def migrate_fixture():
+        plan, meals = convert_legacy_plan(
+            container.data_store._plans["historical"],
+            now=datetime.now(UTC),
+            names={2: "鸡胸藜麦能量碗"},
+        )
+        async with container.diet.store.transaction(
+            23, default_timezone=container.diet.default_timezone
+        ) as tx:
+            await tx.save_plan(plan)
+            for meal in meals:
+                await tx.save_planned_meal(meal)
+
+    asyncio.run(migrate_fixture())
     with TestClient(create_app(container)) as client:
+        client.headers["Authorization"] = f"Bearer {token}"
         response = client.get("/api/v1/meal-plans", headers={"X-User-ID": "23"})
         item = response.json()[0]["items"][0]
         assert item["meal_name"] == "鸡胸藜麦能量碗"
-        assert item["calories"] == 516
-        assert item["is_active"] is False
-        assert item["nutrition"]["source_status"] == "unverified_estimate"
-        assert not client.get("/api/v1/meal-plans", headers={"X-User-ID": "24"}).json()
+        assert item["meal_id"] == 2
+        assert item["calories"] is None
+        assert item["quantity_status"] == "unknown"
+        assert item["nutrition"] is None
+        assert not client.get(
+            "/api/v1/meal-plans", headers={"Authorization": f"Bearer {other}"}
+        ).json()
         payload = RecordFeedbackArgs(meal_id=2, feedback_type="like").model_dump()
         first = client.post(
             "/api/v1/feedback",
@@ -106,8 +134,8 @@ async def test_pending_plan_replacement_preserves_scope_and_invalidates_old_conf
         thread_id="replace-plan",
         message="从2026-11-02开始制定一日三餐餐单",
     )
-    original = first["pending_tool_calls"][0]
-    original_ids = {item["meal_id"] for item in original["arguments"]["items"]}
+    original = approval(first)
+    original_ids = {item["meal_id"] for item in await plan_items(container, first)}
     assert len(original_ids) == 3
     replacement = await container.chat_service.chat(
         user_id=23,
@@ -115,9 +143,10 @@ async def test_pending_plan_replacement_preserves_scope_and_invalidates_old_conf
         message="换一批菜品，重新制定餐单",
     )
     assert replacement["phase"] == "AWAITING_CONFIRMATION"
-    pending = replacement["pending_tool_calls"][0]
-    assert pending["arguments"]["start_date"] == date(2026, 11, 2).isoformat()
-    items = pending["arguments"]["items"]
+    pending = approval(replacement)
+    preview = await plan_preview(container, replacement)
+    assert preview.content.after_plan.start_date == date(2026, 11, 2)
+    items = await plan_items(container, replacement)
     assert len(items) == 3
     assert not original_ids.intersection(item["meal_id"] for item in items)
     assert all(item["meal_id"] >= 1000 for item in items)
@@ -127,18 +156,22 @@ async def test_pending_plan_replacement_preserves_scope_and_invalidates_old_conf
             thread_id="replace-plan",
             user_id=23,
             approved=True,
-            confirmation_id=original["call_id"],
+            **original,
         )
     confirmed = await container.chat_service.confirm(
         thread_id="replace-plan",
         user_id=23,
         approved=True,
-        confirmation_id=pending["call_id"],
+        **pending,
     )
     assert confirmed["phase"] == "COMPLETED"
-    saved = (await container.data_store.list_plans(23))[0]
-    assert [item.model_dump(mode="json") for item in saved.items] == items
-    assert saved.quality == replacement["plan_quality"]
+    async with container.diet.store.transaction(
+        23, default_timezone=container.diet.default_timezone
+    ) as tx:
+        saved = await tx.list_planned_meals(preview.content.after_plan.id)
+    assert {meal.id: meal for meal in saved} == {
+        meal.id: meal for meal in preview.content.after_meals
+    }
 
 
 @pytest.mark.asyncio
@@ -154,16 +187,14 @@ async def test_plan_candidate_coverage_keeps_allergy_constraints_in_every_search
     assert all(
         "鸡蛋" not in hit["allergens"] for search in searches for hit in search["data"]["hits"]
     )
-    for item in state["pending_tool_calls"][0]["arguments"]["items"]:
+    for item in await plan_items(container, state):
         meal = await container.data_store.get_meal(item["meal_id"])
         assert meal.is_active and meal.recipe_id is not None
         assert item["meal_type"] in meal.meal_types
         assert "鸡蛋" not in meal.allergens
 
 
-@pytest.mark.parametrize(
-    "requested_types", [("breakfast", "lunch", "dinner"), ("lunch",), (None,)]
-)
+@pytest.mark.parametrize("requested_types", [("breakfast", "lunch", "dinner"), ("lunch",), (None,)])
 @pytest.mark.asyncio
 async def test_plan_searches_cover_each_meal_once_without_multiplying_calls(
     requested_types,
@@ -191,9 +222,7 @@ async def test_plan_searches_cover_each_meal_once_without_multiplying_calls(
     gateway.register_handler("planner", planner)
     container = build_container(settings=Settings(_env_file=None), gateway=gateway)
 
-    state = await container.chat_service.chat(
-        user_id=23, message="制定一日三餐餐单，我对鸡蛋过敏"
-    )
+    state = await container.chat_service.chat(user_id=23, message="制定一日三餐餐单，我对鸡蛋过敏")
 
     assert state["phase"] == "AWAITING_CONFIRMATION"
     searches = [r for r in state["tool_results"] if r["tool_name"] == "search_meals"]
@@ -202,7 +231,7 @@ async def test_plan_searches_cover_each_meal_once_without_multiplying_calls(
     assert not await container.data_store.list_plans(23)
     for search in searches:
         assert all("鸡蛋" not in hit["allergens"] for hit in search["data"]["hits"])
-    assert len(state["pending_tool_calls"][0]["arguments"]["items"]) == 3
+    assert len(await plan_items(container, state)) == 3
 
 
 @pytest.mark.asyncio
@@ -224,13 +253,14 @@ async def test_retirement_between_preview_and_confirmation_blocks_the_write() ->
         thread_id="stale-preview",
         message="制定一日午餐餐单",
     )
-    meal_id = waiting["pending_tool_calls"][0]["arguments"]["items"][0]["meal_id"]
+    meal_id = (await plan_items(container, waiting))[0]["meal_id"]
     meal = await container.data_store.get_meal(meal_id)
     container.data_store._meals[meal_id] = meal.model_copy(update={"is_active": False})
     final = await container.chat_service.confirm(
         user_id=23,
         thread_id="stale-preview",
         approved=True,
+        **approval(waiting),
     )
     assert final["phase"] == "FAILED"
     assert final["error"]["code"] == "MEAL_RETIRED"
@@ -265,12 +295,14 @@ async def test_model_cannot_turn_personal_profile_targets_into_whole_dish_filter
     state = await container.chat_service.chat(user_id=23, message="制定一日三餐餐单")
     assert state["requires_confirmation"]
     assert state["plan_quality"]["nutrition_basis"] == "whole_recipe"
-    assert len(state["pending_tool_calls"][0]["arguments"]["items"]) == 3
+    assert len(await plan_items(container, state)) == 3
 
 
 def test_preview_and_saved_api_preserve_whole_recipe_ranges_and_sources() -> None:
-    container = build_container(settings=Settings(_env_file=None))
+    token = "c" * 32
+    container = build_container(settings=Settings(_env_file=None, api_access_tokens={token: 23}))
     with TestClient(create_app(container)) as client:
+        client.headers["Authorization"] = f"Bearer {token}"
         waiting = client.post(
             "/api/v1/chat",
             json={
@@ -280,11 +312,20 @@ def test_preview_and_saved_api_preserve_whole_recipe_ranges_and_sources() -> Non
             },
         ).json()
         action = waiting["pending_action"]
-        preview = action["meal_preview"]
-        assert len(preview) == 21
-        assert all(item["nutrition"]["source_uri"] for item in preview)
-        assert any(item["nutrition"]["nutrient_ranges"] for item in preview)
-        assert all("整道菜" in item["nutrition"]["serving_size"] for item in preview)
+        preview = client.get(
+            f"/api/v1/diet/previews/{action['payload']['preview_id']}",
+            headers={"X-User-ID": "23"},
+        ).json()["content"]["after_meals"]
+        foods = [item for meal in preview for item in meal["items"]]
+        assert len(foods) == 21
+        assert all(item["evidence_snapshot"]["source_uri"] for item in foods)
+        assert any(
+            nutrient["value"] and nutrient["value"]["lower"] != nutrient["value"]["upper"]
+            for item in foods
+            for nutrient in item["evidence_snapshot"]["nutrients"].values()
+        )
+        assert all(item["quantity"]["kind"] == "unknown" for item in foods)
+        assert all(item["nutrition_snapshot"]["calories_kcal"]["value"] is None for item in foods)
         assert waiting["plan_quality"]["nutrition_basis"] == "whole_recipe"
         assert (
             client.post(
@@ -293,12 +334,27 @@ def test_preview_and_saved_api_preserve_whole_recipe_ranges_and_sources() -> Non
                     "user_id": 23,
                     "approved": True,
                     "confirmation_id": action["id"],
+                    "preview_version": action["payload"]["preview_version"],
+                    "content_hash": action["payload"]["content_hash"],
                 },
             ).json()["phase"]
             == "COMPLETED"
         )
         saved = client.get("/api/v1/meal-plans", headers={"X-User-ID": "23"}).json()[0]
-        assert saved["quality"] == waiting["plan_quality"]
-        assert [item["nutrition"] for item in saved["items"]] == [
-            item["nutrition"] for item in preview
-        ]
+        assert saved["quality"] is None
+        authoritative = []
+        cursor = None
+        while True:
+            page = client.get(
+                f"/api/v1/diet/plans/{saved['id']}/meals",
+                params={"cursor": cursor} if cursor else {},
+            ).json()
+            authoritative.extend(page["items"])
+            cursor = page["next_cursor"]
+            if cursor is None:
+                break
+        assert {
+            item["id"]: item["evidence_snapshot"]
+            for meal in authoritative
+            for item in meal["meal"]["items"]
+        } == {item["id"]: item["evidence_snapshot"] for item in foods}

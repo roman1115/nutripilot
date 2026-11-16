@@ -18,11 +18,13 @@ import { EvaluationView } from "./features/evaluations/EvaluationView";
 import { MealPlansView } from "./features/plans/MealPlansView";
 import { ProfileView } from "./features/profile/ProfileView";
 import { TraceView } from "./features/traces/TraceView";
+import { DietView } from "./features/diet/DietView";
 import { API_BASE_URL, authenticateAccessToken, checkHealth } from "./lib/api";
 import type { ConnectionState, RuntimeStatus, ViewKey } from "./types";
 
 const navigation = [
   { key: "chat" as const, label: "对话", icon: MessageSquareText },
+  { key: "diet" as const, label: "饮食记录", icon: Salad },
   { key: "profile" as const, label: "饮食偏好", icon: UserRound },
   { key: "plans" as const, label: "饮食计划", icon: CalendarDays },
   { key: "traces" as const, label: "执行记录", icon: Activity },
@@ -31,6 +33,7 @@ const navigation = [
 
 const viewTitles: Record<ViewKey, string> = {
   chat: "饮食对话",
+  diet: "饮食记录",
   profile: "饮食偏好",
   plans: "饮食计划",
   traces: "调用链回放",
@@ -106,6 +109,8 @@ export default function App() {
 
   const currentView = useMemo(() => {
     switch (view) {
+      case "diet":
+        return <DietView connection={connection} />;
       case "profile":
         return <ProfileView connection={connection} />;
       case "plans":
