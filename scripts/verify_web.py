@@ -307,6 +307,9 @@ def main() -> None:
             expect(page.locator(".confirmation-panel")).not_to_be_visible(
                 timeout=120000 if args.real else 15000
             )
+            expect(page.get_by_role("button", name="发送消息", exact=True)).to_be_visible(
+                timeout=120000 if args.real else 15000
+            )
             checks.append("plan preview preserves unknown personal portions and nutrition")
             navigate_view(page, "饮食计划")
             expect(page.get_by_role("heading", name="周餐单", exact=True)).to_be_visible()
