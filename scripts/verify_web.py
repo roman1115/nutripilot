@@ -250,26 +250,44 @@ def main() -> None:
             page.get_by_role("textbox", name="发送给 NutriPilot 的消息").fill(
                 "制定一日三餐饮食计划，每日1500千卡，每天蛋白质至少80克。没有口味菜系和食材限制。"
             )
-            page.get_by_role("button", name="发送消息", exact=True).click()
-            expect(page.locator(".plan-preview summary")).to_have_text(
-                "餐单明细（3 餐）", timeout=120000 if args.real else 15000
-            )
-            expect(page.locator(".confirmation-meals")).to_contain_text("整菜营养合计")
-            expect(page.locator(".confirmation-meals")).not_to_contain_text("匹配容差")
-            original_names = page.locator(".plan-preview li strong").all_text_contents()
+            with page.expect_response(
+                re.compile(r"/api/v1/diet/previews/[^/]+$"),
+                timeout=120000 if args.real else 15000,
+            ) as prepared:
+                page.get_by_role("button", name="发送消息", exact=True).click()
+            preview_response = prepared.value
+            assert preview_response.ok, preview_response.text()
+            plans_url = preview_response.url.split("/api/v1/")[0] + "/api/v1/meal-plans"
+            headers = {"X-User-ID": str(args.user_id)}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            existing = page.request.get(plans_url, headers=headers)
+            assert existing.ok, existing.text()
+            existing_ids = {plan["id"] for plan in existing.json()}
+            confirm = page.get_by_role("button", name="确认执行", exact=True)
+            meals = page.locator(".confirmation-meals")
+            expect(confirm).to_be_enabled(timeout=120000 if args.real else 15000)
+            expect(meals.locator("li")).to_have_count(3)
+            expect(meals).to_contain_text("份量未知：未提供个人份量")
+            original_names = meals.locator("li strong").all_text_contents()
             page.get_by_role("button", name="换一批菜品", exact=True).click()
-            expect(page.locator(".plan-preview summary")).to_have_text(
-                "餐单明细（3 餐）", timeout=120000 if args.real else 15000
-            )
-            expect(page.locator(".plan-preview li strong").first).not_to_have_text(
+            expect(meals.locator("li strong").first).not_to_have_text(
                 original_names[0], timeout=120000 if args.real else 15000
             )
-            replacement_names = page.locator(".plan-preview li strong").all_text_contents()
+            expect(confirm).to_be_enabled(timeout=120000 if args.real else 15000)
+            expect(meals.locator("li")).to_have_count(3)
+            replacement_names = meals.locator("li strong").all_text_contents()
             assert not set(original_names) & set(replacement_names)
+            before_confirmation = page.request.get(plans_url, headers=headers)
+            assert before_confirmation.ok, before_confirmation.text()
+            assert {plan["id"] for plan in before_confirmation.json()} == existing_ids
+            checks.append("preparing and replacing a plan never saves formal data")
             checks.append("pending plan can replace recipes before confirmation")
-            page.locator(".plan-preview summary").click()
-            expect(page.locator(".plan-preview li")).to_have_count(3)
-            expect(page.locator(".plan-preview li").first).to_contain_text("蛋白质")
+            page.reload()
+            page.wait_for_load_state("networkidle")
+            expect(confirm).to_be_enabled()
+            assert meals.locator("li strong").all_text_contents() == replacement_names
+            checks.append("authoritative diet preview restores after reload")
             page.screenshot(path=str(args.output_dir / "plan-preview.png"), full_page=True)
             for width, height in ((390, 844), (320, 740)):
                 page.set_viewport_size({"width": width, "height": height})
@@ -285,39 +303,38 @@ def main() -> None:
                     animations="disabled",
                 )
             page.set_viewport_size({"width": 1440, "height": 1000})
-            page.get_by_role("button", name="确认执行", exact=True).click()
+            confirm.click()
             expect(page.locator(".confirmation-panel")).not_to_be_visible(
                 timeout=120000 if args.real else 15000
             )
-            checks.append(
-                "plan preview shows whole recipe ranges without personal target judgments"
-            )
+            checks.append("plan preview preserves unknown personal portions and nutrition")
             navigate_view(page, "饮食计划")
-            expect(page.locator(".plan-meal-row")).to_have_count(3, timeout=10000)
-            saved_names = [
-                name.replace("菜谱来源", "").strip()
-                for name in page.locator(".plan-meal-row > strong").all_text_contents()
-            ]
+            expect(page.get_by_role("heading", name="周餐单", exact=True)).to_be_visible()
+            expect(page.locator(".diet-plan-slot li")).to_have_count(3, timeout=10000)
+            saved_names = page.locator(".diet-plan-slot li > span").all_text_contents()
             assert saved_names == replacement_names
-            expect(page.locator(".plan-day-heading")).to_contain_text("蛋白质")
-            expect(page.locator(".plan-calories")).to_contain_text("所选整菜合计")
-            assert page.locator(".notice-warning > div").evaluate_all(
-                "nodes => nodes.every(node => node.getBoundingClientRect().width > 200)"
+            expect(page.locator(".diet-plan-slot li small").first).to_have_text("未知")
+            page.reload()
+            page.wait_for_load_state("networkidle")
+            expect(page.locator(".diet-plan-slot li")).to_have_count(3)
+            assert (
+                page.locator(".diet-plan-slot li > span").all_text_contents() == replacement_names
             )
+            saved = page.request.get(plans_url, headers=headers)
+            assert saved.ok, saved.text()
+            assert len({plan["id"] for plan in saved.json()} - existing_ids) == 1
             page.screenshot(path=str(args.output_dir / "saved-plan.png"), full_page=True)
-            checks.append("approved plan persists and lists calories and protein")
+            checks.append("approved week plan persists without duplicate meals on reload")
             for width, height in ((1440, 1000), (390, 844), (320, 740)):
                 page.set_viewport_size({"width": width, "height": height})
                 assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
-                assert page.locator(".notice-warning > div").evaluate_all(
-                    "nodes => nodes.every(node => node.getBoundingClientRect().width > 150)"
-                )
+                expect(page.locator(".diet-plan-slot li")).to_have_count(3)
                 page.screenshot(
                     path=str(args.output_dir / f"saved-plan-{width}.png"),
                     full_page=True,
                     animations="disabled",
                 )
-            checks.append("saved plan ranges, sources and notices fit desktop and mobile layouts")
+            checks.append("saved week plan fits desktop and mobile layouts")
             page.set_viewport_size({"width": 1440, "height": 1000})
             navigate_view(page, "对话")
             close_activity = page.get_by_role("button", name="关闭执行过程", exact=True)

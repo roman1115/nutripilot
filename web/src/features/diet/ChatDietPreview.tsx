@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
+import { RotateCcw } from "lucide-react";
 import { ErrorNotice, LoadingState } from "../../components/Common";
 import { dietGet } from "./api";
 import { goalKeys, meals, nutrients, quantityText, rangeText } from "./types";
 import type { DietItem, Draft, Preview } from "./types";
 
-export function ChatDietPreview({ id, version, hash, onVerified }: { id: string; version: number; hash: string; onVerified: (hash: string | null) => void }) {
+export function ChatDietPreview({ id, version, hash, onVerified, onReplace, busy }: { id: string; version: number; hash: string; onVerified: (hash: string | null) => void; onReplace: () => void; busy: boolean }) {
   const [value, setValue] = useState<Draft | Preview | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -27,6 +28,7 @@ export function ChatDietPreview({ id, version, hash, onVerified }: { id: string;
     {"after" in content && "goals" in content.after ? <><p>目标生效日期：{content.after.effective_date}</p><dl>{goalKeys.map((key) => <div key={key}><dt>{nutrients[key].name}</dt><dd>{rangeText(content.after && "goals" in content.after ? content.after.goals[key] : null, key)}</dd></div>)}</dl></> : null}
     {"after" in content && "items" in content.after ? <><p>{content.after.temporal.local_date} · {meals[content.after.temporal.meal_type]}</p><Items items={content.after.items} /></> : null}
     <p>有效至 {new Date(value.expires_at).toLocaleString("zh-CN")}。未知数据不会按零计算。</p>
+    {"operation" in content && content.operation === "plan_create" && <button className="button button-secondary" type="button" onClick={onReplace} disabled={busy}><RotateCcw size={15} />换一批菜品</button>}
   </div>;
 }
 

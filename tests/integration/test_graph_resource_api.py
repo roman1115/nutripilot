@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from nutripilot.api.app import create_app
@@ -5,9 +6,18 @@ from nutripilot.application import build_container
 from nutripilot.config import Settings
 
 
-def test_profile_feedback_and_plan_endpoints_share_the_application_store() -> None:
+@pytest.mark.parametrize("fixed_identity", [False, True])
+def test_profile_feedback_and_plan_endpoints_share_the_application_store(
+    fixed_identity: bool,
+) -> None:
     token = "resource-owner-two-" + "a" * 32
-    container = build_container(settings=Settings(_env_file=None, api_access_tokens={token: 2}))
+    container = build_container(
+        settings=Settings(
+            _env_file=None,
+            api_access_tokens={} if fixed_identity else {token: 2},
+            api_local_user_id=2 if fixed_identity else None,
+        )
+    )
     with TestClient(create_app(container)) as client:
         client.headers["Authorization"] = f"Bearer {token}"
         profile = client.get("/api/v1/profile", headers={"X-User-ID": "2"})
@@ -73,7 +83,9 @@ def test_profile_feedback_and_plan_endpoints_share_the_application_store() -> No
             headers={"X-User-ID": "2"},
         )
         assert preview.status_code == 200
+        assert preview.json()["user_id"] == 2
         assert preview.json()["content"]["after_meals"]
+        assert client.get("/api/v1/meal-plans").json() == []
         confirmed = client.post(
             "/api/v1/chat/resource-plan/confirm",
             json={

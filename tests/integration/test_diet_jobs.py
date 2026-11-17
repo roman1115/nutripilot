@@ -41,6 +41,7 @@ def test_independent_text_job_persists_events_and_requires_explicit_confirmation
         settings=Settings(_env_file=None, app_mode="test", user_timezone="UTC"), gateway=gateway
     )
     active.diet.clock = lambda: datetime(2026, 11, 12, 0, tzinfo=UTC)
+    active.diet.intake.clock = active.diet.clock
     with TestClient(create_app(active)) as client:
         response = client.post(
             "/api/v1/diet/drafts",
@@ -163,6 +164,7 @@ async def test_multiple_events_split_atomically_preserve_expiry_and_never_auto_c
         settings=Settings(_env_file=None, app_mode="test", user_timezone="UTC"), gateway=gateway
     )
     active.diet.clock = lambda: datetime(2026, 11, 12, 0, tzinfo=UTC)
+    active.diet.intake.clock = active.diet.clock
     await start_container(active)
     try:
         await active.chat_worker.close()
@@ -223,6 +225,7 @@ async def test_reparse_merges_unlocked_fields_and_preserves_quantity_identity() 
         settings=Settings(_env_file=None, app_mode="test", user_timezone="UTC")
     )
     active.diet.clock = lambda: datetime(2026, 11, 12, 0, tzinfo=UTC)
+    active.diet.intake.clock = active.diet.clock
     await start_container(active)
     try:
         await active.chat_worker.close()

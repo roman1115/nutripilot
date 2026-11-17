@@ -36,6 +36,10 @@ jobs:
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      API_ACCESS_TOKENS: "{}"
+      API_LOCAL_USER_ID: "910024"
+      API_RATE_LIMIT_PER_MINUTE: "1000"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -55,6 +59,7 @@ jobs:
         if: always()
         with:
           name: browser-regression
+          include-hidden-files: true
           path: |
             .runtime/web-regression
             .runtime/*.log

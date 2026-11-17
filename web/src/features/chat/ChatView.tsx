@@ -1178,6 +1178,8 @@ function ChatSession({
               version={Number(pendingConfirmation.payload?.preview_version)}
               hash={String(pendingConfirmation.payload?.content_hash)}
               onVerified={setVerifiedDietPreview}
+              onReplace={() => void sendMessage("换一批菜品，重新制定餐单")}
+              busy={confirmationBusy || isSending}
             /> : pendingConfirmation.mealPreview?.length ? (
               <div className="confirmation-meals">
                 <p>所选整菜营养合计，不代表个人摄入量，不评定每日营养目标。</p>
