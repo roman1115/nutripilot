@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
@@ -70,6 +71,10 @@ class AnswerTask(BaseModel):
     recommendation_count: int | None = Field(default=None, ge=1, le=3)
     nutrient_preference: Literal["lower_fat", "higher_protein"] | None = None
     needs_nutrition: bool = False
+    meal_context: Literal["personal", "generic"] | None = None
+    meal_date: date | None = None
+    meal_calorie_limit: Decimal | None = Field(default=None, gt=0, le=10000)
+    meal_protein_minimum: Decimal | None = Field(default=None, ge=0, le=1000)
 
     @field_validator("meal_ids", mode="before")
     @classmethod

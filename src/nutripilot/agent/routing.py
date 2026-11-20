@@ -1,5 +1,6 @@
 """Pure routing policies owned by the deterministic Supervisor."""
 
+from nutripilot.agent.personal_meals import recommendation_save_match
 from nutripilot.agent.state import AgentState
 from nutripilot.domain.enums import Intent, Phase
 
@@ -16,7 +17,13 @@ def route_entry(state: AgentState) -> str:
 
 
 def route_after_risk(state: AgentState) -> str:
-    return "blocked" if state.get("blocked") else "intent"
+    if state.get("blocked"):
+        return "blocked"
+    if state.get("previous_personal_options") and recommendation_save_match(
+        state["user_message"]
+    ):
+        return "explicit_intent"
+    return "intent"
 
 
 def route_after_intent(state: AgentState) -> str:

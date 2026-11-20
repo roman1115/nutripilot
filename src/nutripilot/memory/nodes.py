@@ -70,11 +70,18 @@ def archived_message(message: ConversationMessage) -> AnyMessage:
 
 
 def displayed_meals(response: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
+    meals = [
         {"meal_id": item["meal_id"], "name": item["name"]}
         for item in response.get("recommendations", [])
         if item.get("meal_id") and item.get("name")
     ]
+    seen = {item["meal_id"] for item in meals}
+    for option in response.get("personal_meal_options", []):
+        for item in option["items"]:
+            if item["meal_id"] not in seen:
+                seen.add(item["meal_id"])
+                meals.append({"meal_id": item["meal_id"], "name": item["name"]})
+    return meals
 
 
 def finalized_update(state: AgentState) -> dict[str, Any]:

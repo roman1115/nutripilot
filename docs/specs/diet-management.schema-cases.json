@@ -2,6 +2,14 @@
   "description": "Synthetic contract examples only, not nutrition seed data. Cases inherit an earlier case and apply path changes in order. Semantic expectations are documentation until runtime validators exist.",
   "cases": [
     {
+      "id": "read-recommendation-context", "schema_valid": true,
+      "input": {"tool": "get_recommendation_context", "arguments": {"local_date": "2026-11-18", "meal_type": "dinner"}}
+    },
+    {
+      "id": "read-recommendation-context-owner", "schema_valid": false,
+      "input": {"tool": "get_recommendation_context", "arguments": {"user_id": 42}}
+    },
+    {
       "id": "read-search", "schema_valid": true,
       "input": {"tool": "search_foods", "arguments": {"query": "contract fixture", "limit": 10}}
     },

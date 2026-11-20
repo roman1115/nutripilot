@@ -6,6 +6,8 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from nutripilot.domain.personal_meal import PersonalMealOption
+
 IngredientTerm = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)
 ]
@@ -68,3 +70,4 @@ class FinalResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     suggested_actions: list[str] = Field(default_factory=list)
     diet_context: DietMemoryReference | None = None
+    personal_meal_options: list[PersonalMealOption] = Field(default_factory=list)

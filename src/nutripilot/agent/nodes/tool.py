@@ -7,6 +7,12 @@ from typing import TYPE_CHECKING, Any
 
 from nutripilot.agent.contracts import PlanSpec
 from nutripilot.agent.nodes.diet import preview_reference
+from nutripilot.agent.personal_meals import (
+    OPTION_WORDS,
+    dish_search_slots,
+    recommendation_share_match,
+    rice_pairing,
+)
 from nutripilot.agent.planning import (
     PlanBuilder,
     PlanBuildError,
@@ -42,6 +48,28 @@ class ToolExecutionNode:
 
     async def run(self, state: AgentState) -> dict[str, Any]:
         calls = [ToolCall.model_validate(item) for item in state.get("pending_tool_calls", [])]
+        portion_names: dict[str, str] = {}
+        previous_options = state.get("previous_personal_options", [])
+        adjustment = recommendation_share_match(state["user_message"])
+        if previous_options and adjustment and (search := next(
+            (call for call in calls if call.name == "search_meals"), None,
+        )):
+            index = OPTION_WORDS.get(adjustment[1] or "", 0)
+            options = previous_options[index:index + 1]
+            portion_item_names = dict.fromkeys(
+                item["name"] for option in options for item in option["items"]
+                if item.get("meal_id") is not None
+            )
+            portion_names = {
+                f"{search.call_id}:portion:{index}": name
+                for index, name in enumerate(portion_item_names)
+            }
+            calls = [
+                *[call for call in calls if call.name != "search_meals"],
+                *(search.model_copy(update={"call_id": call_id, "arguments": {
+                    "query": name, "limit": 5,
+                }}) for call_id, name in portion_names.items()),
+            ] or [search]
         if state.get("intent") == Intent.MEAL_PLAN.value:
             spec = plan_spec_from_results(
                 state.get("slots", {}),
@@ -105,8 +133,17 @@ class ToolExecutionNode:
                 call = call.model_copy(
                     update={"arguments": {"name": state["slots"]["food_name"]}}
                 )
-            call = _apply_profile_constraints(call, results, state.get("slots", {}))
+            call = _apply_profile_constraints(call, results, dish_search_slots(state))
             if call.name == "search_meals":
+                if rice_pairing(state):
+                    call = call.model_copy(
+                        update={"arguments": {**call.arguments, "meal_role": "dish"}}
+                    )
+                if portion_name := portion_names.get(call.call_id):
+                    arguments = dict(call.arguments)
+                    arguments.pop("meal_type", None)
+                    arguments["food_name"] = portion_name
+                    call = call.model_copy(update={"arguments": arguments})
                 targets = state.get("answer_task", {}).get("meal_ids", [])
                 if state.get("intent") == Intent.MEAL_ADJUSTMENT.value and targets:
                     call = call.model_copy(update={"arguments": {
@@ -118,7 +155,7 @@ class ToolExecutionNode:
                 elif (
                     state.get("intent") == Intent.MEAL_ADJUSTMENT.value
                     and any(term in state["user_message"] for term in (
-                        "换一批", "换一个", "不想吃这个", "再来", "换几道",
+                        "换一批", "换一个", "换一组", "不想吃这个", "再来", "换几道",
                     ))
                 ) or state.get(
                     "replacing_plan"

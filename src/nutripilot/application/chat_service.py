@@ -257,6 +257,15 @@ class ChatService:
         anchor = SubmissionAnchor.capture(now, zone)
         state["diet_submission_anchor"] = anchor.model_dump(mode="json")
         state["current_date"] = anchor.anchor_local_date.isoformat()
+        if previous:
+            previous_response = previous.get("final_response") or {}
+            options = previous_response.get("personal_meal_options") or []
+            if options:
+                state["previous_personal_options"] = options
+                state["previous_personal_task"] = previous.get("answer_task", {})
+                state["previous_personal_scope"] = {
+                    key: options[0][key] for key in ("local_date", "meal_type")
+                }
         # Existing thread memory is updated by the graph, never overwritten by turn defaults.
         for field in (
             "memory_summary",
@@ -356,7 +365,10 @@ class ChatService:
                     bounded.insert(0, result)
                     size += result_size
             state["conversation_evidence"] = bounded
-            state["previous_candidate_ids"] = list(previous.get("candidate_ids", []))
+            state["previous_candidate_ids"] = (
+                sorted({item["meal_id"] for option in options for item in option["items"]})
+                if options else list(previous.get("candidate_ids", []))
+            )
             if previous.get("intent") == Intent.MEAL_PLAN.value and any(
                 term in message for term in ("换一批", "换菜", "换一下", "重新安排", "重新制定")
             ):

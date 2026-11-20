@@ -7,14 +7,21 @@ import hashlib
 import hmac
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Literal, TypeVar
 
 from pydantic import AwareDatetime, BaseModel, Field, ValidationError, model_validator
 
 from nutripilot.domain.diet import (
+    GOAL_NUTRIENTS,
+    NUTRIENTS,
+    DayStatus,
     DietError,
     DietModel,
+    DifferenceRange,
+    MealType,
+    SubmissionAnchor,
+    summarize_nutrition,
 )
 from nutripilot.domain.diet_analysis import (
     DailyAnalysis,
@@ -25,14 +32,17 @@ from nutripilot.domain.diet_analysis import (
     weekly_analysis,
 )
 from nutripilot.domain.diet_records import (
+    DietDayDeclaration,
     DietLog,
     DietPlan,
     FoodHit,
     IntakeDraft,
+    NutritionTarget,
     PersonalFood,
     PlannedMeal,
     ResourceRef,
     TargetPeriod,
+    target_on,
     target_periods,
 )
 from nutripilot.tools.local.diet_models import (
@@ -41,6 +51,7 @@ from nutripilot.tools.local.diet_models import (
     GetMealPlans,
     GetNutritionSummary,
     GetNutritionTargets,
+    GetRecommendationContext,
     IDScope,
     RangeScope,
     SearchFoods,
@@ -48,6 +59,32 @@ from nutripilot.tools.local.diet_models import (
 from nutripilot.tools.local.ports import DietFoodSearch, DietStore, DietTransaction
 
 T = TypeVar("T", bound=BaseModel)
+
+
+async def recommendation_records(
+    tx: DietTransaction, day: date, meal_type: MealType | None, *, future: bool, now: datetime,
+) -> tuple[list[DietLog], DietDayDeclaration | None, NutritionTarget | None,
+           list[tuple[PlannedMeal, int]], str]:
+    logs = [] if future else [
+        log for log in await tx.list_logs(day, day)
+        if not log.deleted_at and (log.occurred_at is None or log.occurred_at <= now)
+    ]
+    declarations = [] if future else await tx.list_day_status(day, day)
+    declaration = declarations[0] if declarations else None
+    target = target_on(await tx.list_targets(), day)
+    plans = [
+        (meal, sum(log.deleted_at is None for log in await tx.list_source_logs(meal.id)))
+        for meal in await tx.planned_meals_in_range(day, day)
+        if not meal_type or meal.meal_type == meal_type
+    ]
+    versions = [
+        sorted((str(log.id), log.version) for log in logs),
+        (declaration.version, declaration.status) if declaration else None,
+        (str(target.id), target.version) if target else None,
+        sorted((str(meal.id), meal.version, count) for meal, count in plans),
+    ]
+    fingerprint = hashlib.sha256(json.dumps(versions).encode()).hexdigest()
+    return logs, declaration, target, plans, fingerprint
 
 
 class CollectionScope(DietModel):
@@ -147,6 +184,73 @@ class DietQueryService:
         self.store, self.foods = store, foods
         self.default_timezone, self.cursor_secret = default_timezone, cursor_secret
         self.clock = clock or (lambda: datetime.now(UTC))
+
+    async def recommendation_context(
+        self, user_id: int, request: GetRecommendationContext, anchor: SubmissionAnchor,
+    ) -> dict[str, object]:
+        day = request.local_date or anchor.anchor_local_date
+        async with self.store.transaction(user_id, default_timezone=self.default_timezone) as tx:
+            now = self.clock()
+            future = day > anchor.anchor_local_date
+            logs, declaration, target, relevant, fingerprint = await recommendation_records(
+                tx, day, request.meal_type, future=future, now=now,
+            )
+            snapshots = [item.nutrition_snapshot for log in logs for item in log.items]
+            status: DayStatus = declaration.status if declaration else "open"
+            actual = summarize_nutrition(
+                snapshots, record_count=len(logs),
+                day_status="open" if logs and status == "no_intake" else status,
+            )
+            goals = target.goals if target else None
+            differences = {}
+            for name in GOAL_NUTRIENTS:
+                goal = getattr(goals, name, None)
+                total = actual.nutrients[name].total
+                if goal is not None and total is not None and logs:
+                    differences[name] = DifferenceRange(
+                        lower=goal.lower - total.upper, upper=goal.upper - total.lower,
+                    ).model_dump(mode="json")
+            planned = []
+            for meal, recorded_count in relevant[:8]:
+                planned.append({
+                    "plan_id": meal.plan_id,
+                    "meal_ref": {"id": str(meal.id), "version": meal.version},
+                    "meal_type": meal.meal_type,
+                    "recorded_count": recorded_count,
+                    "item_count": len(meal.items),
+                    "items_truncated": len(meal.items) > 5,
+                    "items": [{
+                        "name": item.name_snapshot,
+                        "quantity": item.quantity.model_dump(mode="json"),
+                    } for item in meal.items[:5]],
+                    "nutrition": summarize_nutrition(
+                        (item.nutrition_snapshot for item in meal.items), record_count=1,
+                    ).model_dump(mode="json"),
+                })
+            return {
+                "local_date": day.isoformat(),
+                "timezone": anchor.timezone,
+                "as_of": now.isoformat(),
+                "diet_epoch": tx.state.diet_epoch,
+                "fingerprint": fingerprint,
+                "future": future,
+                "version": 1,
+                "meal_type": request.meal_type,
+                "actual": None if future else actual.model_dump(mode="json"),
+                "actual_refs": [{"id": str(log.id), "version": log.version} for log in logs[:8]],
+                "actual_refs_truncated": len(logs) > 8,
+                "actual_basis": {
+                    name: sorted({item.nutrient(name).basis for item in snapshots})
+                    for name in NUTRIENTS
+                },
+                "untimed_records": sum(log.occurred_at is None for log in logs),
+                "target": goals.model_dump(mode="json") if goals else None,
+                "target_ref": {"id": str(target.id), "version": target.version} if target else None,
+                "conditional_gap": differences,
+                "planned_meals": planned,
+                "plan_count": len(relevant),
+                "plans_truncated": len(relevant) > len(planned),
+            }
 
     async def drafts(self, user_id: int, request: CollectionQuery) -> QueryPage[IntakeDraft]:
         async with self.store.transaction(user_id, default_timezone=self.default_timezone) as tx:

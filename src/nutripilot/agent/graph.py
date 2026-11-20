@@ -24,6 +24,7 @@ from nutripilot.agent.nodes import (
 )
 from nutripilot.agent.nodes.diet import DietCommitNode
 from nutripilot.agent.nodes.diet_tools import DietToolsNode
+from nutripilot.agent.personal_meals import PersonalMealRecommendation
 from nutripilot.agent.routing import (
     route_after_confirmation,
     route_after_intent,
@@ -252,7 +253,8 @@ def create_agent_graph(
     gateway = BudgetedModelGateway(gateway)
     intent = IntentAgent(gateway, recorder)
     planner = PlannerAgent(gateway, recorder, tool_executor.registry)
-    recommendation = RecommendationAgent(gateway, recorder)
+    personal = PersonalMealRecommendation(diet, tool_executor, gateway, recorder) if diet else None
+    recommendation = RecommendationAgent(gateway, recorder, personal)
     risk = RiskNode(RiskGuard(), recorder)
     blocked = BlockedResponseNode(recorder)
     scope = ScopeResponseNode(recorder)
@@ -293,7 +295,8 @@ def create_agent_graph(
         "memory_load", route_entry, {"risk": "risk", "confirmation": "confirmation"}
     )
     graph.add_conditional_edges(
-        "risk", route_after_risk, {"blocked": "blocked", "intent": "context_prepare"}
+        "risk", route_after_risk,
+        {"blocked": "blocked", "intent": "context_prepare", "explicit_intent": "intent"},
     )
     graph.add_conditional_edges(
         "context_prepare",

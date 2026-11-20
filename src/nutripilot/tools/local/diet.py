@@ -20,6 +20,7 @@ from nutripilot.tools.local.diet_models import (
     DiscardIntake,
     EntryPatch,
     GetDietLogs,
+    GetRecommendationContext,
     PrepareDietLogChange,
     PrepareIntakeDraft,
     PrepareMealPlanChange,
@@ -186,6 +187,7 @@ class DietToolHandler:
 
     def __init__(self, name: str, diet: DietManagement) -> None:
         self.name = name
+        self.recommendation_context = diet.queries.recommendation_context
         self.operations = DietDraftOperations(diet)
         self.store, self.default_timezone, self.clock = (
             diet.store,
@@ -205,6 +207,12 @@ class DietToolHandler:
         if context.user_id is None:
             raise ToolRuntimeError("USER_ID_REQUIRED", "An authenticated identity is required.")
         try:
+            if isinstance(arguments, GetRecommendationContext):
+                if context.submission_anchor is None:
+                    raise DietError("ANCHOR_REQUIRED", "Submission anchor is required.")
+                return await self.recommendation_context(
+                    context.user_id, arguments, context.submission_anchor,
+                )
             if self.name in self.queries:
                 if (
                     isinstance(arguments, GetDietLogs)

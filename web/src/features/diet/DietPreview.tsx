@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { Check, X, LoaderCircle } from "lucide-react";
 import { ErrorNotice } from "../../components/Common";
 import { confirmDiet } from "./api";
-import { goalKeys, meals, nutrients, rangeText } from "./types";
+import { goalKeys, meals, nutrients, quantityText, rangeText } from "./types";
 import type { Draft, Preview, DietLog, Target } from "./types";
 
-export function DietPreview({ value, onClose, onSaved }: { value: Draft | Preview; onClose: () => void; onSaved: () => void }) {
+export function DietPreview({ value, onClose, onSaved, notice }: { value: Draft | Preview; onClose: () => void; onSaved: () => void; notice?: string }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -26,8 +26,10 @@ export function DietPreview({ value, onClose, onSaved }: { value: Draft | Previe
   return <dialog className="diet-dialog" ref={dialog} onCancel={(event) => { if (busy) event.preventDefault(); else onClose(); }} aria-labelledby="diet-preview-title">
     <div className="diet-dialog-heading"><h2 id="diet-preview-title">{titles[operation] || "确认变更"}</h2><button type="button" className="icon-button" title="关闭预览" aria-label="关闭预览" disabled={busy} onClick={onClose}><X size={18} /></button></div>
     {error && <ErrorNotice message={error} />}
+    {notice && <p className="muted" role="status">{notice}</p>}
+    {"recommendation_note" in value && value.recommendation_note && <p>{value.recommendation_note}</p>}
     {operation === "log_correct" && beforeRecord && record && "timezone" in record && beforeRecord.timezone !== record.timezone && <p>时区：{beforeRecord.timezone} → {record.timezone}</p>}
-    {plan && <><h3>{plan.after_plan.title}</h3><p>开始日期：{plan.after_plan.start_date}</p>{plan.before_plan && <p>餐单版本 {plan.before_plan.version} → {plan.after_plan.version}</p>}{plan.after_meals.map((meal) => <div className="diet-preview-meal" key={meal.id}><strong>{meal.local_date} · {meals[meal.meal_type]}{meal.deleted_at ? " · 删除餐次" : ""}</strong><ul>{meal.items.map((item) => <li key={item.id}>{item.name_snapshot} · {rangeText(item.nutrition_snapshot.calories_kcal.value, "calories_kcal")}</li>)}</ul>{meal.note && <p>{meal.note}</p>}</div>)}{operation === "plan_archive" && <p className="diet-warning">餐单将移入回收站，已有实际饮食记录不受影响，7天内可恢复。</p>}{operation === "plan_restore" && <p>恢复此餐单，不会新增实际饮食记录。</p>}</>}
+    {plan && <><h3>{plan.after_plan.title}</h3><p>开始日期：{plan.after_plan.start_date}</p>{plan.before_plan && <p>餐单版本 {plan.before_plan.version} → {plan.after_plan.version}</p>}{plan.after_meals.map((meal) => <div className="diet-preview-meal" key={meal.id}><strong>{meal.local_date} · {meals[meal.meal_type]}{meal.deleted_at ? " · 删除餐次" : ""}</strong><ul>{meal.items.map((item) => <li key={item.id}>{item.name_snapshot} · {quantityText(item.quantity)} · {rangeText(item.nutrition_snapshot.calories_kcal.value, "calories_kcal")}</li>)}</ul>{meal.note && <p>{meal.note}</p>}</div>)}{operation === "plan_archive" && <p className="diet-warning">餐单将移入回收站，已有实际饮食记录不受影响，7天内可恢复。</p>}{operation === "plan_restore" && <p>恢复此餐单，不会新增实际饮食记录。</p>}</>}
     {draft ? <><p>{draft.content.entry.temporal.local_date} · {meals[draft.content.entry.temporal.meal_type]} · {draft.content.anchor.timezone}</p><ul className="diet-preview-items">{draft.content.items.map((item) => <li key={item.id}><strong>{item.name_snapshot}</strong><span>{item.quantity.kind === "unknown" ? "份量未知" : item.quantity.kind === "mass" ? `${item.quantity.grams} g` : "个人份量"}</span><span>{rangeText(item.nutrition_snapshot.calories_kcal.value, "calories_kcal")}</span><small>{item.evidence_snapshot?.calculation_note || "无营养依据"}</small></li>)}</ul></> : record && "goals" in record ? <TargetSummary target={record} /> : record && "items" in record ? <RecordSummary record={record} /> : record && "evidence" in record ? <><h3>{record.name}</h3><p>{record.brand}</p><dl className="diet-target-details">{Object.entries(nutrients).map(([key, meta]) => <div key={key}><dt>{meta.name}</dt><dd>{rangeText(record.evidence.nutrients[key as keyof typeof nutrients].value, key as keyof typeof nutrients)}</dd></div>)}</dl><p>{record.evidence.original_excerpt}</p>{record.allergens.map((fact) => <p key={fact.name}>{fact.name}：{({ known_present: "含有", known_absent: "明确不含", unknown: "未知" })[fact.state] || "未知"} · {fact.explanation} · {fact.evidence_ref}</p>)}</> : record && "status" in record ? <p>{record.local_date} · {({ open: "重新开放记录", complete: "声明当天已记录完整", no_intake: "声明当天未食用" })[record.status]}</p> : null}
     {operation === "log_delete" && <p className="diet-warning">记录立即退出实际统计，7天内可恢复。</p>}
     <p className="muted">预览有效至 {new Date(value.expires_at).toLocaleString("zh-CN")}。确认不会将估算数据变为已验证数据。</p>

@@ -28,6 +28,9 @@ import {
 } from "lucide-react";
 import { ErrorNotice } from "../../components/Common";
 import { ChatDietPreview } from "../diet/ChatDietPreview";
+import { PersonalMealOptions } from "../diet/PersonalMealOptions";
+import { meals } from "../diet/types";
+import type { PersonalMealOption } from "../diet/types";
 import {
   ApiError, cancelRun, deleteConversation, getChatSnapshot, getConversations, getThread,
   getTrace, restoreConversation, streamChat, subscribeRun, submitConfirmation,
@@ -328,6 +331,7 @@ function ChatSession({
             createdAt: String(item.created_at),
             traceId: firstString(item.trace_id),
             recommendations: normalizeRecommendations(response.recommendations),
+            personalMealOptions: asArray(response.personal_meal_options) as PersonalMealOption[],
             citations: normalizeCitations(response.citations),
             warnings: normalizeStringList(response.warnings),
             suggestedActions: normalizeStringList(response.suggested_actions),
@@ -342,6 +346,7 @@ function ChatSession({
               "已恢复上次会话中等待确认的操作，请在执行面板中核对后继续。",
             createdAt: new Date().toISOString(),
             recommendations: normalizeRecommendations(finalResponse.recommendations),
+            personalMealOptions: asArray(finalResponse.personal_meal_options) as PersonalMealOption[],
             citations: normalizeCitations(finalResponse.citations),
             warnings: normalizeStringList(finalResponse.warnings),
             suggestedActions:
@@ -590,13 +595,17 @@ function ChatSession({
       source.citations ?? source.sources ?? finalResponse.citations ?? finalResponse.sources,
     );
     const warnings = normalizeStringList(source.warnings ?? finalResponse.warnings);
+    const personalMealOptions = asArray(
+      source.personal_meal_options ?? finalResponse.personal_meal_options,
+    ) as PersonalMealOption[];
     const suggestedActions = source.requires_confirmation === true
       ? []
       : normalizeStringList(source.suggested_actions ?? finalResponse.suggested_actions);
-    if (recommendations.length || citations.length || warnings.length || suggestedActions.length) {
+    if (recommendations.length || personalMealOptions.length || citations.length || warnings.length || suggestedActions.length) {
       updateAssistant(assistantId, (message) => ({
         ...message,
         recommendations: recommendations.length ? recommendations : message.recommendations,
+        personalMealOptions: personalMealOptions.length ? personalMealOptions : message.personalMealOptions,
         citations: citations.length ? citations : message.citations,
         warnings: warnings.length ? warnings : message.warnings,
         suggestedActions: suggestedActions.length ? suggestedActions : message.suggestedActions,
@@ -1024,6 +1033,13 @@ function ChatSession({
                     ) : <span className="stream-placeholder">正在分析请求…</span>}
                   </div>
 
+                  {message.personalMealOptions?.length ? (
+                    <PersonalMealOptions options={message.personalMealOptions} threadId={threadId}
+                      disabled={connection !== "online" || isSending || restoring || confirmationBusy}
+                      onReplace={message === messages.at(-1) ? (option) => void sendMessage(
+                        `${option.local_date} ${option.meal_type ? meals[option.meal_type] : "下一餐"}，换一组个人份量建议`,
+                      ) : undefined} />
+                  ) : null}
                   {message.recommendations?.length ? (
                     <div className="recommendation-list">
                       {message.recommendations.map((meal, index) => (

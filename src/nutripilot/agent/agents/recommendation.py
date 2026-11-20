@@ -26,6 +26,7 @@ from nutripilot.agent.contracts import (
     RecommendationDraft,
     RecommendationOutput,
 )
+from nutripilot.agent.personal_meals import PersonalMealRecommendation, personal_meal_scope
 from nutripilot.agent.state import AgentState
 from nutripilot.domain.enums import Intent, Phase
 from nutripilot.domain.execution import ExecutionOwnershipLost
@@ -163,11 +164,23 @@ class RecommendationAgent:
     )
     writes = frozenset({"final_response", "approved_answer"})
 
-    def __init__(self, gateway: ModelGateway, recorder: TraceRecorder) -> None:
+    def __init__(
+        self, gateway: ModelGateway, recorder: TraceRecorder,
+        personal: PersonalMealRecommendation | None = None,
+    ) -> None:
         self.gateway = gateway
         self.recorder = recorder
+        self.personal = personal
 
     async def run(self, state: AgentState) -> dict[str, Any]:
+        if self.personal and (scope := personal_meal_scope(state)) is not None:
+            response = await self.personal.run(state, scope)
+            if response is not None:
+                return {
+                    "phase": Phase.RECOMMENDATION.value,
+                    "final_response": response.model_dump(mode="json"),
+                    "approved_answer": None,
+                }
         response = canonical_answer(
             state, RecommendationDraft(message="暂时无法生成可靠回答，请稍后重试。"),
         )

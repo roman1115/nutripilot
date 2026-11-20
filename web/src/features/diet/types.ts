@@ -19,8 +19,22 @@ export interface PlannedMeal { id: string; version: number; plan_id: string; loc
 export interface PlanMealView { plan: DietPlan; meal: PlannedMeal; actual_refs: { id: string; version: number }[] }
 export type PlanParent = { kind: "new"; title: string; start_date: string } | { kind: "existing"; plan_id: string; base_version: number };
 export type GoalNutrient = "calories_kcal" | "protein_g" | "fat_g" | "carbohydrates_g";
-export interface Preview { id: string; version: number; state: string; content_hash: string; expires_at: string; content: { operation: string; before: DietLog | Target | PersonalFood | DayDeclaration | null; after: DietLog | Target | PersonalFood | DayDeclaration } | { operation: string; before_plan: DietPlan | null; after_plan: DietPlan; before_meals: PlannedMeal[]; after_meals: PlannedMeal[] } }
+export interface Preview { id: string; version: number; state: string; content_hash: string; expires_at: string; recommendation_basis_changed?: boolean; recommendation_note?: string | null; content: { operation: string; before: DietLog | Target | PersonalFood | DayDeclaration | null; after: DietLog | Target | PersonalFood | DayDeclaration } | { operation: string; before_plan: DietPlan | null; after_plan: DietPlan; before_meals: PlannedMeal[]; after_meals: PlannedMeal[] } }
 export interface NutrientTotal { total: Range | null; known_subtotal: Range; complete: boolean; known_item_count: number; total_item_count: number; missing_reasons: string[] }
+export interface PersonalMealOption {
+  id: string;
+  turn_id: string;
+  local_date: string;
+  meal_type: MealType | null;
+  diet_epoch: number | null;
+  items: {
+    name: string;
+    quantity: Quantity;
+    evidence: { source_uri: string | null; calculation_note: string };
+  }[];
+  nutrition: { nutrients: Record<Nutrient, NutrientTotal> };
+  reason: string;
+}
 export interface DayAnalysis { local_date: string; actual: { state: string; day_status: string; record_count: number; nutrients: Record<Nutrient, NutrientTotal> }; planned: { nutrients: Record<Nutrient, NutrientTotal> }; target_comparison: Record<GoalNutrient, { status: string; reason: string | null }> }
 export interface WeekAnalysis { week_start: string; covered_days: number; recorded_days: number; complete_days: number; days: DayAnalysis[]; nutrients: Record<Nutrient, { known_subtotal: Range; recorded_day_average: Range | null; complete_day_average: Range | null; seven_day_average: Range | null }> }
 export interface FoodHit { food_ref: FoodRef; name: string; food_state: string; basis: string; serving_evidence_id: string | null }

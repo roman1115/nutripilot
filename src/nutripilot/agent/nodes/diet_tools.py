@@ -15,16 +15,19 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 from nutripilot.agent.agents.intent import _explicit_intake_request
 from nutripilot.agent.contracts import PlannerOutput
 from nutripilot.agent.nodes.diet import preview_reference
+from nutripilot.agent.personal_meals import OPTION_WORDS, recommendation_save_match
 from nutripilot.agent.state import AgentState
 from nutripilot.domain.diet import DietError, SubmissionAnchor
 from nutripilot.domain.diet_jobs import ParsedIntake
 from nutripilot.domain.diet_records import DietChangePreview, FoodHit, IntakeDraft
+from nutripilot.domain.execution import execution_fence
 from nutripilot.domain.models import DietMemoryReference, FinalResponse
+from nutripilot.domain.personal_meal import PersonalMealOption
 from nutripilot.memory.context import conversation_context
 from nutripilot.model_gateway import ModelGateway
 from nutripilot.model_gateway.budget import current_budget
 from nutripilot.tools import ToolCall, ToolContext, ToolExecutionState, ToolExecutor
-from nutripilot.tools.local.diet_models import DIET_ARGUMENT_MODELS, SearchFoods
+from nutripilot.tools.local.diet_models import DIET_ARGUMENT_MODELS, NewPlan, SearchFoods
 
 if TYPE_CHECKING:
     from nutripilot.application.diet_management import DietManagement
@@ -120,6 +123,9 @@ class DietToolsNode:
         self.diet, self.executor, self.gateway = diet, executor, gateway
 
     async def run(self, state: AgentState) -> dict[str, Any]:
+        options = state.get("previous_personal_options", [])
+        if options and (match := recommendation_save_match(state["user_message"])):
+            return await self._prepare_recommended_meal(state, options, match[1])
         anchor = SubmissionAnchor.model_validate(state["diet_submission_anchor"])
         active = None
         ref = state.get("active_draft_ref")
@@ -151,7 +157,10 @@ class DietToolsNode:
         execution = ToolExecutionState()
         epoch = None
         run = state.get("run_id") or state["turn_id"]
-        allowed = {name for name in DIET_ARGUMENT_MODELS if not name.startswith("prepare_")}
+        allowed = {
+            name for name in DIET_ARGUMENT_MODELS
+            if not name.startswith("prepare_") and name != "get_recommendation_context"
+        }
         write_tool = {
             "intake": "prepare_intake_draft",
             "log_change": "prepare_diet_log_change",
@@ -386,6 +395,39 @@ class DietToolsNode:
                         else (await tx.get_preview(ref.uuid))
                     )
         return None
+
+    async def _prepare_recommended_meal(
+        self, state: AgentState, options: list[dict[str, Any]], ordinal: str | None,
+    ) -> dict[str, Any]:
+        from nutripilot.application.plan_service import RecommendedPlanMeal
+
+        if ordinal is None and len(options) != 1:
+            return self._clarification("要把第几份建议加入计划？也可以在卡片上选择。")
+        index = OPTION_WORDS[ordinal] if ordinal else 0
+        if index >= len(options):
+            return self._clarification("没有找到这份建议，请从上面的方案中选择。")
+        option = PersonalMealOption.model_validate(options[index])
+        if option.meal_type is None:
+            return self._clarification("请在建议卡片中选择要保存的餐次。")
+        key = hashlib.sha256(f"recommendation:{state['turn_id']}".encode()).hexdigest()
+        try:
+            async with execution_fence():
+                preview = await self.diet.plans.prepare(
+                    state["user_id"],
+                    RecommendedPlanMeal(
+                        option=option, meal_type=option.meal_type, conflict=None,
+                        parent=NewPlan(
+                            kind="new", title=f"{option.local_date} 周餐单",
+                            start_date=option.local_date,
+                        ),
+                    ),
+                    idempotency_key=key,
+                    thread_id=state["thread_id"],
+                    source_turn_id=state["turn_id"],
+                )
+        except DietError as exc:
+            return self._clarification(str(exc))
+        return self._prepared(preview)
 
     def _prepared(self, preview: IntakeDraft | DietChangePreview) -> dict[str, Any]:
         ready = preview.state == "ready"

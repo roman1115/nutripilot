@@ -195,6 +195,102 @@ async def test_worker_shutdown_resumes_checkpoint_without_repeating_completed_in
 
 
 @pytest.mark.asyncio
+async def test_personal_recommendation_resume_keeps_day_and_rereads_after_purge(tmp_path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    class ProjectedGateway(GatedGateway):
+        projections: list[dict[str, Any]]
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.block_worker = "personal_meal"
+            self.projections = []
+
+        async def generate_structured(self, **kwargs: Any) -> Any:
+            if kwargs["worker"] == "personal_meal":
+                self.projections.append(kwargs["payload"]["tool_results"][0]["data"])
+            return await super().generate_structured(**kwargs)
+
+    gateway = ProjectedGateway()
+    clock = datetime(2026, 11, 18, 15, 59, tzinfo=UTC)
+    day = "2026-11-18"
+    async with runtime(
+        gateway, user_timezone="Asia/Shanghai", chat_concurrency=1, chat_user_concurrency=1,
+        diet_deletion_journal_root=str(tmp_path / "deletions"),
+    ) as (container, client):
+        service = container.chat_runs
+        for component in (
+            container.diet, container.diet.intake, container.diet.queries, container.diet.records,
+        ):
+            component.clock = lambda: clock
+
+        async def post(path: str, body: dict, version: int | None = None) -> dict:
+            headers = {"Idempotency-Key": uuid4().hex}
+            if version is not None:
+                headers["If-Match"] = f'"{version}"'
+            response = await client.post(f"/api/v1/diet{path}", json=body, headers=headers)
+            assert response.is_success, response.text
+            return response.json()
+
+        async def confirm(preview: dict, *, purge: bool = False) -> dict:
+            version = preview["version"]
+            return await post(
+                f"{'/purge' if purge else ''}/previews/{preview['id']}/confirm",
+                {"approved": True, "preview_version": version,
+                 "content_hash": preview.get("preview_hash") or preview["content_hash"]},
+                version=version,
+            )
+
+        evidence = [{
+            "field": "operation", "source_kind": "user_form", "source_ref": "test",
+            "original_text": "fixture", "operation": "set", "status": "explicit",
+        }]
+        draft = await post("/drafts", {
+            "mode": "structured", "channel": "manual", "evidence": evidence,
+            "entry": {
+                "subject": "self", "actuality": "actual",
+                "temporal": {"local_date": day, "meal_type": "lunch"},
+                "items": [{"client_item_key": "item", "food": {"kind": "unknown", "name": "测试餐"},
+                           "quantity": {"kind": "unknown", "description": "未称重"}}],
+            },
+        })
+        record = (await confirm(draft))["result_refs"][0]
+        running = await service.submit(
+            user_id=1, thread_id=uuid4().hex, message="今晚吃什么", request_key=uuid4().hex,
+        )
+        await until(lambda: gateway.started == 1)
+        queued = await service.submit(
+            user_id=1, thread_id=uuid4().hex, message="今晚吃什么", request_key=uuid4().hex,
+        )
+        assert (await asyncio.to_thread(service.store.get, queued["id"], 1))["status"] == "queued"
+        assert gateway.projections[0]["actual"]["record_count"] == 1
+        deletion = await post("/previews", {
+            "operation": "log_delete", "arguments": {
+                "action": "delete", "record_id": record["id"],
+                "base_version": record["version"], "evidence": evidence,
+            },
+        }, version=record["version"])
+        await confirm(deletion)
+        await confirm(await post("/purge/previews", {"record_ids": [record["id"]]}), purge=True)
+        clock += timedelta(minutes=2)
+        await container.chat_worker.close()
+        await container.chat_worker_task
+        gateway.gate.set()
+        worker = ChatWorker(container.chat_service, service.store, container.settings)
+        container.chat_worker = worker
+        container.chat_worker_task = asyncio.create_task(worker.run())
+        await worker.ready.wait()
+        assert (await finished(service, running))["status"] == "completed"
+        assert (await finished(service, queued))["status"] == "completed"
+        assert len(gateway.projections) == 3
+        for projection in gateway.projections[1:]:
+            assert projection["local_date"] == day
+            assert projection["actual"]["state"] == "no_records"
+            assert projection["conditional_gap"] == {}
+            assert "actual_refs" not in projection
+
+
+@pytest.mark.asyncio
 async def test_confirmation_replay_and_stale_preview_cannot_write_twice() -> None:
     async with runtime() as (container, client):
         service = container.chat_runs

@@ -13,7 +13,10 @@ function shift(date: string, offset: number) { const value = new Date(`${date}T1
 function monday(date: string) { return shift(date, -((new Date(`${date}T12:00:00Z`).getUTCDay() + 6) % 7)); }
 
 export function PlanWeekView({ connection, onLegacy }: { connection: ConnectionState; onLegacy: () => void }) {
-  const [date, setDate] = useState("");
+  const [date, setDate] = useState(() => {
+    const value = new URLSearchParams(location.search).get("plan_date") || "";
+    return /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) ? value : "";
+  });
   const [plans, setPlans] = useState<DietPlan[]>([]);
   const [selected, setSelected] = useState<DietPlan | null>(null);
   const [mealViews, setMealViews] = useState<PlanMealView[]>([]);
@@ -28,7 +31,7 @@ export function PlanWeekView({ connection, onLegacy }: { connection: ConnectionS
   const [editor, setEditor] = useState<{ date: string; meal?: PlannedMeal; actual?: boolean; repeat?: boolean; fresh?: boolean } | null>(null);
   const [copy, setCopy] = useState<{ meal?: PlannedMeal } | null>(null);
   const generation = useRef(0);
-  const selectedId = useRef<string | null>(null);
+  const selectedId = useRef(new URLSearchParams(location.search).get("plan_id"));
   const start = date ? monday(date) : "";
   const end = start ? shift(start, 6) : "";
   const online = connection === "online";

@@ -11,6 +11,7 @@
     {"name": "get_nutrition_summary", "arguments": "GetNutritionSummary", "access": "read", "permission": "diet:read"},
     {"name": "get_nutrition_targets", "arguments": "GetNutritionTargets", "access": "read", "permission": "diet:read"},
     {"name": "get_diet_deviation", "arguments": "GetDietDeviation", "access": "read", "permission": "diet:read"},
+    {"name": "get_recommendation_context", "arguments": "GetRecommendationContext", "access": "read", "permission": "diet:read"},
     {"name": "prepare_intake_draft", "arguments": "PrepareIntakeDraft", "access": "write", "permission": "diet:draft"},
     {"name": "prepare_diet_log_change", "arguments": "PrepareDietLogChange", "access": "write", "permission": "diet:draft"},
     {"name": "prepare_meal_plan_change", "arguments": "PrepareMealPlanChange", "access": "write", "permission": "diet:draft"},
@@ -23,12 +24,15 @@
     {"$ref": "#/$defs/GetNutritionSummaryCall"},
     {"$ref": "#/$defs/GetNutritionTargetsCall"},
     {"$ref": "#/$defs/GetDietDeviationCall"},
+    {"$ref": "#/$defs/GetRecommendationContextCall"},
     {"$ref": "#/$defs/PrepareIntakeDraftCall"},
     {"$ref": "#/$defs/PrepareDietLogChangeCall"},
     {"$ref": "#/$defs/PrepareMealPlanChangeCall"},
     {"$ref": "#/$defs/PrepareTargetChangeCall"}
   ],
   "$defs": {
+    "GetRecommendationContext": {"type": "object", "additionalProperties": false, "properties": {"local_date": {"$ref": "#/$defs/Date"}, "meal_type": {"$ref": "#/$defs/MealType"}}},
+    "GetRecommendationContextCall": {"type": "object", "additionalProperties": false, "required": ["tool", "arguments"], "properties": {"tool": {"const": "get_recommendation_context"}, "arguments": {"$ref": "#/$defs/GetRecommendationContext"}}},
     "ID": {"type": "string", "format": "uuid"},
     "Date": {"type": "string", "format": "date", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
     "Version": {"type": "integer", "minimum": 1},

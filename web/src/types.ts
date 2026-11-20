@@ -1,3 +1,5 @@
+import type { PersonalMealOption } from "./features/diet/types";
+
 export type ViewKey = "chat" | "diet" | "profile" | "plans" | "traces" | "evaluations";
 
 export type ConnectionState = "checking" | "online" | "offline";
@@ -44,6 +46,7 @@ export interface ChatMessage {
   createdAt: string;
   isStreaming?: boolean;
   recommendations?: MealRecommendation[];
+  personalMealOptions?: PersonalMealOption[];
   citations?: Citation[];
   warnings?: string[];
   suggestedActions?: string[];

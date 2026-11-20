@@ -13,6 +13,7 @@ from nutripilot.domain.diet import (
     DietError,
     FoodEvidenceSnapshot,
     FoodRef,
+    FoodState,
     IngredientFood,
     NutrientRange,
     NutrientSnapshot,
@@ -25,6 +26,9 @@ from nutripilot.domain.diet_records import FoodHit
 from nutripilot.retrieval.catalog import CALCULATION_NOTE, FoodCatalog, Ingredient, Recipe
 from nutripilot.retrieval.ports import MealRepository
 from nutripilot.tools.local.ports import DietTransaction, ResolvedFood
+
+# These existing source records explicitly identify the edible cooked state.
+COOKED_RICE_IDS = frozenset({"fdc:168878", "fdc:169704"})
 
 
 class CatalogDietFoodResolver:
@@ -53,6 +57,8 @@ class CatalogDietFoodResolver:
                 for source in sorted({item.source_id, *(part.source_id for part in parts)})
             ],
         }
+        if isinstance(item, Ingredient) and item.id in COOKED_RICE_IDS:
+            inputs["food_state"] = "cooked"
         version = hashlib.sha256(
             json.dumps(inputs, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
         ).hexdigest()
@@ -123,14 +129,16 @@ class CatalogDietFoodResolver:
                 else NutrientSnapshot(missing_reasons=["catalog_value_missing"])
             )
         source = self.sources[item.source_id]
+        food_state: FoodState = (
+            "cooked" if isinstance(item, Ingredient) and item.id in COOKED_RICE_IDS else "unknown"
+        )
         evidence = FoodEvidenceSnapshot(
             evidence_id=evidence_id,
             source_kind="catalog",
             source_ref=f"{item.source_id}:{item.id}",
             source_version=food.version,
             retrieved_at=now,
-            # The legacy ingredient catalog has no explicit state; its name is not state evidence.
-            food_state="unknown",
+            food_state=food_state,
             basis_quantity="per_100g" if isinstance(item, Ingredient) else "recipe_batch",
             nutrients=NutritionSnapshot(**values),
             original_excerpt=(
@@ -139,7 +147,9 @@ class CatalogDietFoodResolver:
                 else item.preparation_note or ""
             )[:2000],
             calculation_note=(
-                "Catalog per-100g composition; raw/cooked state is unspecified."
+                "USDA SR Legacy per 100 g of cooked edible rice."
+                if food_state == "cooked"
+                else "Catalog per-100g composition; raw/cooked state is unspecified."
                 if isinstance(item, Ingredient)
                 else CALCULATION_NOTE
             ),

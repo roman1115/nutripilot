@@ -63,6 +63,12 @@ class SearchFoods(DietModel):
     limit: Annotated[int, Field(strict=True, ge=1, le=20)] = 10
 
 
+class GetRecommendationContext(DietModel):
+    nonnullable_optional_fields = frozenset({"local_date", "meal_type"})
+    local_date: LocalDate | None = None
+    meal_type: MealType | None = None
+
+
 class GetMealPlans(DietModel):
     nonnullable_optional_fields = frozenset({"meal_type", "cursor"})
     scope: Scope
@@ -388,6 +394,7 @@ DIET_ARGUMENT_MODELS: dict[str, type[BaseModel]] = {
     "get_nutrition_summary": GetNutritionSummary,
     "get_nutrition_targets": GetNutritionTargets,
     "get_diet_deviation": GetDietDeviation,
+    "get_recommendation_context": GetRecommendationContext,
     "prepare_intake_draft": PrepareIntakeDraft,
     "prepare_diet_log_change": PrepareDietLogChange,
     "prepare_meal_plan_change": PrepareMealPlanChange,

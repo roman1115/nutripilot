@@ -55,6 +55,13 @@ class FakeModelGateway:
             "answer_review": self._answer_review,
             "evaluation": self._evaluation,
             "memory_summary": self._memory_summary,
+            "personal_meal": lambda payload: {
+                "options": [
+                    [{"candidate_id": item["candidate_id"], "share": "0.5"}]
+                    for result in payload["tool_results"][1:]
+                    for item in result["data"]["personal_portions"][:2]
+                ][:2],
+            },
             "diet_planner": lambda _: {
                 "complete": True,
                 "tool_calls": [],
@@ -290,6 +297,7 @@ class FakeModelGateway:
             for word in (
                 "换一个",
                 "换一批",
+                "换一组",
                 "不想吃这个",
                 "再来",
                 "改成",
@@ -433,7 +441,7 @@ class FakeModelGateway:
                     if intent == Intent.MEAL_ADJUSTMENT.value
                     and any(
                         term in str(payload.get("user_message", ""))
-                        for term in ("换一批", "换一个", "不想吃这个", "再来", "换几道")
+                        for term in ("换一批", "换一个", "换一组", "不想吃这个", "再来", "换几道")
                     )
                     else _feedback_excluded_ids(results),
                     "max_calories_kcal": slots.get("max_calories_kcal"),

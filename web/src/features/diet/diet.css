@@ -176,6 +176,7 @@
 .diet-plan-actions { gap:4px; padding-bottom:0; }
 .diet-plan-actions .button { font-size:12px; padding:8px; width:100%; }
 .diet-plan-actions .icon-button { width:32px; min-width:32px; height:36px; }
+.personal-meal-replace { grid-column:1/-1; display:flex; justify-content:flex-start; }
 .diet-week-date { display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-size:13px; }
 .diet-week-date input { min-height:40px; border:1px solid #cbd4d0; border-radius:5px; padding:8px; font:inherit; }
 .diet-staged-entries { list-style:none; padding:0; }

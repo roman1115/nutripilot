@@ -6,18 +6,24 @@ import hashlib
 import hmac
 from collections.abc import Callable
 from datetime import UTC, date, datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
+from pydantic import Field
+
 from nutripilot.application.diet_patches import apply_entry_patch
+from nutripilot.application.diet_queries import recommendation_records
 from nutripilot.domain.diet import (
     DRAFT_LIFETIME,
     TRASH_LIFETIME,
     DietError,
+    DietModel,
     FieldEvidence,
+    MealType,
     ProposedEntry,
     calculate_nutrition,
     content_hash,
+    summarize_nutrition,
 )
 from nutripilot.domain.diet_records import (
     DietChangePreview,
@@ -28,17 +34,26 @@ from nutripilot.domain.diet_records import (
     PlannedMeal,
     ResourceRef,
 )
+from nutripilot.domain.personal_meal import PersonalMealOption
 from nutripilot.tools.local.diet_models import (
     CopyMealPlan,
     CopyPlanWeek,
     CreateMealPlan,
     DeleteMealPlan,
+    ExistingPlan,
     NewPlan,
     UpdateMealPlan,
 )
 from nutripilot.tools.local.ports import DietFoodResolver, DietStore, DietTransaction
 
 type PlanRequest = CreateMealPlan | UpdateMealPlan | DeleteMealPlan | CopyMealPlan | CopyPlanWeek
+
+
+class RecommendedPlanMeal(DietModel):
+    option: PersonalMealOption
+    parent: Annotated[NewPlan | ExistingPlan, Field(discriminator="kind")]
+    meal_type: MealType
+    conflict: Literal["append", "replace"] | None
 
 
 class PlanService:
@@ -57,7 +72,7 @@ class PlanService:
     async def prepare(
         self,
         user_id: int,
-        request: PlanRequest,
+        request: PlanRequest | RecommendedPlanMeal,
         *,
         idempotency_key: str,
         thread_id: str | None = None,
@@ -69,6 +84,44 @@ class PlanService:
             retry = await self._retry(tx, idempotency_key, request_hash)
             if retry is not None:
                 return retry
+            recommendation_epoch = None
+            recommendation_fingerprint = None
+            recommendation_future = False
+            recommendation_basis_changed = False
+            recommendation_note = None
+            if isinstance(request, RecommendedPlanMeal):
+                recommendation_epoch = tx.state.diet_epoch
+                option = request.option
+                recommendation_future = option.context_future
+                logs, _, target, _, recommendation_fingerprint = await recommendation_records(
+                    tx, option.local_date, request.meal_type, future=recommendation_future, now=now,
+                )
+                recommendation_basis_changed = (
+                    option.context_fingerprint != recommendation_fingerprint
+                    or option.meal_type != request.meal_type
+                )
+                for item in option.items:
+                    await self.foods.assert_available(item.food, user_id=user_id, tx=tx)
+                target_calories = target.goals.calories_kcal if target else None
+                actual_calories = summarize_nutrition(
+                    (item.nutrition_snapshot for log in logs for item in log.items),
+                    record_count=len(logs),
+                ).nutrients["calories_kcal"].total
+                proposed_calories = option.nutrition.nutrients["calories_kcal"].total
+                if target_calories and actual_calories and proposed_calories:
+                    upper = target_calories.upper - actual_calories.lower
+                    if upper > 0:
+                        comparison = "在" if proposed_calories.upper <= upper else "高于"
+                        recommendation_note = (
+                            f"按当前已保存记录估算，所选份量热量{comparison}当日目标差额上界。"
+                        )
+                if not recommendation_note:
+                    recommendation_note = (
+                        "未来餐次按该日的目标和计划核对。"
+                        if recommendation_future
+                        else "当前资料不支持计算本次保存的热量差额比较。"
+                    )
+                request = await self._recommended_request(tx, request, idempotency_key)
             if isinstance(request, CopyPlanWeek):
                 content = await self._copy_week(tx, request, now)
             elif isinstance(request, CreateMealPlan):
@@ -237,8 +290,62 @@ class PlanService:
                     base_refs=[self._plan_ref(before_plan), self._meal_ref(meal)],
                 )
             return await self._save_preview(
-                tx, content, idempotency_key, request_hash, now, thread_id, source_turn_id
+                tx, content, idempotency_key, request_hash, now, thread_id, source_turn_id,
+                recommendation_epoch=recommendation_epoch,
+                recommendation_fingerprint=recommendation_fingerprint,
+                recommendation_future=recommendation_future,
+                recommendation_basis_changed=recommendation_basis_changed,
+                recommendation_note=recommendation_note,
             )
+
+    async def _recommended_request(
+        self, tx: DietTransaction, selection: RecommendedPlanMeal, key: str,
+    ) -> CreateMealPlan | UpdateMealPlan:
+        option, parent = selection.option, selection.parent
+        token = UUID(option.id).hex[:12]
+        items = [{
+            "client_item_key": f"r{token}_{index}",
+            "food": item.food.model_dump(mode="json"),
+            "quantity": item.quantity.model_dump(mode="json"),
+        } for index, item in enumerate(option.items)]
+        evidence = [FieldEvidence(
+            field="operation", source_kind="user_form", source_ref=f"form:{key}",
+            original_text="加入计划", operation="set", status="explicit",
+        )]
+        if isinstance(parent, ExistingPlan):
+            plan = await self._plan(tx, str(parent.plan_id))
+            self._version(plan.version, parent.base_version)
+            slot = next((
+                meal for meal in await tx.list_planned_meals(plan.id)
+                if meal.local_date == option.local_date and meal.meal_type == selection.meal_type
+            ), None)
+            if slot:
+                if selection.conflict is None:
+                    raise DietError(
+                        "PLAN_SLOT_CONFLICT", "这个餐次已有内容，请选择追加或替换。",
+                    )
+                if selection.conflict == "append" and {
+                    item.client_item_key for item in slot.items
+                }.intersection(item["client_item_key"] for item in items):
+                    raise DietError("PLAN_SLOT_CONFLICT", "这份建议已加入该餐次。")
+                edits = []
+                if selection.conflict == "replace":
+                    edits = [{"action": "remove", "item_id": item.id} for item in slot.items]
+                    for item in items:
+                        item["client_item_key"] = f"{item['client_item_key']}_{slot.version}"
+                return UpdateMealPlan.model_validate({
+                    "action": "update", "planned_meal_id": slot.id, "base_version": slot.version,
+                    "patch": {"item_edits": [*edits, *(
+                        {"action": "add", "item": item} for item in items
+                    )]}, "evidence": evidence,
+                })
+        return CreateMealPlan.model_validate({
+            "action": "create", "parent": parent, "evidence": evidence,
+            "entries": [{"client_entry_key": token, "entry": {
+                "subject": "self", "actuality": "planned", "items": items,
+                "temporal": {"local_date": option.local_date, "meal_type": selection.meal_type},
+            }}],
+        })
 
     async def prepare_archive_restore(
         self,
@@ -317,6 +424,19 @@ class PlanService:
                 raise DietError("PREVIEW_EXPIRED", "Preview has expired.")
             if preview.state != "ready":
                 raise DietError("INVALID_PREVIEW_STATE", "Preview is not ready.")
+            if preview.recommendation_fingerprint is not None:
+                meal = content.after_meals[0]
+                *_, fingerprint = await recommendation_records(
+                    tx, meal.local_date, meal.meal_type, future=preview.recommendation_future,
+                    now=now,
+                )
+                if fingerprint != preview.recommendation_fingerprint:
+                    raise DietError("VERSION_CONFLICT", "饮食资料已更新，请重新预览这份建议。")
+            elif (
+                preview.recommendation_epoch is not None
+                and preview.recommendation_epoch != tx.state.diet_epoch
+            ):
+                raise DietError("VERSION_CONFLICT", "饮食资料已更新，请重新预览这份建议。")
             for ref in content.base_refs:
                 if ref.kind == "plan":
                     current_plan = await tx.get_plan(str(ref.id))
@@ -333,8 +453,14 @@ class PlanService:
                         raise DietError("NOT_FOUND", "Source meal not found.")
                     self._version(current_meal.version, ref.version)
             for meal in content.after_meals:
+                before = next((row for row in content.before_meals if row.id == meal.id), None)
+                before_items = {item.id: item for item in before.items} if before else {}
                 for item in meal.items:
                     await self.foods.assert_available(item.food_ref, user_id=user_id, tx=tx)
+                    if preview.recommendation_epoch is not None and (
+                        item.id not in before_items or item != before_items[item.id]
+                    ):
+                        await self.foods.resolve(item.food_ref, user_id=user_id, now=now, tx=tx)
             receipt = OperationReceipt(
                 id=uuid4(),
                 user_id=user_id,
@@ -531,6 +657,12 @@ class PlanService:
         now: datetime,
         thread_id: str | None,
         source_turn_id: str | None = None,
+        *,
+        recommendation_epoch: int | None = None,
+        recommendation_fingerprint: str | None = None,
+        recommendation_future: bool = False,
+        recommendation_basis_changed: bool = False,
+        recommendation_note: str | None = None,
     ) -> DietChangePreview:
         preview = DietChangePreview(
             id=uuid4(),
@@ -542,6 +674,11 @@ class PlanService:
             expires_at=now + DRAFT_LIFETIME,
             thread_id=thread_id,
             source_turn_id=source_turn_id,
+            recommendation_epoch=recommendation_epoch,
+            recommendation_fingerprint=recommendation_fingerprint,
+            recommendation_future=recommendation_future,
+            recommendation_basis_changed=recommendation_basis_changed,
+            recommendation_note=recommendation_note,
         )
         await tx.save_preview(preview)
         await tx.save_receipt(

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from nutripilot.agent.answers import apply_approved_answer, guard_answer_facts
+from nutripilot.agent.answers import answer_candidate_ids, apply_approved_answer, guard_answer_facts
 from nutripilot.agent.grounding import ground_recommendation_facts
+from nutripilot.agent.personal_meals import dish_search_slots
 from nutripilot.agent.state import AgentState
 from nutripilot.domain.enums import Intent, Phase
 from nutripilot.domain.models import FinalResponse
@@ -24,7 +25,10 @@ class OutputGuardNode:
             "message": "系统未生成有效回复。",
         }
         response = FinalResponse.model_validate(raw)
-        if state.get("intent") in {
+        personal = (
+            response.diet_context and response.diet_context.state == "personal_recommendation"
+        )
+        if not personal and state.get("intent") in {
             Intent.MEAL_RECOMMENDATION.value, Intent.MEAL_ADJUSTMENT.value,
             Intent.MEAL_PLAN.value,
         }:
@@ -36,7 +40,17 @@ class OutputGuardNode:
             response.warnings = list(dict.fromkeys([
                 *response.warnings, *(state.get("plan_quality") or {}).get("warnings", []),
             ]))
-        guarded, flags, forbidden_meal_ids = guard_answer_facts(response, state, self.guard)
+        guard_state: AgentState = (
+            {**state, "slots": dish_search_slots(state)} if personal else state
+        )
+        guarded, flags, forbidden_meal_ids = guard_answer_facts(response, guard_state, self.guard)
+        if personal:
+            allowed = answer_candidate_ids(state) - forbidden_meal_ids
+            guarded.personal_meal_options = [
+                option for option in guarded.personal_meal_options
+                if guarded.status != "blocked"
+                and all(item.meal_id is None or item.meal_id in allowed for item in option.items)
+            ]
         # Prose is reusable only while its checked facts survive the final safety filter.
         prose_applied = False
         if guarded.status != "blocked":

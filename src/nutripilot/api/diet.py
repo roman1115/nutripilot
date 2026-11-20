@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import re
 from collections.abc import Iterator
@@ -19,6 +20,7 @@ from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from nutripilot.application.chat_service import ThreadNotFoundError
 from nutripilot.application.container import ApplicationContainer
 from nutripilot.application.diet_management import DayStatusRequest, DietManagement
 from nutripilot.application.diet_parsing import (
@@ -38,16 +40,20 @@ from nutripilot.application.diet_queries import (
 )
 from nutripilot.application.intake_service import IntakeAlreadyRecorded, UserDraftEdit
 from nutripilot.application.personal_food_service import PersonalFoodMutation
+from nutripilot.application.plan_service import RecommendedPlanMeal
 from nutripilot.domain.diet import (
     DietError,
     DietModel,
     FieldEvidence,
+    MealType,
+    PositiveDecimal,
     SubmissionAnchor,
     Version,
     content_hash,
 )
 from nutripilot.domain.diet_jobs import BackgroundJob, ExportRequest
 from nutripilot.domain.diet_records import IntakeDraft, OperationReceipt
+from nutripilot.domain.personal_meal import PersonalMealOption, personal_nutrition, with_portion
 from nutripilot.infrastructure.diet_store import PostgresDietStore
 from nutripilot.tools.local.diet_models import (
     CopyMealPlan,
@@ -60,11 +66,13 @@ from nutripilot.tools.local.diet_models import (
     DeleteRestoreDietLog,
     DiscardIntake,
     EntryPatch,
+    ExistingPlan,
     GetDietDeviation,
     GetDietLogs,
     GetMealPlans,
     GetNutritionSummary,
     GetNutritionTargets,
+    NewPlan,
     ReviseIntake,
     SearchFoods,
     SetTarget,
@@ -311,6 +319,24 @@ class PlanLifecycle(DietModel):
     action: Literal["archive", "restore"]
     plan_id: Annotated[str, Field(min_length=1, max_length=120)]
     base_version: Version
+
+
+class RecommendationSelection(DietModel):
+    thread_id: Annotated[str, Field(min_length=1, max_length=120)]
+    turn_id: Annotated[str, Field(min_length=1, max_length=120)]
+    option_id: UUID
+    shares: Annotated[
+        list[Annotated[PositiveDecimal, Field(le=1)]], Field(min_length=1, max_length=3)
+    ] | None = None
+    amounts: Annotated[
+        list[PositiveDecimal | None], Field(min_length=1, max_length=3)
+    ] | None = None
+
+
+class RecommendationPlanSelection(RecommendationSelection):
+    meal_type: MealType
+    parent: Annotated[NewPlan | ExistingPlan, Field(discriminator="kind")]
+    conflict: Literal["append", "replace"] | None = None
 
 
 class PreviewRequest(DietModel):
@@ -1028,6 +1054,85 @@ async def delete_media(
 ) -> Any:
     await parser.remove_media(user_id, media_id)
     return {"state": "purged"}
+
+
+async def _selected_recommendation(
+    active: ApplicationContainer, owner: int, selection: RecommendationSelection,
+) -> PersonalMealOption:
+    chat = active.chat_service
+    try:
+        state = await chat.get_thread(thread_id=selection.thread_id, user_id=owner)
+        if chat.history is not None:
+            messages = await asyncio.to_thread(
+                chat.history.turn_messages, owner, selection.thread_id, selection.turn_id,
+            )
+            replies = [item.response or {} for item in messages if item.role == "assistant"]
+        else:
+            replies = [state.get("final_response") or {}] if (
+                state.get("turn_id") == selection.turn_id
+                and state.get("phase") == "COMPLETED"
+            ) else []
+    except ThreadNotFoundError as exc:
+        raise DietError("NOT_FOUND", "未找到此会话建议。") from exc
+    for reply in replies:
+        for row in reply.get("personal_meal_options", []):
+            if row["id"] != str(selection.option_id):
+                continue
+            option = PersonalMealOption.model_validate(row)
+            amounts = selection.amounts if selection.amounts is not None else selection.shares
+            if (
+                amounts is None or len(amounts) != len(option.items)
+                or (selection.amounts is not None and selection.shares is not None)
+                or (selection.shares is not None and any(
+                    item.quantity.kind != "recipe_fraction" for item in option.items
+                ))
+            ):
+                raise DietError("INVALID_ARGUMENT", "份量与推荐食物数量不一致。")
+            try:
+                items = [
+                    with_portion(item, amount)
+                    for item, amount in zip(option.items, amounts, strict=True)
+                ]
+            except ValueError as exc:
+                raise DietError("INVALID_ARGUMENT", "份量不符合食物的计量依据。") from exc
+            adjusted = items != option.items
+            return option.model_copy(update={
+                "items": items,
+                "nutrition": personal_nutrition(items),
+                "reason": "已按调整后的个人份量重算。" if adjusted else option.reason,
+            })
+    raise DietError("NOT_FOUND", "未找到此会话建议。")
+
+
+@router.post("/recommendation-options/calculate")
+async def calculate_recommendation(
+    payload: RecommendationSelection,
+    user_id: int = Depends(identity),
+    active: ApplicationContainer = Depends(container),
+) -> PersonalMealOption:
+    option = await _selected_recommendation(active, user_id, payload)
+    diet = active.diet
+    async with diet.store.transaction(user_id, default_timezone=diet.default_timezone) as tx:
+        for item in option.items:
+            await diet.foods.assert_available(item.food, user_id=user_id, tx=tx)
+            await diet.foods.resolve(item.food, user_id=user_id, now=diet.clock(), tx=tx)
+    return option
+
+
+@router.post("/recommendation-options/preview", status_code=201)
+async def prepare_recommendation(
+    payload: RecommendationPlanSelection,
+    user_id: int = Depends(identity),
+    active: ApplicationContainer = Depends(container),
+    key: str = Depends(request_key),
+) -> Any:
+    option = await _selected_recommendation(active, user_id, payload)
+    return await active.diet.plans.prepare(
+        user_id, RecommendedPlanMeal(
+            option=option, parent=payload.parent, meal_type=payload.meal_type,
+            conflict=payload.conflict,
+        ), idempotency_key=key, thread_id=payload.thread_id, source_turn_id=payload.turn_id,
+    )
 
 
 @router.post("/previews", status_code=201)

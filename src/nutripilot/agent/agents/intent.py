@@ -9,6 +9,7 @@ from typing import Any
 
 from nutripilot.agent.agents.base import fallback_update, record_worker_event
 from nutripilot.agent.contracts import IntentOutput
+from nutripilot.agent.personal_meals import recommendation_save_match, recommendation_share_match
 from nutripilot.agent.slots import (
     explicit_food_request,
     extract_calorie_limit,
@@ -28,7 +29,7 @@ from nutripilot.tracing import TraceRecorder
 
 class IntentAgent:
     name = "IntentAgent"
-    prompt_version = "intent-v21"
+    prompt_version = "intent-v22"
     system_prompt = (
         "饮食管理意图还要设置diet_operation：只读query、记餐/草稿intake、"
         "更正删除恢复正式记录log_change、新建或修改指定食物的餐单plan_change、营养目标target_change。"
@@ -70,6 +71,7 @@ class IntentAgent:
         "换一批/条件不变=keep，不限食材/取消食材限制=clear。"
         "clear只取消临时食材条件，用户过敏事实始终保留。"
         "延续推荐条件的改成、再加、不限食材、不要某食材应识别为MEAL_ADJUSTMENT。"
+        "换一组个人份量建议属于MEAL_ADJUSTMENT，meal_context=personal，不指定meal_ids。"
         "没有历史推荐时，首次同时表达不吃某食材、想吃另一食材仍是MEAL_RECOMMENDATION。"
         "取消热量、预算、准备时间或蛋白质下限等临时数值限制也使用MEAL_ADJUSTMENT，"
         "把要取消的字段放入clear_constraints，只允许max_calories_kcal、max_price_cny、"
@@ -91,6 +93,13 @@ class IntentAgent:
         "补全省略指代；context为general表示通用原理/技巧/失败补救，不需要历史菜谱，"
         "meals表示针对已展示菜品，否则auto。meal_ids只填discussed_meals中明确指代的编号，"
         "不要猜未知对象。推荐一份、一道或换一个时recommendation_count=1，未明确则null。"
+        "询问本人今天/未来某餐吃什么或结合摄入选下一餐，用MEAL_RECOMMENDATION，"
+        "answer_task.meal_context=personal，meal_date按current_date解析。"
+        "仅指名菜品、食材或口味筛选，没有要求结合本人摄入或安排下一餐的用generic。"
+        "给别人推荐、明确不参考我的记录或只推荐通用菜品时meal_context=generic。"
+        "个人餐次的热量上限、蛋白质下限只放answer_task的meal_calorie_limit和"
+        "meal_protein_minimum；不要放到整菜检索的max_calories_kcal和min_protein_g。"
+        "个人下一餐即使没有餐次也不必追问，餐次未给时留空。"
         "needs_nutrition表示本轮选择或解释需要营养数据；高蛋白、脂肪比较都需要。"
         "嫌某菜脂肪太高并要求替换时，nutrient_preference=lower_fat，meal_ids标明被替换的菜，"
         "延续已有高蛋白等目标，但不能编造脂肪上限；想增加蛋白质可用higher_protein。"
@@ -115,6 +124,16 @@ class IntentAgent:
         self.recorder = recorder
 
     async def run(self, state: AgentState) -> dict[str, Any]:
+        if state.get("previous_personal_options") and recommendation_save_match(
+            state["user_message"]
+        ):
+            return {
+                "phase": Phase.INTENT.value,
+                "intent": Intent.DIET_MANAGEMENT.value,
+                "diet_operation": "plan_change",
+                "intent_confidence": 1.0,
+                "missing_slots": [],
+            }
         started = time.monotonic()
         current_date = date.fromisoformat(state["current_date"])
         explicit, invalid = extract_plan_scope(state["user_message"], current_date=current_date)
@@ -268,6 +287,15 @@ def _explicit_intake_request(message: str) -> bool:
 
 def _diet_intent(state: AgentState, output: IntentOutput) -> IntentOutput:
     message = state["user_message"]
+    if (
+        state.get("previous_personal_options") and output.intent is not Intent.HEALTH_RISK
+        and recommendation_share_match(message)
+    ):
+        return output.model_copy(update={
+            "intent": Intent.MEAL_ADJUSTMENT, "diet_operation": None,
+            "answer_task": output.answer_task.model_copy(update={"meal_context": "personal"}),
+            "extracted_slots": {}, "missing_slots": [],
+        })
     active_edit = (
         state.get("active_draft_ref")
         and not any(
@@ -304,7 +332,25 @@ def _answer_task(state: AgentState, output: IntentOutput) -> dict[str, Any]:
     task["meal_ids"] = list(dict.fromkeys(
         meal_id for meal_id in task["meal_ids"] if meal_id in known
     ))
+    if (
+        task["meal_calorie_limit"] is None
+        and (limit := extract_calorie_limit(state["user_message"])) is not None
+        and _personal_scope(state, output, output.extracted_slots)
+    ):
+        task["meal_calorie_limit"] = str(limit)
+    if state.get("previous_personal_options") and recommendation_share_match(state["user_message"]):
+        for field in ("meal_calorie_limit", "meal_protein_minimum"):
+            task[field] = state.get("previous_personal_task", {}).get(field)
     return task
+
+
+def _personal_scope(state: AgentState, output: IntentOutput, slots: dict[str, Any]) -> Any:
+    from nutripilot.agent.personal_meals import personal_meal_scope
+
+    return personal_meal_scope({
+        **state, "intent": output.intent.value, "slots": slots,
+        "answer_task": output.answer_task.model_dump(mode="json"),
+    })
 
 
 def _required_missing(output: IntentOutput, slots: dict[str, Any]) -> list[str]:
@@ -366,6 +412,14 @@ def _resolved_slots(state: AgentState, output: IntentOutput) -> tuple[dict[str, 
         # Keep an explicit tombstone so later planner calls cannot restore a cancelled limit.
         for field in output.extracted_slots.get("clear_constraints", []):
             slots[field] = None
+    if scope := _personal_scope(state, output, slots):
+        if scope.meal_type is not None:
+            slots["meal_type"] = scope.meal_type
+        else:
+            slots.pop("meal_type", None)
+        slots.pop("max_calories_kcal", None)
+        slots.pop("min_protein_g", None)
+        return slots, []
     if output.intent is Intent.MEAL_PLAN:
         explicit, missing = extract_plan_scope(
             state["user_message"],

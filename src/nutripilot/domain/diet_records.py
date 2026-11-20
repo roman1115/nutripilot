@@ -628,6 +628,11 @@ ChangePayload = Annotated[
 class DietChangePreview(VersionedDietResource):
     thread_id: str | None = None
     source_turn_id: str | None = None
+    recommendation_epoch: Annotated[int, Field(strict=True, ge=0)] | None = None
+    recommendation_fingerprint: str | None = None
+    recommendation_future: bool = False
+    recommendation_basis_changed: bool = False
+    recommendation_note: str | None = None
     content: ChangePayload
     state: Literal["ready", "committed", "discarded", "expired"] = "ready"
     content_hash: str
